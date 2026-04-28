@@ -85,9 +85,17 @@ class P2PAgent:
             message_data = payload.get("data", {})
             
             # Verify the signature matches the payload and the provided public key
+            # Handle both uncompressed (130 hex chars, "04" prefix) and compressed (66 hex chars, "02"/"03" prefix)
+            pubkey_bytes = bytes.fromhex(pubkey_hex)
+            if len(pubkey_bytes) == 65:  # Uncompressed
+                vk_string = pubkey_bytes[1:]
+            else:  # Compressed (zpywallet defaults to this)
+                vk_string = pubkey_bytes
+
             verifying_key = ecdsa.VerifyingKey.from_string(
-                bytes.fromhex(pubkey_hex)[1:], # Strip the '04' uncompressed prefix
-                curve=ecdsa.SECP256k1
+                vk_string,
+                curve=ecdsa.SECP256k1,
+                valid_encodings=[ecdsa.der.FieldElement.to_bytes] if len(pubkey_bytes) == 65 else None
             )
             
             try:
@@ -137,8 +145,6 @@ class P2PAgent:
 
     def broadcast_log(self, target_peers=[('127.0.0.1', 8091), ('127.0.0.1', 8092)]):
         """Broadcasts our most recent local log entries to known peers."""
-        # For the mock network, we just broadcast a signal. A real system would sync missing logs.
-        # Let's read our last logged action
         try:
             with open(self.host_log.log_path, 'r') as f:
                 lines = f.readlines()
@@ -153,21 +159,3 @@ class P2PAgent:
                             }, peer)
         except Exception as e:
             print(f"Failed to broadcast log: {e}")
-
-# --- Example of running an Agent ---
-# async def main():
-#     agent1 = P2PAgent(host='127.0.0.1', port=8091)
-#     agent2 = P2PAgent(host='127.0.0.1', port=8092)
-#     
-#     await agent1.start()
-#     await agent2.start()
-#     
-#     # Agent 1 sends a message to Agent 2
-#     agent1.send_json({"action": "ping"}, ('127.0.0.1', 8092))
-#     
-#     await asyncio.sleep(2)
-#     agent1.stop()
-#     agent2.stop()
-#
-# if __name__ == "__main__":
-#     asyncio.run(main())
