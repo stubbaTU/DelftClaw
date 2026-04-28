@@ -1,6 +1,6 @@
 import asyncio
 from agent import P2PAgent
-
+#test
 async def main():
     print("--- Starting DelftClaw Mock Collaborative Network ---")
 
