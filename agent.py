@@ -4,6 +4,9 @@ import ecdsa
 import hashlib
 from network import UDPEndpoint
 from hdwallet import HDWallet
+from security.append_log import AppendOnlyLog
+from security.proxy import IsolationProxy
+from security.reputation import ReputationEngine
 
 class P2PAgent:
     """
@@ -26,6 +29,11 @@ class P2PAgent:
         )
         print(f"Agent starting with address: {self.address}")
         
+        # Security Components
+        self.host_log = AppendOnlyLog()
+        self.proxy = IsolationProxy(agent_id=self.address, logger=self.host_log)
+        self.reputation = ReputationEngine(log_path=self.host_log.log_path)
+
     async def start(self):
         await self.endpoint.start()
         
@@ -66,6 +74,13 @@ class P2PAgent:
             
             payload = json.loads(payload_raw)
             sender = payload.get("sender", "Unknown")
+
+            # Reputation Check: drop packet if sender is banned
+            self.reputation.scan_log(self.endpoint)
+            if self.reputation.is_banned(sender):
+                print(f"[{self.address}] Packet dropped. Sender {sender} is banned.")
+                return
+
             pubkey_hex = payload.get("pubkey", "")
             message_data = payload.get("data", {})
             
@@ -78,6 +93,13 @@ class P2PAgent:
             try:
                 verifying_key.verify(signature, payload_bytes, hashfunc=hashlib.sha256)
                 print(f"[VERIFIED {self.address}] Received from {sender}@{addr}: {message_data}")
+
+                # Log incoming verified messages via Isolation Proxy
+                self.proxy.log_action("receive_message", {
+                    "sender": sender,
+                    "data": message_data
+                })
+
                 self.handle_message(sender, message_data, addr)
             except ecdsa.BadSignatureError:
                 print(f"[{self.address}] Invalid signature from {addr}! Dropping message.")
@@ -86,8 +108,51 @@ class P2PAgent:
             print(f"Failed to process message from {addr}: {e}")
 
     def handle_message(self, sender, data, addr):
-        # Override this method for custom OpenClaw agent logic
-        pass
+        action = data.get("action")
+
+        # 1. Handle incoming network-wide Log Broadcasts from other peers
+        if action == "log_broadcast":
+            entry = data.get("entry", {})
+            # We blindly append broadcasted logs from others (trusting the cryptographic signature verified above)
+            self.host_log.append(sender, entry.get("action", "unknown"), entry.get("details", {}))
+            print(f"[{self.address}] Synced public log from peer {sender}")
+            return
+
+        # 2. Handle mock tool calls / agent instruction requests
+        if action == "execute_tool":
+            tool_name = data.get("tool")
+            kwargs = data.get("kwargs", {})
+            print(f"[{self.address}] Received mock request to execute tool: {tool_name}")
+
+            # Simple mock privilege separation check
+            if tool_name == "unauthorized_tool_use":
+                print(f"[{self.address}] SEC-BLOCK: Refusing to run unauthorized tool!")
+                # Log our own action securely via proxy
+                self.proxy.log_action("unauthorized_tool_use", {"requested_by": sender, "tool": tool_name})
+            else:
+                self.proxy.log_action("tool_execution_success", {"requested_by": sender, "tool": tool_name})
+
+            # Broadcast our newly logged action to the network so others update their public reputation logs
+            self.broadcast_log()
+
+    def broadcast_log(self, target_peers=[('127.0.0.1', 8091), ('127.0.0.1', 8092)]):
+        """Broadcasts our most recent local log entries to known peers."""
+        # For the mock network, we just broadcast a signal. A real system would sync missing logs.
+        # Let's read our last logged action
+        try:
+            with open(self.host_log.log_path, 'r') as f:
+                lines = f.readlines()
+                if len(lines) > 1: # Ignore header
+                    last_entry = json.loads(lines[-1].strip())
+                    # Broadcast to hardcoded mock peers
+                    for peer in target_peers:
+                        if peer != (self.endpoint.host, self.endpoint.port):
+                            self.send_json({
+                                "action": "log_broadcast",
+                                "entry": last_entry
+                            }, peer)
+        except Exception as e:
+            print(f"Failed to broadcast log: {e}")
 
 # --- Example of running an Agent ---
 # async def main():
