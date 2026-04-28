@@ -3,7 +3,7 @@ import json
 import ecdsa
 import hashlib
 from network import UDPEndpoint
-from hdwallet import HDWallet
+from hdwallet import HDWalle
 
 class P2PAgent:
     """
