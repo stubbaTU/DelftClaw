@@ -1,0 +1,20 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# IDEs and Text Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest
+.pytest_cache/
+
