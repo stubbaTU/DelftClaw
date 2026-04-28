@@ -1,27 +1,31 @@
-from pywallet import wallet
+from zpywallet.wallet import generate_mnemonic, create_wallet
+from zpywallet.network import BitcoinMainNet
 
 class HDWallet:
     def __init__(self, network="BTC", seed=None):
         if seed is None:
-            self.seed = wallet.generate_mnemonic()
+            self.seed = generate_mnemonic()
         else:
             self.seed = seed
-        self.network = network
-        self.wallet = wallet.create_wallet(network=self.network, seed=self.seed, children=1)
+        self.network = BitcoinMainNet
+        self.wallet = create_wallet(network=self.network, mnemonic=self.seed)
 
     def get_seed(self):
         return self.seed
 
     def get_address(self):
-        return self.wallet.get("address")
+        return self.wallet.address()
 
     def get_private_key(self):
-        return self.wallet.get("private_key")
+        return self.wallet.private_key.to_hex()
 
     def get_public_key(self):
-        return self.wallet.get("public_key")
+        pub_hex = self.wallet.public_key.to_hex()
+        return pub_hex
 
     def get_child(self, child_index):
-        return wallet.create_wallet(network=self.network, seed=self.seed, children=child_index)
-
-
+        child_path = f"m/44'/0'/0'/0/{child_index}"
+        child_wallet = self.wallet.get_child_for_path(child_path)
+        new_hd = HDWallet(seed=self.seed)
+        new_hd.wallet = child_wallet
+        return new_hd
