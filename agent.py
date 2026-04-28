@@ -4,6 +4,9 @@ import ecdsa
 import hashlib
 from network import UDPEndpoint
 from hdwallet import HDWallet
+from security.append_log import AppendOnlyLog
+from security.proxy import IsolationProxy
+from security.reputation import ReputationEngine
 
 class P2PAgent:
     """
@@ -26,6 +29,11 @@ class P2PAgent:
         )
         print(f"Agent starting with address: {self.address}")
         
+        # Security Components
+        self.host_log = AppendOnlyLog()
+        self.proxy = IsolationProxy(agent_id=self.address, logger=self.host_log)
+        self.reputation = ReputationEngine(log_path=self.host_log.log_path)
+
     async def start(self):
         await self.endpoint.start()
         
@@ -66,6 +74,13 @@ class P2PAgent:
             
             payload = json.loads(payload_raw)
             sender = payload.get("sender", "Unknown")
+
+            # Reputation Check: drop packet if sender is banned
+            self.reputation.scan_log(self.endpoint)
+            if self.reputation.is_banned(sender):
+                print(f"[{self.address}] Packet dropped. Sender {sender} is banned.")
+                return
+
             pubkey_hex = payload.get("pubkey", "")
             message_data = payload.get("data", {})
             
@@ -78,6 +93,13 @@ class P2PAgent:
             try:
                 verifying_key.verify(signature, payload_bytes, hashfunc=hashlib.sha256)
                 print(f"[VERIFIED {self.address}] Received from {sender}@{addr}: {message_data}")
+
+                # Log incoming verified messages via Isolation Proxy
+                self.proxy.log_action("receive_message", {
+                    "sender": sender,
+                    "data": message_data
+                })
+
                 self.handle_message(sender, message_data, addr)
             except ecdsa.BadSignatureError:
                 print(f"[{self.address}] Invalid signature from {addr}! Dropping message.")
