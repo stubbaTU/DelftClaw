@@ -18,3 +18,25 @@ __pycache__/
 # Pytest
 .pytest_cache/
 
+# Build artefacts
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Node / pnpm (when skills/ gets compiled by teammate D)
+node_modules/
+pnpm-lock.yaml
+
+# uv
+.uv/
+
+# Local trustroom socket
+*.sock

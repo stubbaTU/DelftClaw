@@ -1,0 +1,6 @@
+pydantic>=2.6
+cryptography>=42
+bip-utils>=2.9
+pyjwt>=2.8
+pyipv8>=3.2.0
+pytest>=7
