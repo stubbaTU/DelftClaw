@@ -30,6 +30,7 @@ class ReputationEngine:
         if not os.path.exists(self.log_path):
             return
 
+        previously_banned = set(self.banned_agents)
         self.banned_agents = set()
         self.scores = {}
         self.action_counts = {}
@@ -58,7 +59,7 @@ class ReputationEngine:
                     self.scores[subject_id] = self.scores.get(subject_id, 0) + weight
 
                     if self.scores[subject_id] >= self.ban_threshold:
-                        if subject_id not in self.banned_agents:
+                        if subject_id not in self.banned_agents and subject_id not in previously_banned:
                             print(f"[REPUTATION] Score {self.scores[subject_id]} for agent {subject_id}. Expelling!")
                         self.banned_agents.add(subject_id)
                 except json.JSONDecodeError:

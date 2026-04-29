@@ -1,88 +1,82 @@
 import argparse
+import os
 import tempfile
 
-from security.append_log import AppendOnlyLog
-from security.reputation import ReputationEngine
+from security.accountability import AccountabilityMetrics, run_harm_until_expulsion_experiment
 
 
-def profile_harm_until_expulsion(
+def compare_accountability(
+    malicious_actions: int,
     threshold: int,
-    malicious_events: int,
-    action: str = "unauthorized_tool_execution",
-) -> dict:
+    scan_interval: int,
+) -> tuple[AccountabilityMetrics, AccountabilityMetrics]:
     """
-    Measure how many malicious events are logged before reputation expels a subject.
+    Run the exact sub-question 2 comparison:
 
-    This is the core post-factum accountability metric from the research plan:
-    the blast radius is the number of unauthorized actions observed before ban.
+    1. No accountability: harmful actions continue until the fixed run ends.
+    2. Accountability: harmful actions stop once reputation expels the subject.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        log = AppendOnlyLog(log_path=f"{temp_dir}/accountability.log")
-        reputation = ReputationEngine(log_path=log.log_path, ban_threshold=threshold)
+        no_accountability = run_harm_until_expulsion_experiment(
+            accountability_enabled=False,
+            total_malicious_actions=malicious_actions,
+            threshold=threshold,
+            scan_interval=scan_interval,
+            log_path=os.path.join(temp_dir, "no_accountability.log"),
+        )
+        accountability = run_harm_until_expulsion_experiment(
+            accountability_enabled=True,
+            total_malicious_actions=malicious_actions,
+            threshold=threshold,
+            scan_interval=scan_interval,
+            log_path=os.path.join(temp_dir, "accountability.log"),
+        )
 
-        reporter_id = "honest-monitor"
-        subject_id = "compromised-agent"
-        expelled_after = None
+    return no_accountability, accountability
 
-        for index in range(1, malicious_events + 1):
-            log.append_event(
-                reporter_id=reporter_id,
-                subject_id=subject_id,
-                action=action,
-                severity=ReputationEngine.DEFAULT_WEIGHTS.get(action, 10),
-                details={"sequence": index},
-            )
-            reputation.scan_log()
 
-            if reputation.is_banned(subject_id):
-                expelled_after = index
-                break
+def harm_reduction(no_accountability: AccountabilityMetrics, accountability: AccountabilityMetrics) -> float:
+    if no_accountability.blast_radius == 0:
+        return 0.0
+    prevented = no_accountability.blast_radius - accountability.blast_radius
+    return prevented / no_accountability.blast_radius
 
-        integrity_ok, integrity_errors = log.verify_integrity()
 
-        return {
-            "threshold": threshold,
-            "subject_id": subject_id,
-            "score": reputation.get_score(subject_id),
-            "harm_count": reputation.get_harm_count(subject_id),
-            "expelled": reputation.is_banned(subject_id),
-            "expelled_after": expelled_after,
-            "integrity_ok": integrity_ok,
-            "integrity_errors": integrity_errors,
-        }
+def print_metrics(label: str, metrics: AccountabilityMetrics):
+    print(label)
+    print(f"  accountability_enabled: {metrics.accountability_enabled}")
+    print(f"  attempted_actions: {metrics.attempted_actions}")
+    print(f"  unauthorized_executions: {metrics.unauthorized_executions}")
+    print(f"  blast_radius: {metrics.blast_radius}")
+    print(f"  blocked_actions: {metrics.blocked_actions}")
+    print(f"  final_score: {metrics.final_score}")
+    print(f"  expelled: {metrics.expelled}")
+    print(f"  expulsion_step: {metrics.expulsion_step}")
+    print(f"  log_integrity_ok: {metrics.integrity_ok}")
+    if metrics.integrity_errors:
+        print(f"  integrity_errors: {metrics.integrity_errors}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Profile OpenClaw accountability blast radius.")
-    parser.add_argument("--threshold", type=int, default=10)
-    parser.add_argument("--events", type=int, default=5)
-    parser.add_argument(
-        "--action",
-        default="unauthorized_tool_execution",
-        choices=[
-            "unauthorized_tool_request",
-            "unauthorized_tool_use",
-            "unauthorized_tool_execution",
-        ],
-    )
+    parser = argparse.ArgumentParser(description="Compare harm until expulsion with and without accountability.")
+    parser.add_argument("--actions", type=int, default=10, help="Total malicious actions attempted by the subject.")
+    parser.add_argument("--threshold", type=int, default=30, help="Reputation score required for expulsion.")
+    parser.add_argument("--scan-interval", type=int, default=1, help="How often reputation scans the log.")
     args = parser.parse_args()
 
-    result = profile_harm_until_expulsion(
+    no_accountability, accountability = compare_accountability(
+        malicious_actions=args.actions,
         threshold=args.threshold,
-        malicious_events=args.events,
-        action=args.action,
+        scan_interval=args.scan_interval,
     )
 
-    print("Accountability evaluation")
-    print(f"  threshold: {result['threshold']}")
-    print(f"  subject: {result['subject_id']}")
-    print(f"  score: {result['score']}")
-    print(f"  harm_count: {result['harm_count']}")
-    print(f"  expelled: {result['expelled']}")
-    print(f"  expelled_after: {result['expelled_after']}")
-    print(f"  log_integrity_ok: {result['integrity_ok']}")
-    if result["integrity_errors"]:
-        print(f"  integrity_errors: {result['integrity_errors']}")
+    print("Game-theoretic accountability evaluation")
+    print(f"  malicious_actions: {args.actions}")
+    print(f"  threshold: {args.threshold}")
+    print(f"  scan_interval: {args.scan_interval}")
+    print_metrics("No accountability", no_accountability)
+    print_metrics("Accountability enabled", accountability)
+    print(f"Harm reduction: {harm_reduction(no_accountability, accountability):.2%}")
 
 
 if __name__ == "__main__":
