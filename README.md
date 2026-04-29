@@ -1,8 +1,8 @@
 # DelftClaw
 
-DelftClaw is a peer-to-peer network infrastructure for autonomous AI agents.
+DelftClaw is a peer-to-peer network infrastructure for autonomous AI (OpenClaw) agents.
 
-This project is developed as part of a CSE3000 Research Project.
+This project is developed as part of the CSE3000 Research Project.
 
 ## Features
 
@@ -21,9 +21,8 @@ DelftClaw/
 ├── network.py             # Asynchronous Datagram (UDP) endpoint
 ├── security/              # Defense-in-depth components
 │   ├── append_log.py      # Irrefutable log operations
-│   ├── evaluate_accountability.py # Evaluation and testing tools 
+│   ├── testing_security.py # Evaluation and testing tools 
 │   ├── privilege.py       # Privilege separation and constraint mechanisms 
 │   ├── proxy.py           # Isolation logic filtering actions and calls
 │   └── reputation.py      # Trust mechanism to implement the "shadow of the future"
-├── README.md
-└── research plan.md       # Full CSE3000 academic structure and goals
+└── README.md
