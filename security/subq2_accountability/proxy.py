@@ -1,4 +1,4 @@
-from .append_log import AppendOnlyLog
+from security.subq2_accountability.append_log import AppendOnlyLog
 
 class IsolationProxy:
     """

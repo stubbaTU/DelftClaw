@@ -1,4 +1,4 @@
-from security.privilege import (
+from security.subq1_preventative.privilege import (
     BaselineAgent,
     BaselineExecutor,
     Brain,

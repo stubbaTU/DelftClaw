@@ -4,9 +4,9 @@ import ecdsa
 import hashlib
 from network import UDPEndpoint
 from hdwallet import HDWallet
-from security.append_log import AppendOnlyLog
-from security.proxy import IsolationProxy
-from security.reputation import ReputationEngine
+from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.proxy import IsolationProxy
+from security.subq2_accountability.reputation import ReputationEngine
 
 class P2PAgent:
     """

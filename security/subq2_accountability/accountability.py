@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
-from security.append_log import AppendOnlyLog
-from security.reputation import ReputationEngine
+from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.reputation import ReputationEngine
 
 
 @dataclass

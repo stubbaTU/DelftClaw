@@ -2,7 +2,7 @@ import argparse
 import os
 import tempfile
 
-from security.accountability import AccountabilityMetrics, run_harm_until_expulsion_experiment
+from security.subq2_accountability.accountability import AccountabilityMetrics, run_harm_until_expulsion_experiment
 
 
 def compare_accountability(

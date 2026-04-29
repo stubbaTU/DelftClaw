@@ -96,7 +96,28 @@ class AppendOnlyLog:
     def verify_integrity(self) -> tuple[bool, list[str]]:
         errors = []
         previous_hash = "GENESIS"
-        for index, entry in enumerate(self.read_entries(), start=1):
+        entries = []
+
+        if not os.path.exists(self.log_path):
+            return False, ["log file does not exist"]
+
+        with open(self.log_path, 'r') as f:
+            for line_number, line in enumerate(f, start=1):
+                if line.startswith("===") or not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    errors.append(f"line {line_number}: malformed json")
+                    continue
+
+                if entry.get("version") != 2:
+                    errors.append(f"line {line_number}: unsupported log entry version")
+                    continue
+
+                entries.append(entry)
+
+        for index, entry in enumerate(entries, start=1):
             if entry.get("previous_hash") != previous_hash:
                 errors.append(f"entry {index}: previous_hash mismatch")
 
