@@ -4,15 +4,15 @@ import ecdsa
 import hashlib
 from network import UDPEndpoint
 from hdwallet import HDWallet
-from security.append_log import AppendOnlyLog
-from security.proxy import IsolationProxy
-from security.reputation import ReputationEngine
+from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.proxy import IsolationProxy
+from security.subq2_accountability.reputation import ReputationEngine
 
 class P2PAgent:
     """
     A basic P2P Agent that uses HDWallet for identity and UDPEndpoint for communication.
     """
-    def __init__(self, host='0.0.0.0', port=8090, seed=None):
+    def __init__(self, host='0.0.0.0', port=8090, seed=None, log_path=None):
         self.wallet = HDWallet(seed=seed)
         self.endpoint = UDPEndpoint(host=host, port=port)
         self.endpoint.add_message_callback(self.on_message)
@@ -30,7 +30,7 @@ class P2PAgent:
         print(f"Agent starting with address: {self.address}")
         
         # Security Components
-        self.host_log = AppendOnlyLog()
+        self.host_log = AppendOnlyLog(log_path=log_path or f"agent_{port}_actions.log")
         self.proxy = IsolationProxy(agent_id=self.address, logger=self.host_log)
         self.reputation = ReputationEngine(log_path=self.host_log.log_path)
 
@@ -106,7 +106,7 @@ class P2PAgent:
                 self.proxy.log_action("receive_message", {
                     "sender": sender,
                     "data": message_data
-                })
+                }, subject_id=sender)
 
                 self.handle_message(sender, message_data, addr)
             except ecdsa.BadSignatureError:
@@ -121,8 +121,26 @@ class P2PAgent:
         # 1. Handle incoming network-wide Log Broadcasts from other peers
         if action == "log_broadcast":
             entry = data.get("entry", {})
-            # We blindly append broadcasted logs from others (trusting the cryptographic signature verified above)
-            self.host_log.append(sender, entry.get("action", "unknown"), entry.get("details", {}))
+            if entry.get("reporter_id") != sender:
+                self.proxy.report_violation(
+                    subject_id=sender,
+                    action="log_spoof_attempt",
+                    details={"claimed_reporter": entry.get("reporter_id")}
+                )
+                print(f"[{self.address}] Rejected spoofed log broadcast from {sender}")
+                return
+
+            self.host_log.append_event(
+                reporter_id=sender,
+                subject_id=entry.get("subject_id", sender),
+                action=entry.get("action", "unknown"),
+                details=entry.get("details", {}),
+                severity=entry.get("severity", 0),
+                evidence={
+                    "remote_entry_hash": entry.get("entry_hash"),
+                    "received_from": sender,
+                }
+            )
             print(f"[{self.address}] Synced public log from peer {sender}")
             return
 
@@ -135,27 +153,32 @@ class P2PAgent:
             # Simple mock privilege separation check
             if tool_name == "unauthorized_tool_use":
                 print(f"[{self.address}] SEC-BLOCK: Refusing to run unauthorized tool!")
-                # Log our own action securely via proxy
-                self.proxy.log_action("unauthorized_tool_use", {"requested_by": sender, "tool": tool_name})
+                self.proxy.report_violation(
+                    subject_id=sender,
+                    action="unauthorized_tool_request",
+                    details={"requested_by": sender, "tool": tool_name}
+                )
             else:
                 self.proxy.log_action("tool_execution_success", {"requested_by": sender, "tool": tool_name})
 
             # Broadcast our newly logged action to the network so others update their public reputation logs
             self.broadcast_log()
 
-    def broadcast_log(self, target_peers=[('127.0.0.1', 8091), ('127.0.0.1', 8092)]):
+    def broadcast_log(self, target_peers=None):
         """Broadcasts our most recent local log entries to known peers."""
+        if target_peers is None:
+            target_peers = [('127.0.0.1', 8091), ('127.0.0.1', 8092)]
+
         try:
-            with open(self.host_log.log_path, 'r') as f:
-                lines = f.readlines()
-                if len(lines) > 1: # Ignore header
-                    last_entry = json.loads(lines[-1].strip())
-                    # Broadcast to hardcoded mock peers
-                    for peer in target_peers:
-                        if peer != (self.endpoint.host, self.endpoint.port):
-                            self.send_json({
-                                "action": "log_broadcast",
-                                "entry": last_entry
-                            }, peer)
+            entries = self.host_log.read_entries()
+            if entries:
+                last_entry = entries[-1]
+                # Broadcast to hardcoded mock peers
+                for peer in target_peers:
+                    if peer != (self.endpoint.host, self.endpoint.port):
+                        self.send_json({
+                            "action": "log_broadcast",
+                            "entry": last_entry
+                        }, peer)
         except Exception as e:
             print(f"Failed to broadcast log: {e}")
