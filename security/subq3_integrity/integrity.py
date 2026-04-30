@@ -1,34 +1,10 @@
 import hashlib
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
+from security.contracts import LogIntegrityExperimentResult, TamperAttemptResult
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
-
-
-@dataclass
-class TamperAttemptResult:
-    attack_name: str
-    target_path: str | None
-    attempted: bool
-    host_log_changed: bool
-    host_log_deleted: bool
-    integrity_ok: bool
-    succeeded: bool
-    error: str | None = None
-
-
-@dataclass
-class LogIntegrityExperimentResult:
-    mode: str
-    host_log_path_exposed: bool
-    attempts: list[TamperAttemptResult]
-    passed: bool
-
-    @property
-    def successful_attacks(self) -> int:
-        return sum(1 for attempt in self.attempts if attempt.succeeded)
 
 
 class HostLogService:
