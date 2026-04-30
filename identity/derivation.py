@@ -12,7 +12,7 @@ class DerivationPath(str):
 
     @classmethod
     def parse(cls, p: str) -> "DerivationPath":
-        # Validate the path syntax (segments, hardened markers); raise IdentityError on bad input.
+        """Validate the path syntax (segments, hardened markers); raise ValueError on bad input."""
         if not re.match(r"^m(/\d+'?)+$", p):
             raise ValueError(f"Invalid derivation path schema: {p}")
         return cls(p)
@@ -22,14 +22,14 @@ class DerivationPath(str):
 IPV8_PATH = DerivationPath("m/44'/0'/0'/0/0")
 MLS_PATH = DerivationPath("m/44'/0'/0'/1/0")
 BTC_PATH = DerivationPath("m/84'/0'/0'/0/0")
-# `BTC_PATH` follows BIP-84 for native segwit (P2WPKH) addresses.
+"""`BTC_PATH` follows BIP-84 for native segwit (P2WPKH) addresses."""
 
 REPLICA_PATH_TEMPLATE = "m/44'/0'/{replica_index}'/0/0"
-# Template used by replication.child_seed; the {replica_index} placeholder is replaced per replica.
+"""Template used by replication.child_seed; the {replica_index} placeholder is replaced per replica."""
 
 
 def derive(seed: Seed, path: DerivationPath) -> bytes:
-    # Standard BIP-32 child-key derivation; returns a 32-byte private key for the given path.
+    """Standard BIP-32 child-key derivation; returns a 32-byte private key for the given path."""
     from bip_utils import Bip32Ed25519Kholaw, Bip32Secp256k1
 
     # We use Khovratovich derivation for Ed25519 because standard SLIP-10 lacks non-hardened support.

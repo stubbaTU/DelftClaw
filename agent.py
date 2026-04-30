@@ -3,32 +3,38 @@ import json
 import ecdsa
 import hashlib
 from network import UDPEndpoint
-from hdwallet import HDWallet
+from identity.seed import MnemonicSeedSource
+from identity.agent_identity import AgentIdentity
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
 from security.subq2_accountability.reputation import ReputationEngine
 
 class P2PAgent:
     """
-    A basic P2P Agent that uses HDWallet for identity and UDPEndpoint for communication.
+    A basic P2P Agent that uses AgentIdentity and UDPEndpoint for communication.
     """
-    def __init__(self, host='0.0.0.0', port=8090, seed=None, log_path=None):
-        self.wallet = HDWallet(seed=seed)
+    def __init__(self, host='0.0.0.0', port=8090, seed_phrase: str = None, log_path=None):
+        if not seed_phrase:
+            # Generate a random seed if none provided (for ad-hoc testing)
+            from bitcoinlib.mnemonic import Mnemonic
+            seed_phrase = Mnemonic().generate()
+            
+        seed_src = MnemonicSeedSource(seed_phrase)
+        master_seed = seed_src.load()
+        
+        self.identity = AgentIdentity.from_seed(master_seed)
+        self.wallet = self.identity.wallet
+        self.ipv8 = self.identity.ipv8
+        
         self.endpoint = UDPEndpoint(host=host, port=port)
         self.endpoint.add_message_callback(self.on_message)
-        
+
         # Identity details
-        self.address = self.wallet.get_address()
-        self.public_key_hex = self.wallet.get_public_key()
-        self.private_key_hex = self.wallet.get_private_key()
-        
-        # Setup ECDSA signing
-        self.signing_key = ecdsa.SigningKey.from_string(
-            bytes.fromhex(self.private_key_hex), 
-            curve=ecdsa.SECP256k1
-        )
-        print(f"Agent starting with address: {self.address}")
-        
+        self.address = self.wallet.address()
+        self.public_key_hex = self.wallet.pubkey.hex()
+
+        print(f"Agent starting with address: {self.address} and AgentId: {self.identity.agent_id}")
+
         # Security Components
         self.host_log = AppendOnlyLog(log_path=log_path or f"agent_{port}_actions.log")
         self.proxy = IsolationProxy(agent_id=self.address, logger=self.host_log)
@@ -42,38 +48,50 @@ class P2PAgent:
         
     def send_json(self, data: dict, target_addr: tuple):
         # Attach the sender's identity to the message
+        # We can use the IPv8 key for network-level signatures
+        payload_bytes = json.dumps(data).encode()
+        signature = self.identity.ipv8.sign(payload_bytes).hex()
+        
         payload = {
             "sender": self.address,
+            "agent_id": self.identity.agent_id,
             "pubkey": self.public_key_hex,
+            "ipv8_pubkey": self.identity.ipv8.pubkey.hex(),
+            "signature": signature,
             "data": data
         }
-        
-        # Serialize the message and sign it
-        payload_bytes = json.dumps(payload, sort_keys=True).encode('utf-8')
-        signature = self.signing_key.sign_deterministic(payload_bytes, hashfunc=hashlib.sha256)
-        
-        # Send raw message wrapped with its digital signature
-        envelope = {
-            "payload": payload_bytes.decode('utf-8'),
-            "signature": signature.hex()
-        }
-        
-        raw_bytes = json.dumps(envelope).encode('utf-8')
-        self.endpoint.send(raw_bytes, target_addr)
-        
-    def on_message(self, data: bytes, addr: tuple):
+
+        msg = json.dumps(payload).encode('utf-8')
+        self.endpoint.send(msg, target_addr)
+
+    def verify_message_signature(self, ipv8_pubkey_hex: str, signature_hex: str, data: dict) -> bool:
         try:
-            envelope = json.loads(data.decode('utf-8'))
+            from ipv8.keyvault.crypto import default_eccrypto
+            pub_bytes = bytes.fromhex(ipv8_pubkey_hex)
+            sig_bytes = bytes.fromhex(signature_hex)
+            data_bytes = json.dumps(data).encode()
             
-            # Extract signature and unverified payload
-            payload_raw = envelope.get("payload", "")
-            signature_hex = envelope.get("signature", "")
+            # Use ipv8's default ECC crypto system which understands the "LibNaCLPK:" prefix
+            pub_key = default_eccrypto.key_from_public_bin(pub_bytes)
+            return pub_key.verify(sig_bytes, data_bytes)
+        except Exception as e:
+            return False
+
+    def on_message(self, message: bytes, addr: tuple):
+        try:
+            payload = json.loads(message.decode('utf-8'))
+            sender = payload.get("sender")
+            pubkey = payload.get("pubkey")
+            ipv8_pubkey = payload.get("ipv8_pubkey")
+            sig = payload.get("signature")
+            data = payload.get("data", {})
             
-            payload_bytes = payload_raw.encode('utf-8')
-            signature = bytes.fromhex(signature_hex)
+            if ipv8_pubkey and sig:
+                if not self.verify_message_signature(ipv8_pubkey, sig, data):
+                    print(f"[{self.address}] INVALID SIGNATURE from {sender} at {addr}. Dropping message.")
+                    return
             
-            payload = json.loads(payload_raw)
-            sender = payload.get("sender", "Unknown")
+            action = data.get("action")
 
             # Reputation Check: drop packet if sender is banned
             self.reputation.scan_log(self.endpoint)
@@ -81,88 +99,53 @@ class P2PAgent:
                 print(f"[{self.address}] Packet dropped. Sender {sender} is banned.")
                 return
 
-            pubkey_hex = payload.get("pubkey", "")
-            message_data = payload.get("data", {})
-            
-            # Verify the signature matches the payload and the provided public key
-            # Handle both uncompressed (130 hex chars, "04" prefix) and compressed (66 hex chars, "02"/"03" prefix)
-            pubkey_bytes = bytes.fromhex(pubkey_hex)
-            if len(pubkey_bytes) == 65:  # Uncompressed
-                vk_string = pubkey_bytes[1:]
-            else:  # Compressed (zpywallet defaults to this)
-                vk_string = pubkey_bytes
+            # 1. Handle incoming network-wide Log Broadcasts from other peers
+            if action == "log_broadcast":
+                entry = data.get("entry", {})
+                if entry.get("reporter_id") != sender:
+                    self.proxy.report_violation(
+                        subject_id=sender,
+                        action="log_spoof_attempt",
+                        details={"claimed_reporter": entry.get("reporter_id")}
+                    )
+                    print(f"[{self.address}] Rejected spoofed log broadcast from {sender}")
+                    return
 
-            verifying_key = ecdsa.VerifyingKey.from_string(
-                vk_string,
-                curve=ecdsa.SECP256k1,
-                valid_encodings=[ecdsa.der.FieldElement.to_bytes] if len(pubkey_bytes) == 65 else None
-            )
-            
-            try:
-                verifying_key.verify(signature, payload_bytes, hashfunc=hashlib.sha256)
-                print(f"[VERIFIED {self.address}] Received from {sender}@{addr}: {message_data}")
-
-                # Log incoming verified messages via Isolation Proxy
-                self.proxy.log_action("receive_message", {
-                    "sender": sender,
-                    "data": message_data
-                }, subject_id=sender)
-
-                self.handle_message(sender, message_data, addr)
-            except ecdsa.BadSignatureError:
-                print(f"[{self.address}] Invalid signature from {addr}! Dropping message.")
-                
-        except Exception as e:
-            print(f"Failed to process message from {addr}: {e}")
-
-    def handle_message(self, sender, data, addr):
-        action = data.get("action")
-
-        # 1. Handle incoming network-wide Log Broadcasts from other peers
-        if action == "log_broadcast":
-            entry = data.get("entry", {})
-            if entry.get("reporter_id") != sender:
-                self.proxy.report_violation(
-                    subject_id=sender,
-                    action="log_spoof_attempt",
-                    details={"claimed_reporter": entry.get("reporter_id")}
+                self.host_log.append_event(
+                    reporter_id=sender,
+                    subject_id=entry.get("subject_id", sender),
+                    action=entry.get("action", "unknown"),
+                    details=entry.get("details", {}),
+                    severity=entry.get("severity", 0),
+                    evidence={
+                        "remote_entry_hash": entry.get("entry_hash"),
+                        "received_from": sender,
+                    }
                 )
-                print(f"[{self.address}] Rejected spoofed log broadcast from {sender}")
+                print(f"[{self.address}] Synced public log from peer {sender}")
                 return
 
-            self.host_log.append_event(
-                reporter_id=sender,
-                subject_id=entry.get("subject_id", sender),
-                action=entry.get("action", "unknown"),
-                details=entry.get("details", {}),
-                severity=entry.get("severity", 0),
-                evidence={
-                    "remote_entry_hash": entry.get("entry_hash"),
-                    "received_from": sender,
-                }
-            )
-            print(f"[{self.address}] Synced public log from peer {sender}")
-            return
+            # 2. Handle mock tool calls / agent instruction requests
+            if action == "execute_tool":
+                tool_name = data.get("tool")
+                kwargs = data.get("kwargs", {})
+                print(f"[{self.address}] Received mock request to execute tool: {tool_name}")
 
-        # 2. Handle mock tool calls / agent instruction requests
-        if action == "execute_tool":
-            tool_name = data.get("tool")
-            kwargs = data.get("kwargs", {})
-            print(f"[{self.address}] Received mock request to execute tool: {tool_name}")
+                # Simple mock privilege separation check
+                if tool_name == "unauthorized_tool_use":
+                    print(f"[{self.address}] SEC-BLOCK: Refusing to run unauthorized tool!")
+                    self.proxy.report_violation(
+                        subject_id=sender,
+                        action="unauthorized_tool_request",
+                        details={"requested_by": sender, "tool": tool_name}
+                    )
+                else:
+                    self.proxy.log_action("tool_execution_success", {"requested_by": sender, "tool": tool_name})
 
-            # Simple mock privilege separation check
-            if tool_name == "unauthorized_tool_use":
-                print(f"[{self.address}] SEC-BLOCK: Refusing to run unauthorized tool!")
-                self.proxy.report_violation(
-                    subject_id=sender,
-                    action="unauthorized_tool_request",
-                    details={"requested_by": sender, "tool": tool_name}
-                )
-            else:
-                self.proxy.log_action("tool_execution_success", {"requested_by": sender, "tool": tool_name})
-
-            # Broadcast our newly logged action to the network so others update their public reputation logs
-            self.broadcast_log()
+                # Broadcast our newly logged action to the network so others update their public reputation logs
+                self.broadcast_log()
+        except Exception as e:
+            print(f"Failed to process message from {addr}: {e}")
 
     def broadcast_log(self, target_peers=None):
         """Broadcasts our most recent local log entries to known peers."""
@@ -182,3 +165,19 @@ class P2PAgent:
                         }, peer)
         except Exception as e:
             print(f"Failed to broadcast log: {e}")
+
+if __name__ == "__main__":
+    async def main():
+        agent = P2PAgent(port=8090)
+        await agent.start()
+        
+        # Keep alive
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            agent.stop()
+            print("\nAgent stopped.")
+
+    asyncio.run(main())
+

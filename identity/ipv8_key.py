@@ -27,7 +27,7 @@ class IPv8KeyPair:
 
     @classmethod
     def from_seed(cls, seed: Seed) -> "IPv8KeyPair":
-        # Derive the private key at IPV8_PATH and build the Ed25519 keypair.
+        """Derive the private key at IPV8_PATH and build the Ed25519 keypair."""
         priv_bytes = derive(seed, IPV8_PATH)
 
         # LibNaClSK requires a private key bytes in some versions, but can parse from binary
@@ -36,14 +36,14 @@ class IPv8KeyPair:
 
     @property
     def pubkey(self) -> bytes:
-        # Return the 32-byte Ed25519 public key.
+        """Return the 32-byte Ed25519 public key."""
         return self.key.pub().key_to_bin()
 
     def sign(self, data: bytes) -> bytes:
-        # Produce an Ed25519 signature over `data`; used implicitly by IPv8 for peer auth.
-        return self.key.sign(data)
+        """Produce an Ed25519 signature over `data`; used implicitly by IPv8 for peer auth."""
+        return self.key.signature(data)
 
     def to_ipv8_peer(self) -> Any:
-        # Bridge into py-ipv8's Peer object so the runtime can register us as the local peer.
+        """Bridge into py-ipv8's Peer object so the runtime can register us as the local peer."""
         peer = Peer(self.key)
         return peer
