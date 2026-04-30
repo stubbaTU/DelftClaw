@@ -1,7 +1,5 @@
 import asyncio
 import json
-import ecdsa
-import hashlib
 from network import UDPEndpoint
 from identity.seed import MnemonicSeedSource
 from identity.agent_identity import AgentIdentity
@@ -9,23 +7,25 @@ from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
 from security.subq2_accountability.reputation import ReputationEngine
 
+
 class P2PAgent:
     """
     A basic P2P Agent that uses AgentIdentity and UDPEndpoint for communication.
     """
+
     def __init__(self, host='0.0.0.0', port=8090, seed_phrase: str = None, log_path=None):
         if not seed_phrase:
             # Generate a random seed if none provided (for ad-hoc testing)
             from bitcoinlib.mnemonic import Mnemonic
             seed_phrase = Mnemonic().generate()
-            
+
         seed_src = MnemonicSeedSource(seed_phrase)
         master_seed = seed_src.load()
-        
+
         self.identity = AgentIdentity.from_seed(master_seed)
         self.wallet = self.identity.wallet
         self.ipv8 = self.identity.ipv8
-        
+
         self.endpoint = UDPEndpoint(host=host, port=port)
         self.endpoint.add_message_callback(self.on_message)
 
@@ -42,16 +42,16 @@ class P2PAgent:
 
     async def start(self):
         await self.endpoint.start()
-        
+
     def stop(self):
         self.endpoint.stop()
-        
+
     def send_json(self, data: dict, target_addr: tuple):
         # Attach the sender's identity to the message
         # We can use the IPv8 key for network-level signatures
         payload_bytes = json.dumps(data).encode()
         signature = self.identity.ipv8.sign(payload_bytes).hex()
-        
+
         payload = {
             "sender": self.address,
             "agent_id": self.identity.agent_id,
@@ -70,7 +70,7 @@ class P2PAgent:
             pub_bytes = bytes.fromhex(ipv8_pubkey_hex)
             sig_bytes = bytes.fromhex(signature_hex)
             data_bytes = json.dumps(data).encode()
-            
+
             # Use ipv8's default ECC crypto system which understands the "LibNaCLPK:" prefix
             pub_key = default_eccrypto.key_from_public_bin(pub_bytes)
             return pub_key.verify(sig_bytes, data_bytes)
@@ -85,12 +85,12 @@ class P2PAgent:
             ipv8_pubkey = payload.get("ipv8_pubkey")
             sig = payload.get("signature")
             data = payload.get("data", {})
-            
+
             if ipv8_pubkey and sig:
                 if not self.verify_message_signature(ipv8_pubkey, sig, data):
                     print(f"[{self.address}] INVALID SIGNATURE from {sender} at {addr}. Dropping message.")
                     return
-            
+
             action = data.get("action")
 
             # Reputation Check: drop packet if sender is banned
@@ -166,11 +166,12 @@ class P2PAgent:
         except Exception as e:
             print(f"Failed to broadcast log: {e}")
 
+
 if __name__ == "__main__":
     async def main():
         agent = P2PAgent(port=8090)
         await agent.start()
-        
+
         # Keep alive
         try:
             while True:
@@ -179,5 +180,5 @@ if __name__ == "__main__":
             agent.stop()
             print("\nAgent stopped.")
 
-    asyncio.run(main())
 
+    asyncio.run(main())

@@ -8,9 +8,8 @@ import os
 
 if sys.platform == "win32":
     _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    _lib_path = os.path.join(_root, "libsodium", "libsodium", "x64", "Release", "v143", "dynamic")
-    if os.path.exists(_lib_path):
-        os.add_dll_directory(_lib_path)
+    if os.path.exists(os.path.join(_root, "libsodium.dll")):
+        os.add_dll_directory(_root)
 
 from ipv8.keyvault.private.libnaclkey import LibNaCLSK
 from ipv8.peer import Peer
