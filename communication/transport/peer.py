@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,4 +19,6 @@ class Peer:
     @classmethod
     def from_ipv8(cls, p: Any) -> "Peer":
         # Adapt an ipv8.Peer to our domain Peer; AgentId == hash(pubkey).
-        ...
+        pubkey = p.public_key.key_to_bin()
+        agent_id_str = hashlib.sha256(pubkey).hexdigest()
+        return cls(agent_id=AgentId(agent_id_str), pubkey=pubkey)
