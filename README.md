@@ -7,7 +7,7 @@ This project is developed as part of the CSE3000 Research Project.
 ## Features
 
 - **P2P Agent Architecture**: Decentralized agent communication using an asynchronous, IPv8-style UDP stack.
-- **Cryptographic Identity**: Agent identities and structured message verification built on wallet-derived keys and deterministic signatures.
+- **Cryptographic Identity**: Agent identities and structured message verification built on the `identity/` package, including IPv8, MLS, and wallet keys.
 - **Append-Only Action Log**: A public action history for post-factum accountability (`security/subq2_accountability/append_log.py`).
 - **Game-Theoretic Reputation**: Reputation scoring and expulsion based on logged malicious behavior (`security/subq2_accountability/reputation.py`).
 - **System-Level Isolation**: Proxy-based isolation intended to pair with sandboxing such as gVisor (`security/subq2_accountability/proxy.py`).
@@ -16,16 +16,26 @@ This project is developed as part of the CSE3000 Research Project.
 
 ```text
 DelftClaw/
-|-- agent.py                      # Core P2PAgent prototype
-|-- hdwallet.py                   # Legacy HD wallet prototype
+|-- agent.py                      # Core P2PAgent prototype using AgentIdentity
 |-- network.py                    # Legacy async UDP endpoint prototype
+|-- test_auth.py                  # Authentication/signature tests
 |-- identity/                     # Agent identity, seed, wallet, and key derivation
-|-- communication/                # Transport, payloads, channels, messaging, and trust-room logic
-|-- trust/                        # Credential issuance, revocation, storage, and formats
+|   |-- agent_identity.py
+|   |-- derivation.py
+|   |-- ipv8_key.py
+|   |-- mls_key.py
+|   |-- seed.py
+|   `-- wallet.py
+|-- communication/                # Transport, payloads, channels, messaging, and trustroom logic
+|   |-- admission/                # Join/admission protocol helpers
+|   |-- channel/                  # Agent channels and inbox
+|   |-- messaging/                # Group state, MLS/ratchet sessions, and envelopes
+|   |-- payload/                  # Application and payment payloads
+|   |-- transport/                # IPv8 runtime and peer model
+|   |-- trustroom/                # Trustroom lifecycle, community, policy, and advertisement
+|   `-- wire/                     # Wire frames and codecs
 |-- replication/                  # Agent replication and child-seed helpers
-|-- integration/                  # RPC, sidecar lifecycle, and OpenClaw tool adapters
 |-- shared/                       # Shared IDs, envelopes, credentials, threats, and errors
-|-- skills/openclaw-trustroom/    # OpenClaw skill package
 |-- security/                     # Security research components
 |   |-- subq1_preventative/       # Baseline ASR and privilege-separation experiments
 |   |   |-- privilege.py
@@ -39,20 +49,21 @@ DelftClaw/
 |   `-- subq3_integrity/          # Log integrity and isolation experiments
 |       |-- integrity.py
 |       `-- testing_integrity.py
+|-- libsodium.dll                 # Local crypto runtime dependency
 |-- requirements.txt
 `-- README.md
 ```
 
 ## P2PAgent Overview
 
-The `P2PAgent` class (`agent.py`) is the current prototype that integrates cryptographic identity, UDP communication, and security mechanisms. It provides:
+The `P2PAgent` class (`agent.py`) is the current prototype that integrates the new `identity/` package, UDP communication, and security mechanisms. It provides:
 
-- **Identity Management**: Uses `HDWallet` to generate and manage cryptographic keys and addresses.
+- **Identity Management**: Uses `AgentIdentity` to derive IPv8, MLS, and wallet keys from one seed.
 - **Communication**: Relies on `UDPEndpoint` for asynchronous peer-to-peer message exchange.
-- **Message Integrity**: Ensures authenticity and integrity of messages using ECDSA signatures.
+- **Message Integrity**: Ensures authenticity and integrity of messages using the IPv8 signing key.
 - **Security Features**:
   - **Append-Only Logs**: Tracks agent actions for accountability.
   - **Isolation Proxy**: Provides a narrow logging interface for sandboxed code.
   - **Reputation Engine**: Manages peer trust and penalizes malicious behavior.
 
-The new package directories under `identity/`, `communication/`, `trust/`, `replication/`, and `integration/` contain the broader DelftClaw infrastructure as it is being split out of the original prototype files.
+The security layer currently uses the IPv8 public key hex as its stable `reporter_id` / `subject_id` until the shared `AgentId` wrapper is fully implemented.
