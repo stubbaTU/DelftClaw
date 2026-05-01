@@ -1,26 +1,26 @@
 """Layer 4: forward-secret group messaging.
 
-`SecureGroupSession` is the contract; both `MLSSession` (Path A, RFC 9420) and
-`RatchetSession` (Path B, HKDF + Ed25519 fallback) implement it. ADR 0003
-decides which becomes the default by 2026-05-08.
+`SecureGroupSession` is the contract; pick a backend at construction time.
+`MockBackend` is the test-only identity-encryption backend. ADR 0003 will
+commit to a real backend (likely an `mls-rs-python` wrapper as Path A) by
+2026-05-08 — see PROJECT_DESIGN §7.9.
 """
 
+from communication.messaging.envelope import PrivateMessage
+from communication.messaging.group_manager import GroupManager
 from communication.messaging.group_state import GroupState
+from communication.messaging.mock_backend import MockBackend, MockBackendFactory
 from communication.messaging.secure_group_session import (
     SecureGroupSession,
     SecureGroupSessionFactory,
 )
-from communication.messaging.ratchet_session import RatchetSession
-from communication.messaging.mls_session import MLSSession
-from communication.messaging.group_manager import GroupManager
-from communication.messaging.envelope import PrivateMessage
 
 __all__ = [
     "GroupState",
     "SecureGroupSession",
     "SecureGroupSessionFactory",
-    "RatchetSession",
-    "MLSSession",
+    "MockBackend",
+    "MockBackendFactory",
     "GroupManager",
     "PrivateMessage",
 ]

@@ -1,37 +1,26 @@
-"""Local cache of VCs an agent holds."""
+"""Local store of Credentials keyed by CredentialId."""
 
 from __future__ import annotations
-
-from pathlib import Path
-from typing import Protocol
 
 from shared.credentials import Credential
 from shared.ids import CredentialId
 
 
-class TrustStore(Protocol):
-    """Strategy for persisting / retrieving VCs the agent has been issued."""
+class TrustStore:
+    """In-memory mapping from CredentialId to Credential.
 
-    def add(self, c: Credential) -> CredentialId:
-        # Persist a credential and return its local CredentialId.
-        ...
+    Production deployments will swap this for a disk- or KMS-backed store; the
+    interface (``put`` / ``get`` / ``__contains__``) stays the same.
+    """
 
-    def get(self, id: CredentialId) -> Credential:
-        # Retrieve a credential by id; raise KeyError if absent.
-        ...
+    def __init__(self) -> None:
+        self._creds: dict[CredentialId, Credential] = {}
 
-    def list(self) -> list[Credential]:
-        # Return every credential currently stored.
-        ...
+    def put(self, vc_id: CredentialId, credential: Credential) -> None:
+        self._creds[vc_id] = credential
 
-    def remove(self, id: CredentialId) -> None:
-        # Delete a credential from the store.
-        ...
+    def get(self, vc_id: CredentialId) -> Credential:
+        return self._creds[vc_id]
 
-
-class LocalFileTrustStore(TrustStore):
-    """Concrete TrustStore: one JSON file per credential under a directory."""
-
-    def __init__(self, root: Path) -> None:
-        # Store the directory under which credential JSON files live; create on first use.
-        ...
+    def __contains__(self, vc_id: CredentialId) -> bool:
+        return vc_id in self._creds

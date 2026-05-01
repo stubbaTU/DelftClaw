@@ -1,27 +1,27 @@
-"""The CredentialFormat plug-in protocol: one implementation per VC format."""
+"""CredentialFormat Protocol — encode/decode/verify a Credential in a specific wire format."""
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol
+from typing import Mapping, Protocol
 
-from shared.credentials import Credential, Presentation, VerifiedCredential
+from shared.credentials import Credential
 
 
 class CredentialFormat(Protocol):
-    """Plug-in shape implemented once per VC format (W3C-JWT, SD-JWT, BBS+)."""
+    """One implementation per supported VC format (``w3c-jwt``, ``sd-jwt``, ``bbs+``).
+
+    Implementations live in `trust/formats/<name>.py` and are registered with
+    ``MultiFormatVerifier`` keyed off ``Credential.format_id``.
+    """
 
     format_id: str
 
     def issue(
         self,
-        signing_key: bytes,
-        issuer_did: str,
+        issuer_pubkey: bytes,
         subject_pubkey: bytes,
-        claims: Mapping[str, Any],
-    ) -> Credential:
-        # Produce a freshly signed Credential in this format.
-        ...
+        claims: Mapping[str, object],
+        signing_key: bytes,
+    ) -> Credential: ...
 
-    def verify(self, presentation: Presentation) -> VerifiedCredential:
-        # Verify issuer signature, holder binding, audience, expiry, schema; raise CredentialInvalid on failure.
-        ...
+    def verify(self, credential: Credential) -> bool: ...
