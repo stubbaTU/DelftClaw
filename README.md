@@ -26,17 +26,23 @@ DelftClaw/
 |   |-- mls_key.py
 |   |-- seed.py
 |   `-- wallet.py
-|-- communication/                # Transport, payloads, channels, messaging, and trustroom logic
+|-- communication/                # Transport, payloads, channels, messaging, replay, and trustroom logic
 |   |-- admission/                # Join/admission protocol helpers
 |   |-- channel/                  # Agent channels and inbox
 |   |-- messaging/                # Group state, MLS/ratchet sessions, and envelopes
 |   |-- payload/                  # Application and payment payloads
+|   |-- replay/                   # Nonce cache and timestamp freshness checks
 |   |-- transport/                # IPv8 runtime and peer model
 |   |-- trustroom/                # Trustroom lifecycle, community, policy, and advertisement
 |   `-- wire/                     # Wire frames and codecs
-|-- replication/                  # Agent replication and child-seed helpers
+|-- replication/                  # Agent replication, provisioning, funding, and child-seed helpers
+|   |-- child_seed.py
+|   |-- funding.py
+|   |-- provisioning.py
+|   `-- replica.py
 |-- shared/                       # Shared IDs, envelopes, credentials, threats, and errors
 |-- security/                     # Security research components
+|   |-- contracts.py              # Shared security protocol contracts and schemas
 |   |-- subq1_preventative/       # Baseline ASR and privilege-separation experiments
 |   |   |-- privilege.py
 |   |   `-- testing_privilege.py
@@ -49,6 +55,11 @@ DelftClaw/
 |   `-- subq3_integrity/          # Log integrity and isolation experiments
 |       |-- integrity.py
 |       `-- testing_integrity.py
+|-- trust/                        # Trust stores, revocation, and wire-format helpers
+|   |-- formats/
+|   |   `-- base.py
+|   |-- revocation.py
+|   `-- store.py
 |-- libsodium.dll                 # Local crypto runtime dependency
 |-- requirements.txt
 `-- README.md
