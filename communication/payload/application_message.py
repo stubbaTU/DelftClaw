@@ -2,13 +2,51 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+import msgpack
 
 from shared.envelopes import ApplicationMessage, BTCPayload
 from shared.ids import AgentId, RoomId
 
 if TYPE_CHECKING:
     from communication.channel.inbox import Inbox
+
+
+def pack_application_message(msg: ApplicationMessage) -> bytes:
+    """Canonical msgpack bytes — the input that SecureGroupSession.encrypt receives."""
+    payment_tuple = (
+        (msg.payment.amount_sats, msg.payment.recipient_btc_pubkey, msg.payment.signed_tx)
+        if msg.payment is not None
+        else None
+    )
+    return msgpack.packb(
+        (msg.text, payment_tuple, msg.intent_attestation, msg.sent_at.isoformat()),
+        use_bin_type=True,
+    )
+
+
+def unpack_application_message(blob: bytes) -> ApplicationMessage:
+    unpacked = msgpack.unpackb(blob, raw=False, use_list=False)
+    if not isinstance(unpacked, tuple) or len(unpacked) != 4:
+        raise ValueError("ApplicationMessage: malformed payload")
+    text, payment_raw, intent_attestation, sent_at_iso = unpacked
+    payment = (
+        BTCPayload(
+            amount_sats=int(payment_raw[0]),
+            recipient_btc_pubkey=bytes(payment_raw[1]),
+            signed_tx=bytes(payment_raw[2]),
+        )
+        if payment_raw is not None
+        else None
+    )
+    return ApplicationMessage(
+        text=text,
+        payment=payment,
+        intent_attestation=bytes(intent_attestation) if intent_attestation is not None else None,
+        sent_at=datetime.fromisoformat(sent_at_iso).astimezone(timezone.utc),
+    )
 
 
 class MessageBuilder:
