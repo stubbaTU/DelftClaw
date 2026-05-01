@@ -23,6 +23,10 @@ class EpochMismatch(CommunicationError):
     """Layer 4: the peer is in a different MLS / ratchet epoch."""
 
 
+class ReplayDetected(CommunicationError):
+    """Layer 2: a frame's nonce was already seen, or its timestamp is outside the skew window."""
+
+
 class PayloadInvalid(CommunicationError):
     """Layer 5 deserialisation or schema validation failed."""
 

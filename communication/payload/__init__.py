@@ -3,7 +3,9 @@
 from communication.payload.application_message import MessageBuilder, PayloadRouter
 from communication.payload.bitcoin_payment import (
     PaymentBuilder,
+    PaymentSigner,
     PaymentVerifier,
+    SignedPaymentPayload,
     UTXOProvider,
 )
 from communication.payload.broadcaster import (
@@ -16,7 +18,9 @@ __all__ = [
     "MessageBuilder",
     "PayloadRouter",
     "PaymentBuilder",
+    "PaymentSigner",
     "PaymentVerifier",
+    "SignedPaymentPayload",
     "UTXOProvider",
     "Broadcaster",
     "TestnetBroadcaster",

@@ -17,5 +17,11 @@ class Peer:
 
     @classmethod
     def from_ipv8(cls, p: Any) -> "Peer":
-        # Adapt an ipv8.Peer to our domain Peer; AgentId == hash(pubkey).
-        ...
+        """Adapt an ``ipv8.peer.Peer`` to our domain Peer.
+
+        The 32-byte raw Ed25519 verify key (``public_key.veri.vk`` for LibNaCLPK)
+        is the canonical AgentId backing.
+        """
+        pub = p.public_key
+        raw = pub.veri.vk if hasattr(pub, "veri") else pub.key_to_bin()[-32:]
+        return cls(agent_id=AgentId.from_pubkey(raw), pubkey=raw)

@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from communication.payload.broadcaster import Broadcaster
-from communication.transport.ipv8_runtime import IPv8Runtime
-from communication.trustroom.advertisement import RoomAdvertisement
-from communication.trustroom.community import TrustroomCommunity
-from communication.trustroom.policy import AdmissionPolicy
-from identity.agent_identity import AgentIdentity
 from shared.envelopes import BTCPayload
 from shared.ids import AgentId, CredentialId, MessageId, RoomId, Txid
-from trust.store import TrustStore
+from shared.logging import get_logger
+
+_log = get_logger("agent_channel")
 
 if TYPE_CHECKING:
     from communication.channel.inbox import Inbox, IncomingMessage
+    from communication.payload.broadcaster import Broadcaster
+    from communication.transport.ipv8_runtime import IPv8Runtime
+    from communication.trustroom.advertisement import RoomAdvertisement
+    from communication.trustroom.community import TrustroomCommunity
+    from communication.trustroom.policy import AdmissionPolicy
+    from identity.agent_identity import AgentIdentity
+    from trust.store import TrustStore
 
 
 class AgentChannel:
@@ -27,11 +30,11 @@ class AgentChannel:
 
     def __init__(
         self,
-        identity: AgentIdentity,
-        runtime: IPv8Runtime,
-        community: TrustroomCommunity,
-        trust_store: TrustStore,
-        broadcaster: Broadcaster,
+        identity: "AgentIdentity",
+        runtime: "IPv8Runtime",
+        community: "TrustroomCommunity",
+        trust_store: "TrustStore",
+        broadcaster: "Broadcaster",
         inbox: "Inbox",
     ) -> None:
         # Store all dependencies; do not start the runtime here.
@@ -39,20 +42,23 @@ class AgentChannel:
 
     async def start(self) -> None:
         # Delegate to runtime.start(); register the community; spin up advertisement loop.
+        _log.info("channel_start")
         ...
 
     async def stop(self) -> None:
         # Tear down in reverse order; close the inbox last.
+        _log.info("channel_stop")
         ...
 
     # --- room operations --------------------------------------------------
 
-    def create_room(self, policy: AdmissionPolicy) -> RoomId:
+    def create_room(self, policy: "AdmissionPolicy") -> RoomId:
         # Delegate to community.create_room and update the local RoomRegistry.
         ...
 
     async def join_room(self, room_id: RoomId, vc_id: CredentialId) -> None:
         # Build a Presentation via CredentialPresenter, call community.join_room, await response.
+        _log.info("join_attempt", room_id=str(room_id), vc_id=str(vc_id))
         ...
 
     def leave_room(self, room_id: RoomId) -> None:
@@ -67,7 +73,7 @@ class AgentChannel:
         # Delegate to community.members.
         ...
 
-    def advertisements(self) -> list[RoomAdvertisement]:
+    def advertisements(self) -> list["RoomAdvertisement"]:
         # Snapshot of currently-known room advertisements.
         ...
 
@@ -80,6 +86,12 @@ class AgentChannel:
         payment: BTCPayload | None = None,
     ) -> MessageId:
         # Build ApplicationMessage via MessageBuilder, hand to community.send.
+        _log.info(
+            "send_attempt",
+            room_id=str(room_id),
+            text_len=len(text),
+            has_payment=payment is not None,
+        )
         ...
 
     async def recv(self, timeout: float | None = None) -> "IncomingMessage":

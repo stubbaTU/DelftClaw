@@ -2,49 +2,75 @@
 
 from __future__ import annotations
 
+import base64
+import secrets
 
-class AgentId:
+
+class _RawBytes:
+    __slots__ = ("_raw",)
+    _SIZE: int = 0
+
+    def __init__(self, raw: bytes) -> None:
+        if len(raw) != self._SIZE:
+            raise ValueError(f"{type(self).__name__} expects {self._SIZE} bytes, got {len(raw)}")
+        object.__setattr__(self, "_raw", bytes(raw))
+
+    def to_bytes(self) -> bytes:
+        return self._raw
+
+    def __bytes__(self) -> bytes:
+        return self._raw
+
+    def __eq__(self, other: object) -> bool:
+        return type(self) is type(other) and self._raw == other._raw  # type: ignore[attr-defined]
+
+    def __hash__(self) -> int:
+        return hash((type(self).__name__, self._raw))
+
+
+class AgentId(_RawBytes):
     """Typed wrapper around a peer's long-term Ed25519 public key."""
+    _SIZE = 32
 
     @classmethod
     def from_pubkey(cls, pubkey: bytes) -> "AgentId":
-        # Build an AgentId from raw public key bytes; reject wrong-length input.
-        ...
+        return cls(pubkey)
 
     def __str__(self) -> str:
-        # Render as a base32 short id for human-readable logs.
-        ...
-
-    def to_bytes(self) -> bytes:
-        # Canonical byte serialisation used in wire frames.
-        ...
+        return base64.b32encode(self._raw[:10]).decode("ascii").rstrip("=").lower()
 
 
-class RoomId:
+class RoomId(_RawBytes):
     """128-bit opaque identifier for a Trustroom."""
+    _SIZE = 16
 
     @classmethod
     def fresh(cls) -> "RoomId":
-        # Generate a cryptographically random RoomId; called by the room creator.
-        ...
+        return cls(secrets.token_bytes(cls._SIZE))
+
+    def __str__(self) -> str:
+        return self._raw.hex()
 
 
-class MessageId:
+class MessageId(_RawBytes):
     """128-bit per-message id, locally unique to a sending agent."""
+    _SIZE = 16
 
     @classmethod
     def fresh(cls) -> "MessageId":
-        # Generate a fresh random MessageId.
-        ...
+        return cls(secrets.token_bytes(cls._SIZE))
+
+    def __str__(self) -> str:
+        return self._raw.hex()
 
 
-class Nonce:
+class Nonce(_RawBytes):
     """96-bit anti-replay nonce used in admission and AEAD."""
+    _SIZE = 12
 
     @classmethod
     def fresh(cls) -> "Nonce":
-        # Generate a fresh random Nonce.
-        ...
+        return cls(secrets.token_bytes(cls._SIZE))
 
 
 class Epoch(int):

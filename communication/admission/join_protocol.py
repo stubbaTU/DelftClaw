@@ -11,6 +11,7 @@ from communication.trustroom.policy import (
     AdmissionPolicy,
 )
 from shared.credentials import Presentation
+from shared.errors import CredentialInvalid
 from shared.ids import RoomId
 
 
@@ -22,16 +23,24 @@ class AdmissionGate:
         verifier: CredentialVerifier,
         policy: AdmissionPolicy,
     ) -> None:
-        # Hold verifier and policy; both are pure / dependency-injected.
-        ...
+        self._verifier = verifier
+        self._policy = policy
 
     def evaluate(
         self,
         presentation: Presentation,
         ctx: AdmissionContext,
     ) -> AdmissionDecision:
-        # Run verifier.verify(...) → policy.evaluate(...); short-circuit on CredentialInvalid.
-        ...
+        try:
+            verified = self._verifier.verify(presentation)
+        except CredentialInvalid as e:
+            return AdmissionDecision(admitted=False, reason=f"credential invalid: {e}")
+        if verified.revocation_status != "fresh":
+            return AdmissionDecision(
+                admitted=False,
+                reason=f"revocation status is {verified.revocation_status}",
+            )
+        return self._policy.evaluate(verified, ctx)
 
 
 @dataclass(frozen=True)
