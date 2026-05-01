@@ -25,6 +25,7 @@ class P2PAgent:
         self.identity = AgentIdentity.from_seed(master_seed)
         self.wallet = self.identity.wallet
         self.ipv8 = self.identity.ipv8
+        self.security_id = self.identity.ipv8.pubkey.hex()
 
         self.endpoint = UDPEndpoint(host=host, port=port)
         self.endpoint.add_message_callback(self.on_message)
@@ -33,11 +34,11 @@ class P2PAgent:
         self.address = self.wallet.address()
         self.public_key_hex = self.wallet.pubkey.hex()
 
-        print(f"Agent starting with address: {self.address} and AgentId: {self.identity.agent_id}")
+        print(f"Agent starting with address: {self.address} and security_id: {self.security_id}")
 
         # Security Components
         self.host_log = AppendOnlyLog(log_path=log_path or f"agent_{port}_actions.log")
-        self.proxy = IsolationProxy(agent_id=self.address, logger=self.host_log)
+        self.proxy = IsolationProxy(agent_id=self.security_id, logger=self.host_log)
         self.reputation = ReputationEngine(log_path=self.host_log.log_path)
 
     async def start(self):
@@ -54,7 +55,7 @@ class P2PAgent:
 
         payload = {
             "sender": self.address,
-            "agent_id": self.identity.agent_id,
+            "agent_id": self.security_id,
             "pubkey": self.public_key_hex,
             "ipv8_pubkey": self.identity.ipv8.pubkey.hex(),
             "signature": signature,
@@ -81,6 +82,7 @@ class P2PAgent:
         try:
             payload = json.loads(message.decode('utf-8'))
             sender = payload.get("sender")
+            sender_id = payload.get("agent_id") or sender
             pubkey = payload.get("pubkey")
             ipv8_pubkey = payload.get("ipv8_pubkey")
             sig = payload.get("signature")
@@ -95,34 +97,34 @@ class P2PAgent:
 
             # Reputation Check: drop packet if sender is banned
             self.reputation.scan_log(self.endpoint)
-            if self.reputation.is_banned(sender):
-                print(f"[{self.address}] Packet dropped. Sender {sender} is banned.")
+            if self.reputation.is_banned(sender_id):
+                print(f"[{self.address}] Packet dropped. Sender {sender_id} is banned.")
                 return
 
             # 1. Handle incoming network-wide Log Broadcasts from other peers
             if action == "log_broadcast":
                 entry = data.get("entry", {})
-                if entry.get("reporter_id") != sender:
+                if entry.get("reporter_id") != sender_id:
                     self.proxy.report_violation(
-                        subject_id=sender,
+                        subject_id=sender_id,
                         action="log_spoof_attempt",
                         details={"claimed_reporter": entry.get("reporter_id")}
                     )
-                    print(f"[{self.address}] Rejected spoofed log broadcast from {sender}")
+                    print(f"[{self.address}] Rejected spoofed log broadcast from {sender_id}")
                     return
 
                 self.host_log.append_event(
-                    reporter_id=sender,
-                    subject_id=entry.get("subject_id", sender),
+                    reporter_id=sender_id,
+                    subject_id=entry.get("subject_id", sender_id),
                     action=entry.get("action", "unknown"),
                     details=entry.get("details", {}),
                     severity=entry.get("severity", 0),
                     evidence={
                         "remote_entry_hash": entry.get("entry_hash"),
-                        "received_from": sender,
+                        "received_from": sender_id,
                     }
                 )
-                print(f"[{self.address}] Synced public log from peer {sender}")
+                print(f"[{self.address}] Synced public log from peer {sender_id}")
                 return
 
             # 2. Handle mock tool calls / agent instruction requests
@@ -135,12 +137,12 @@ class P2PAgent:
                 if tool_name == "unauthorized_tool_use":
                     print(f"[{self.address}] SEC-BLOCK: Refusing to run unauthorized tool!")
                     self.proxy.report_violation(
-                        subject_id=sender,
+                        subject_id=sender_id,
                         action="unauthorized_tool_request",
-                        details={"requested_by": sender, "tool": tool_name}
+                        details={"requested_by": sender_id, "tool": tool_name}
                     )
                 else:
-                    self.proxy.log_action("tool_execution_success", {"requested_by": sender, "tool": tool_name})
+                    self.proxy.log_action("tool_execution_success", {"requested_by": sender_id, "tool": tool_name})
 
                 # Broadcast our newly logged action to the network so others update their public reputation logs
                 self.broadcast_log()

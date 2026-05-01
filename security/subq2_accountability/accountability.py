@@ -1,32 +1,8 @@
-from dataclasses import dataclass
 from typing import Any
 
+from security.contracts import AccountabilityMetrics
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
-
-
-@dataclass
-class AccountabilityMetrics:
-    """
-    Quantitative output for the harm-until-expulsion experiment.
-
-    unauthorized_executions is the blast-radius count: how many harmful actions
-    actually happened before the accountability system stopped the subject.
-    """
-    subject_id: str
-    accountability_enabled: bool
-    attempted_actions: int
-    unauthorized_executions: int
-    blocked_actions: int
-    final_score: int
-    expelled: bool
-    expulsion_step: int | None
-    integrity_ok: bool
-    integrity_errors: list[str]
-
-    @property
-    def blast_radius(self) -> int:
-        return self.unauthorized_executions
 
 
 class AccountabilityMonitor:
