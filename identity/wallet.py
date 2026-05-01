@@ -117,3 +117,28 @@ class Wallet:
             return True
         except Exception:
             return False
+
+    def get_private_key(self):
+        """Get the private key in WIF format."""
+        return self._wallet.get_key().wif
+
+    def get_balance(self, as_string=False):
+        """
+        Get wallet balance by scanning the blockchain.
+        
+        :param as_string: Return as string with BTC suffix if True
+        :return: Balance in satoshis (int) or formatted string
+        """
+        self.wallet.scan()
+        balance = self.wallet.balance()
+        
+        if as_string:
+            return f"{balance / 100000000:.8f} BTC"
+        return balance
+
+    def get_utxos(self):
+        """Get unspent transaction outputs."""
+        self.wallet.scan()
+        return self.wallet.utxos()
+
+
