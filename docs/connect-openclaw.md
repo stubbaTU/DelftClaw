@@ -6,10 +6,10 @@ other frontend should call the same local HTTP API through OpenClaw tools.
 ## 1. Start DelftClaw Gateway
 
 ```powershell
-python -m security.integration.gateway --env configs/yourName.env
+python -m security.integration.gateway --env configs/yourName.local.env
 ```
 
-For everyone, copy `configs/yourName.env` to another local file and use
+For everyone, copy `configs/yourName.local.env` to another local file and use
 different ports and agent ids.
 
 ## 2. Add OpenClaw Tools
