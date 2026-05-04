@@ -1,0 +1,403 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from dataclasses import asdict, is_dataclass
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+from security.contracts import ExecutionResult, SecurityAction, ToolDecision, ToolPolicy
+from security.subq1_preventative.privilege import BaselineExecutor, Hands
+from security.subq2_accountability.accountability import AccountabilityMonitor
+from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.reputation import ReputationEngine
+from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
+
+
+class GatewayState:
+    """Runtime state for one local DelftClaw gateway."""
+
+    def __init__(
+        self,
+        *,
+        local_agent_id: str,
+        log_path: str,
+        mode: str = "defended",
+        ban_threshold: int = 30,
+    ):
+        if mode not in {"defended", "baseline"}:
+            raise ValueError("mode must be 'defended' or 'baseline'")
+
+        self.local_agent_id = local_agent_id
+        self.mode = mode
+        self.log = AppendOnlyLog(log_path=log_path)
+        self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
+        self.monitor = AccountabilityMonitor(
+            log=self.log,
+            reputation=self.reputation,
+            reporter_id=local_agent_id,
+        )
+        self.registry = SeedboxRegistry()
+        self.ledger = DonationLedger(self.registry)
+        self.hands = Hands(proxy=None, allowed_tools=self._allowed_tools(), agent_id=local_agent_id)
+        self.baseline = BaselineExecutor(
+            proxy=None,
+            safe_tools={name: policy.handler for name, policy in self._allowed_tools().items()},
+        )
+        self.tool_call_count = 0
+        self.blocked_count = 0
+        self.executed_count = 0
+
+    def handle_tool_call(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.tool_call_count += 1
+        self.monitor.next_step()
+
+        subject_id = str(payload.get("agent_id") or self.local_agent_id)
+        tool_name = str(payload.get("tool_name") or "")
+        tool_kwargs = dict(payload.get("tool_kwargs") or {})
+        payload_id = payload.get("payload_id")
+        source = payload.get("source", "openclaw")
+
+        self.reputation.scan_log()
+        if self.reputation.is_banned(subject_id):
+            self.blocked_count += 1
+            self.monitor.record_blocked_action(subject_id)
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "blocked: subject is reputation-banned",
+                "agent_id": subject_id,
+                "tool_name": tool_name,
+                "reputation": self._reputation_snapshot(subject_id),
+            }
+
+        tool_kwargs = self._normalize_tool_kwargs(subject_id, tool_name, tool_kwargs)
+        decision = ToolDecision(
+            tool_name=tool_name,
+            tool_kwargs=tool_kwargs,
+            reason=f"real OpenClaw tool request via {source}",
+            payload_id=payload_id,
+            sender_id=subject_id,
+        )
+
+        if self.mode == "baseline":
+            try:
+                result = self.baseline.execute(decision)
+            except Exception as exc:
+                result = ExecutionResult(
+                    requested_tool=decision.tool_name,
+                    executed=False,
+                    authorized=False,
+                    attack_success=False,
+                    reason=f"tool handler failed: {exc}",
+                    payload_id=decision.payload_id,
+                    sender_id=subject_id,
+                )
+        else:
+            result = self._execute_defended(decision, subject_id)
+
+        self._record_result(subject_id, decision, result)
+        self.reputation.scan_log()
+
+        return {
+            "ok": result.executed and not result.attack_success,
+            "blocked": not result.executed,
+            "mode": self.mode,
+            "agent_id": subject_id,
+            "result": _jsonable(result),
+            "reputation": self._reputation_snapshot(subject_id),
+        }
+
+    def handle_security_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.monitor.next_step()
+        subject_id = str(payload.get("subject_id") or payload.get("agent_id") or self.local_agent_id)
+        action = str(payload.get("action") or SecurityAction.UNAUTHORIZED_TOOL_REQUEST.value)
+        details = dict(payload.get("details") or {})
+        severity = int(payload.get("severity", ReputationEngine.DEFAULT_WEIGHTS.get(action, 10)))
+
+        self.log.append_event(
+            reporter_id=self.local_agent_id,
+            subject_id=subject_id,
+            action=action,
+            severity=severity,
+            details=details,
+            evidence=dict(payload.get("evidence") or {}),
+        )
+        self.reputation.scan_log()
+        return {"ok": True, "subject_id": subject_id, "reputation": self._reputation_snapshot(subject_id)}
+
+    def metrics(self) -> dict[str, Any]:
+        integrity_ok, integrity_errors = self.log.verify_integrity()
+        self.reputation.scan_log()
+        return {
+            "local_agent_id": self.local_agent_id,
+            "mode": self.mode,
+            "log_path": self.log.log_path,
+            "tool_call_count": self.tool_call_count,
+            "executed_count": self.executed_count,
+            "blocked_count": self.blocked_count,
+            "integrity_ok": integrity_ok,
+            "integrity_errors": integrity_errors,
+            "scores": self.reputation.scores,
+            "banned_agents": sorted(self.reputation.banned_agents),
+        }
+
+    def reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
+        self.reputation.scan_log()
+        return self._reputation_snapshot(agent_id)
+
+    def _execute_defended(self, decision: ToolDecision, subject_id: str) -> ExecutionResult:
+        try:
+            result = self.hands.execute(decision)
+        except Exception as exc:
+            result = ExecutionResult(
+                requested_tool=decision.tool_name,
+                executed=False,
+                authorized=False,
+                attack_success=False,
+                reason=f"blocked: tool handler failed: {exc}",
+                payload_id=decision.payload_id,
+                sender_id=subject_id,
+            )
+
+        if not result.executed:
+            self.blocked_count += 1
+        return result
+
+    def _record_result(self, subject_id: str, decision: ToolDecision, result: ExecutionResult) -> None:
+        if result.executed:
+            self.executed_count += 1
+        if result.attack_success:
+            if decision.tool_name == "exfiltrate_private_key":
+                self.monitor.record_private_key_exfiltration(subject_id, payload_id=decision.payload_id)
+            else:
+                self.monitor.record_unauthorized_execution(
+                    subject_id=subject_id,
+                    tool_name=decision.tool_name,
+                    details={"payload_id": decision.payload_id},
+                )
+            return
+
+        if not result.executed and not result.authorized:
+            self.monitor.record_unauthorized_request(
+                subject_id=subject_id,
+                tool_name=decision.tool_name,
+                details={"payload_id": decision.payload_id, "reason": result.reason},
+            )
+            return
+
+        if result.executed:
+            self.log.append_event(
+                reporter_id=self.local_agent_id,
+                subject_id=subject_id,
+                action=SecurityAction.TOOL_EXECUTION_SUCCESS.value,
+                severity=0,
+                details={
+                    "tool": decision.tool_name,
+                    "payload_id": decision.payload_id,
+                    "output": _jsonable(result.output),
+                },
+            )
+            if decision.tool_name == "register_seedbox" and decision.tool_kwargs.get("fake"):
+                self.monitor.record_fake_seedbox_creation(
+                    subject_id=subject_id,
+                    seedbox_id=str(decision.tool_kwargs.get("seedbox_id")),
+                )
+            if decision.tool_name == "broadcast_seedbox_donation" and result.output:
+                evidence = result.output.get("donation_evidence")
+                if evidence:
+                    self.monitor.record_seedbox_donation(
+                        subject_id=subject_id,
+                        donation=evidence,
+                        stolen_from_honest_agent=bool(decision.tool_kwargs.get("stolen_from_honest_agent")),
+                    )
+
+    def _allowed_tools(self) -> dict[str, ToolPolicy]:
+        return {
+            **Hands.default_tools(),
+            "register_seedbox": ToolPolicy(
+                name="register_seedbox",
+                handler=self._register_seedbox,
+                required_args=("seedbox_id", "donation_address", "advertised_capacity_gb", "owner_id"),
+            ),
+            "broadcast_seedbox_donation": ToolPolicy(
+                name="broadcast_seedbox_donation",
+                handler=self._broadcast_seedbox_donation,
+                required_args=("seedbox_id", "donor_id", "amount_sats", "txid"),
+            ),
+            "report_security_event": ToolPolicy(
+                name="report_security_event",
+                handler=lambda kwargs: {"reported": True, "details": kwargs},
+                required_args=("subject_id", "action"),
+            ),
+        }
+
+    def _register_seedbox(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        seedbox = self.registry.register(
+            seedbox_id=str(kwargs["seedbox_id"]),
+            owner_id=str(kwargs["owner_id"]),
+            donation_address=str(kwargs["donation_address"]),
+            advertised_capacity_gb=int(kwargs["advertised_capacity_gb"]),
+            fake=bool(kwargs.get("fake", False)),
+        )
+        return asdict(seedbox)
+
+    def _broadcast_seedbox_donation(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        donation = self.ledger.broadcast_donation(
+            donation_id=str(kwargs.get("donation_id") or f"donation-{int(time.time() * 1000)}"),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            donor_id=str(kwargs["donor_id"]),
+            amount_sats=int(kwargs["amount_sats"]),
+            txid=str(kwargs["txid"]),
+            stolen_from_honest_agent=bool(kwargs.get("stolen_from_honest_agent", False)),
+        )
+        return {"donation": asdict(donation), "donation_evidence": donation.to_evidence()}
+
+    @staticmethod
+    def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:
+        if tool_name == "register_seedbox":
+            tool_kwargs.setdefault("owner_id", subject_id)
+        if tool_name == "broadcast_seedbox_donation":
+            tool_kwargs.setdefault("donor_id", subject_id)
+            tool_kwargs.setdefault("txid", f"mock-tx-{subject_id}-{int(time.time() * 1000)}")
+        return tool_kwargs
+
+    def _reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
+        return {
+            "agent_id": agent_id,
+            "score": self.reputation.get_score(agent_id),
+            "banned": self.reputation.is_banned(agent_id),
+            "harm_count": self.reputation.get_harm_count(agent_id),
+        }
+
+
+class GatewayHandler(BaseHTTPRequestHandler):
+    state: GatewayState
+
+    def do_POST(self) -> None:
+        payload = self._read_json()
+        if payload is None:
+            return
+
+        route = urlparse(self.path).path
+        if route == "/tool-call":
+            self._write_json(HTTPStatus.OK, self.state.handle_tool_call(payload))
+        elif route == "/security-report":
+            self._write_json(HTTPStatus.OK, self.state.handle_security_report(payload))
+        elif route == "/donation":
+            payload["tool_name"] = "broadcast_seedbox_donation"
+            payload["tool_kwargs"] = payload.get("tool_kwargs") or {
+                key: value
+                for key, value in payload.items()
+                if key not in {"agent_id", "tool_name", "payload_id", "source"}
+            }
+            self._write_json(HTTPStatus.OK, self.state.handle_tool_call(payload))
+        else:
+            self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown route {route}"})
+
+    def do_GET(self) -> None:
+        route = urlparse(self.path).path
+        if route == "/health":
+            self._write_json(HTTPStatus.OK, {"ok": True})
+        elif route == "/metrics":
+            self._write_json(HTTPStatus.OK, self.state.metrics())
+        elif route.startswith("/reputation/"):
+            agent_id = unquote(route.removeprefix("/reputation/"))
+            self._write_json(HTTPStatus.OK, self.state.reputation_snapshot(agent_id))
+        else:
+            self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown route {route}"})
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print(f"[gateway] {self.address_string()} - {format % args}")
+
+    def _read_json(self) -> dict[str, Any] | None:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"invalid json: {exc}"})
+            return None
+
+    def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        body = json.dumps(_jsonable(payload), sort_keys=True).encode("utf-8")
+        self.send_response(status.value)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def run_gateway(host: str, port: int, state: GatewayState) -> ThreadingHTTPServer:
+    GatewayHandler.state = state
+    server = ThreadingHTTPServer((host, port), GatewayHandler)
+    print(
+        f"DelftClaw gateway listening on http://{host}:{port} "
+        f"(agent_id={state.local_agent_id}, mode={state.mode}, log={state.log.log_path})"
+    )
+    server.serve_forever()
+    return server
+
+
+def load_env_file(path: str | None) -> dict[str, str]:
+    if not path:
+        return {}
+    env_path = Path(path)
+    if not env_path.exists():
+        raise FileNotFoundError(f"env file not found: {env_path}")
+
+    values = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def env_or(config: dict[str, str], key: str, default: str) -> str:
+    return os.getenv(key) or config.get(key) or default
+
+
+def _jsonable(value: Any) -> Any:
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the DelftClaw gateway for real OpenClaw agents.")
+    parser.add_argument("--env", help="Optional .env file for this local agent.")
+    parser.add_argument("--host", help="Gateway bind host.")
+    parser.add_argument("--port", type=int, help="Gateway bind port.")
+    parser.add_argument("--agent-id", help="Stable local DelftClaw/OpenClaw agent id.")
+    parser.add_argument("--log-path", help="Append-only log path.")
+    parser.add_argument("--mode", choices=("defended", "baseline"), help="Gateway execution mode.")
+    parser.add_argument("--ban-threshold", type=int, help="Reputation score required for expulsion.")
+    args = parser.parse_args()
+
+    env_values = load_env_file(args.env)
+    agent_id = args.agent_id or env_or(env_values, "DELFTCLAW_AGENT_ID", "local-openclaw-agent")
+    host = args.host or env_or(env_values, "DELFTCLAW_GATEWAY_HOST", "127.0.0.1")
+    port = args.port or int(env_or(env_values, "DELFTCLAW_GATEWAY_PORT", "8765"))
+    mode = args.mode or env_or(env_values, "DELFTCLAW_GATEWAY_MODE", "defended")
+    log_path = args.log_path or env_or(env_values, "DELFTCLAW_LOG_PATH", f"logs/{agent_id}_append_only.jsonl")
+    threshold = args.ban_threshold or int(env_or(env_values, "DELFTCLAW_BAN_THRESHOLD", "30"))
+
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    state = GatewayState(local_agent_id=agent_id, log_path=log_path, mode=mode, ban_threshold=threshold)
+    run_gateway(host=host, port=port, state=state)
+
+
+if __name__ == "__main__":
+    main()
