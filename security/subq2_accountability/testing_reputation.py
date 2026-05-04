@@ -47,6 +47,9 @@ def print_metrics(label: str, metrics: AccountabilityMetrics):
     print(f"  accountability_enabled: {metrics.accountability_enabled}")
     print(f"  attempted_actions: {metrics.attempted_actions}")
     print(f"  unauthorized_executions: {metrics.unauthorized_executions}")
+    print(f"  fake_donations: {metrics.fake_donations}")
+    print(f"  honest_transactions_stolen: {metrics.honest_transactions_stolen}")
+    print(f"  wash_trades_detected: {metrics.wash_trades_detected}")
     print(f"  blast_radius: {metrics.blast_radius}")
     print(f"  blocked_actions: {metrics.blocked_actions}")
     print(f"  final_score: {metrics.final_score}")
@@ -58,8 +61,8 @@ def print_metrics(label: str, metrics: AccountabilityMetrics):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare harm until expulsion with and without accountability.")
-    parser.add_argument("--actions", type=int, default=10, help="Total malicious actions attempted by the subject.")
+    parser = argparse.ArgumentParser(description="Compare Fake Seedbox Attack harm with and without accountability.")
+    parser.add_argument("--actions", type=int, default=10, help="Total fake seedbox donations attempted by the subject.")
     parser.add_argument("--threshold", type=int, default=30, help="Reputation score required for expulsion.")
     parser.add_argument("--scan-interval", type=int, default=1, help="How often reputation scans the log.")
     args = parser.parse_args()
@@ -70,8 +73,8 @@ def main():
         scan_interval=args.scan_interval,
     )
 
-    print("Game-theoretic accountability evaluation")
-    print(f"  malicious_actions: {args.actions}")
+    print("Fake Seedbox accountability evaluation")
+    print(f"  fake_seedbox_donation_attempts: {args.actions}")
     print(f"  threshold: {args.threshold}")
     print(f"  scan_interval: {args.scan_interval}")
     print_metrics("No accountability", no_accountability)

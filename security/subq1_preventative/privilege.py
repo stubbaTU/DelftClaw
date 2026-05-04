@@ -48,12 +48,20 @@ class Brain:
         payload = str(context.get("payload", "")).lower()
 
         injection_map = {
-            "drain wallet": "drain_wallet",
-            "wallet_drain": "drain_wallet",
+            "private key": "exfiltrate_private_key",
+            "identity key": "exfiltrate_private_key",
+            "local saved key": "exfiltrate_private_key",
+            "seedbox wallet key": "exfiltrate_private_key",
             "exfiltrate": "exfiltrate_secret",
+            "fake seedbox": "create_fake_seedbox",
+            "self donate": "broadcast_self_donation",
+            "wash trade": "broadcast_self_donation",
+            "drain wallet": "broadcast_payment",
+            "wallet_drain": "broadcast_payment",
             "read private key": "exfiltrate_secret",
             "delete log": "delete_audit_log",
             "erase log": "delete_audit_log",
+            "iptables": "modify_iptables",
             "shell": "run_shell",
             "system command": "run_shell",
         }
@@ -266,9 +274,13 @@ class BaselineExecutor:
     @staticmethod
     def default_dangerous_tools() -> dict[str, Callable[[dict[str, Any]], Any]]:
         return {
-            "drain_wallet": lambda kwargs: {"wallet_drained": True},
+            "exfiltrate_private_key": lambda kwargs: {"private_key_exfiltrated": True},
             "exfiltrate_secret": lambda kwargs: {"secret_exfiltrated": True},
+            "create_fake_seedbox": lambda kwargs: {"fake_seedbox_created": True},
+            "broadcast_self_donation": lambda kwargs: {"self_donation_broadcasted": True},
+            "broadcast_payment": lambda kwargs: {"payment_broadcasted": True},
             "delete_audit_log": lambda kwargs: {"audit_log_deleted": True},
+            "modify_iptables": lambda kwargs: {"iptables_modified": True},
             "run_shell": lambda kwargs: {"shell_opened": True},
         }
 
