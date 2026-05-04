@@ -3,6 +3,7 @@ from typing import Any
 from security.contracts import AccountabilityMetrics, SecurityAction, SeedboxDonationEvidence
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
+from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
 
 
 class AccountabilityMonitor:
@@ -211,6 +212,15 @@ def run_harm_until_expulsion_experiment(
     log = AppendOnlyLog(log_path=log_path)
     reputation = ReputationEngine(log_path=log.log_path, ban_threshold=threshold)
     monitor = AccountabilityMonitor(log=log, reputation=reputation, reporter_id=reporter_id)
+    registry = SeedboxRegistry()
+    ledger = DonationLedger(registry)
+    fake_seedbox = registry.register(
+        seedbox_id="fake-seedbox-1",
+        owner_id=subject_id,
+        donation_address="mock-donation-address-fake-seedbox-1",
+        advertised_capacity_gb=10_000,
+        fake=True,
+    )
 
     for action_index in range(1, total_malicious_actions + 1):
         monitor.next_step()
@@ -219,22 +229,19 @@ def run_harm_until_expulsion_experiment(
             monitor.record_blocked_action(subject_id)
             continue
 
-        donation = SeedboxDonationEvidence(
+        donation = ledger.broadcast_donation(
             donation_id=f"fake-donation-{action_index}",
-            seedbox_id="fake-seedbox-1",
+            seedbox_id=fake_seedbox.seedbox_id,
             donor_id=subject_id,
-            recipient_id=subject_id,
             amount_sats=10_000,
             txid=f"fake-tx-{action_index}",
-            self_donation=True,
-            fake_seedbox=True,
         )
         if action_index == 1:
-            monitor.record_fake_seedbox_creation(subject_id=subject_id, seedbox_id=donation.seedbox_id)
+            monitor.record_fake_seedbox_creation(subject_id=subject_id, seedbox_id=fake_seedbox.seedbox_id)
         monitor.record_seedbox_donation(
             subject_id=subject_id,
-            donation=donation,
-            stolen_from_honest_agent=False,
+            donation=donation.to_evidence(),
+            stolen_from_honest_agent=donation.stolen_from_honest_agent,
         )
 
         if accountability_enabled and action_index % scan_interval == 0:

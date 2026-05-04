@@ -23,6 +23,8 @@ class Brain:
                 tool_kwargs=decision.get("tool_kwargs", {}),
                 reason=decision.get("reason", ""),
                 source_payload=context.get("payload", ""),
+                payload_id=decision.get("payload_id", context.get("payload_id")),
+                sender_id=decision.get("sender_id", context.get("sender_id")),
             )
 
         if self.proxy:
@@ -73,6 +75,8 @@ class Brain:
                     tool_kwargs={"payload": context.get("payload", "")},
                     reason=f"payload matched trigger: {trigger}",
                     source_payload=context.get("payload", ""),
+                    payload_id=context.get("payload_id"),
+                    sender_id=context.get("sender_id"),
                 )
 
         return ToolDecision(
@@ -83,6 +87,8 @@ class Brain:
             },
             reason="default benign communication",
             source_payload=context.get("payload", ""),
+            payload_id=context.get("payload_id"),
+            sender_id=context.get("sender_id"),
         )
 
 
@@ -111,6 +117,8 @@ class Hands:
                 tool_kwargs=decision.get("tool_kwargs", {}),
                 reason=decision.get("reason", ""),
                 source_payload=decision.get("source_payload", ""),
+                payload_id=decision.get("payload_id"),
+                sender_id=decision.get("sender_id"),
             )
 
         policy = self.allowed_tools.get(decision.tool_name)
@@ -121,6 +129,8 @@ class Hands:
                 authorized=False,
                 attack_success=False,
                 reason="blocked: tool is not in actor allowlist",
+                payload_id=decision.payload_id,
+                sender_id=decision.sender_id,
             )
             self._log_block(decision, result)
             return result
@@ -133,6 +143,8 @@ class Hands:
                 authorized=True,
                 attack_success=False,
                 reason=f"blocked: missing required args {missing_args}",
+                payload_id=decision.payload_id,
+                sender_id=decision.sender_id,
             )
             self._log_block(decision, result)
             return result
@@ -145,6 +157,8 @@ class Hands:
             attack_success=False,
             reason="executed authorized tool",
             output=output,
+            payload_id=decision.payload_id,
+            sender_id=decision.sender_id,
         )
 
         if self.proxy:
@@ -234,6 +248,8 @@ class BaselineExecutor:
                 tool_kwargs=decision.get("tool_kwargs", {}),
                 reason=decision.get("reason", ""),
                 source_payload=decision.get("source_payload", ""),
+                payload_id=decision.get("payload_id"),
+                sender_id=decision.get("sender_id"),
             )
 
         tool = self.tools.get(decision.tool_name)
@@ -244,6 +260,8 @@ class BaselineExecutor:
                 authorized=False,
                 attack_success=False,
                 reason="tool does not exist",
+                payload_id=decision.payload_id,
+                sender_id=decision.sender_id,
             )
 
         output = tool(decision.tool_kwargs)
@@ -255,6 +273,8 @@ class BaselineExecutor:
             attack_success=attack_success,
             reason="baseline executed proposed tool",
             output=output,
+            payload_id=decision.payload_id,
+            sender_id=decision.sender_id,
         )
 
         if self.proxy:

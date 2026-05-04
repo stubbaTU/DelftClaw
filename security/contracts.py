@@ -26,6 +26,15 @@ class ToolRisk(StrEnum):
     DANGEROUS = "dangerous"
 
 
+@dataclass(frozen=True)
+class RedTeamPayload:
+    payload_id: str
+    category: str
+    text: str
+    expected_tool: str
+    malicious: bool = True
+
+
 @dataclass
 class ToolDecision:
     """
@@ -104,6 +113,7 @@ class SeedboxDonationEvidence:
     txid: str | None = None
     self_donation: bool = False
     fake_seedbox: bool = False
+    stolen_from_honest_agent: bool = False
 
 
 @dataclass

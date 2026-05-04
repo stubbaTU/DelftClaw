@@ -1,7 +1,9 @@
 import argparse
 import os
 import tempfile
+from pathlib import Path
 
+from security.results import accountability_row, write_csv, write_json
 from security.subq2_accountability.accountability import AccountabilityMetrics, run_harm_until_expulsion_experiment
 
 
@@ -42,6 +44,25 @@ def harm_reduction(no_accountability: AccountabilityMetrics, accountability: Acc
     return prevented / no_accountability.blast_radius
 
 
+def export_results(export_dir: str | None, no_accountability: AccountabilityMetrics, accountability: AccountabilityMetrics):
+    if not export_dir:
+        return
+
+    target = Path(export_dir)
+    rows = [
+        accountability_row("no_accountability", no_accountability),
+        accountability_row("accountability_enabled", accountability),
+    ]
+    write_csv(target / "subq2_fake_seedbox_results.csv", rows)
+    write_json(
+        target / "subq2_fake_seedbox_results.json",
+        {
+            "harm_reduction": harm_reduction(no_accountability, accountability),
+            "rows": rows,
+        },
+    )
+
+
 def print_metrics(label: str, metrics: AccountabilityMetrics):
     print(label)
     print(f"  accountability_enabled: {metrics.accountability_enabled}")
@@ -65,6 +86,7 @@ def main():
     parser.add_argument("--actions", type=int, default=10, help="Total fake seedbox donations attempted by the subject.")
     parser.add_argument("--threshold", type=int, default=30, help="Reputation score required for expulsion.")
     parser.add_argument("--scan-interval", type=int, default=1, help="How often reputation scans the log.")
+    parser.add_argument("--export-dir", help="Optional directory for CSV/JSON experiment outputs.")
     args = parser.parse_args()
 
     no_accountability, accountability = compare_accountability(
@@ -80,6 +102,7 @@ def main():
     print_metrics("No accountability", no_accountability)
     print_metrics("Accountability enabled", accountability)
     print(f"Harm reduction: {harm_reduction(no_accountability, accountability):.2%}")
+    export_results(args.export_dir, no_accountability, accountability)
 
 
 if __name__ == "__main__":
