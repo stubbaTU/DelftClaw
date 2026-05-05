@@ -18,6 +18,7 @@ from identity.derivation import (
     REPLICA_PATH_TEMPLATE,
 )
 from identity.ipv8_key import IPv8KeyPair
+from identity.openclaw_identity import OpenClawIdentity
 from identity.mls_key import MLSSigningKey
 from identity.wallet import Wallet, SignedTransaction, UTXO
 from identity.agent_identity import AgentIdentity
@@ -35,6 +36,7 @@ __all__ = [
     "BTC_PATH",
     "REPLICA_PATH_TEMPLATE",
     "IPv8KeyPair",
+    "OpenClawIdentity",
     "MLSSigningKey",
     "Wallet",
     "SignedTransaction",

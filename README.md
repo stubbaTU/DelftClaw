@@ -77,4 +77,62 @@ The `P2PAgent` class (`agent.py`) is the current prototype that integrates the n
   - **Isolation Proxy**: Provides a narrow logging interface for sandboxed code.
   - **Reputation Engine**: Manages peer trust and penalizes malicious behavior.
 
-The security layer currently uses the IPv8 public key hex as its stable `reporter_id` / `subject_id` until the shared `AgentId` wrapper is fully implemented.
+The security layer now uses the raw IPv8 Ed25519 verify key bytes as its stable `reporter_id` / `subject_id`, which matches the shared `AgentId` wrapper.
+
+## OpenClaw Proof of Concept
+
+The barebones real OpenClaw agent lives in `communication/claw/openclaw_agent.py` and is exercised by `examples/openclaw_poc.py`.
+
+- It uses `identity.openclaw_identity.OpenClawIdentity` for a persistent local key file.
+- It starts the real IPv8 runtime via `communication.transport.ipv8_runtime.IPv8Runtime`.
+- It loads the minimal `ClawPoCCommunity` only to announce the identity hash; no search, donation, or seedbox features are enabled yet.
+
+### Network Messaging Layer
+
+The `ClawPoCCommunity` in `communication/claw/community.py` implements:
+
+- **`IdentityAnnouncementPayload`** (msg_id=1): IPv8 packet format containing:
+  - `identity_hash`: 32-byte SHA-256 network-bound identity digest
+  - `public_key`: serialized IPv8 public key
+  - `network`: network label (MAINNET, TESTNET, etc.)
+  - `timestamp`: Unix epoch seconds (uint64)
+
+- **Peer Registry**: in-memory `PeerIdentityRecord` dataclass tracking:
+  - `mid`: IPv8 20-byte member ID
+  - `identity_hash`: peer's identity hash
+  - `public_key`: peer's serialized public key
+  - `network`: peer's network label
+  - `last_seen`: timestamp of last announcement
+
+- **Message Flow**:
+  - When a new peer joins, `peer_added()` sends an identity announcement
+  - `announce_identity()` broadcasts the local identity to all current peers
+  - `register_task("periodic_announce", ...)` re-announces every 60 seconds
+  - `_on_identity_announcement()` validates and stores incoming announcements
+
+- **Public API**:
+  - `peer_identities`: property returning a copy of the peer registry dict
+  - `get_peer_identity(mid)`: lookup a peer's identity record by IPv8 mid
+
+Run it with:
+
+```powershell
+python examples\openclaw_poc.py
+```
+
+## OpenClaw Identity
+
+For the OpenClaw-specific identity flow, use `identity.openclaw_identity.OpenClawIdentity`.
+
+- The private IPv8 key is stored locally as a hex-encoded text file, defaulting to `%APPDATA%\OpenClaw\identity\openclaw_priv.pem` on Windows.
+- The network-bound identifier is `SHA256(IPv8_Public_Key | NETWORK)` where `IPv8_Public_Key` is the raw 32-byte Ed25519 verify key.
+- The supported network labels are normalized to uppercase, e.g. `MAINNET`, `TESTNET`, or `REGTEST`.
+
+Example:
+
+```python
+from identity.openclaw_identity import OpenClawIdentity
+
+identity = OpenClawIdentity(network="MAINNET")
+print(identity.get_identity_hash())
+```
