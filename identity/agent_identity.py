@@ -30,8 +30,8 @@ class AgentIdentity:
 
     @property
     def agent_id(self) -> AgentId:
-        """AgentId is the hash of the IPv8 public key."""
-        return AgentId.from_pubkey(self._ipv8.pubkey)
+        """AgentId is derived from the raw 32-byte IPv8 public key bytes."""
+        return AgentId.from_pubkey(self._ipv8.raw_pubkey)
 
     @property
     def ipv8(self) -> IPv8KeyPair:

@@ -10,7 +10,6 @@ from typing import Any
 from ipv8.configuration import ConfigBuilder
 from ipv8_service import IPv8
 
-from identity.agent_identity import AgentIdentity
 from shared.logging import get_logger
 
 _log = get_logger("ipv8_runtime")
@@ -31,12 +30,12 @@ class IPv8Runtime:
 
     Communities are registered before ``start()`` via ``register_community(cls)`` and
     looked up post-start via ``get_overlay(cls)``. The local peer is keyed off the
-    AgentIdentity's IPv8 Ed25519 keypair (curve25519 / LibNaCLSK).
+    provided identity object's IPv8 Ed25519 keypair (curve25519 / LibNaCLSK).
     """
 
     _ANCHOR_ALIAS = "anchor"
 
-    def __init__(self, identity: AgentIdentity, network_config: NetworkConfig) -> None:
+    def __init__(self, identity: Any, network_config: NetworkConfig) -> None:
         self._identity = identity
         self._cfg = network_config
         self._pending: list[type] = []
