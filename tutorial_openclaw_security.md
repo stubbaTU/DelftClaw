@@ -192,6 +192,18 @@ Expected response contains:
 "integrity_ok": true
 ```
 
+You can run the same core checks with one command:
+
+```bash
+python3 -m security.integration.doctor --base-url http://127.0.0.1:8765 --agent-id vuk-vps-agent
+```
+
+Expected:
+
+```text
+DelftClaw doctor: PASS
+```
+
 If bridged mode is enabled, check OpenClaw identity/P2P status:
 
 ```bash
