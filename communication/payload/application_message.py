@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import msgpack
 
 from shared.envelopes import ApplicationMessage
+from shared.errors import PayloadInvalid
 from shared.ids import AgentId, RoomId
 
 if TYPE_CHECKING:
@@ -37,24 +38,26 @@ class MessageBuilder:
     """Fluent builder used by AgentChannel to assemble an ApplicationMessage."""
 
     def __init__(self) -> None:
-        # Initialise empty fields.
-        ...
+        self._text: str | None = None
 
     def with_text(self, s: str) -> "MessageBuilder":
-        # Set the text body; chainable.
-        ...
+        self._text = s
+        return self
 
     def build(self) -> ApplicationMessage:
-        # Validate that text is set; stamp sent_at; return frozen instance.
-        ...
+        if self._text is None:
+            raise PayloadInvalid("ApplicationMessage requires a text body")
+        return ApplicationMessage(
+            text=self._text,
+            sent_at=datetime.now(timezone.utc),
+        )
 
 
 class PayloadRouter:
     """Inbound side: hands unpacked ApplicationMessages to the Inbox."""
 
     def __init__(self, inbox: "Inbox") -> None:
-        # Hold the inbox queue we deliver to.
-        ...
+        self._inbox = inbox
 
     def deliver(
         self,
@@ -62,5 +65,13 @@ class PayloadRouter:
         sender: AgentId,
         msg: ApplicationMessage,
     ) -> None:
-        # Validate payload, push onto the Inbox.
-        ...
+        from communication.channel.inbox import IncomingMessage
+
+        self._inbox.put(
+            IncomingMessage(
+                room_id=room_id,
+                sender=sender,
+                message=msg,
+                received_at=datetime.now(timezone.utc),
+            )
+        )

@@ -18,6 +18,7 @@ from identity.derivation import (
 from identity.ipv8_key import IPv8KeyPair
 from identity.app_key import AppSigningKey
 from identity.agent_identity import AgentIdentity
+from identity.openclaw_identity import OpenClawIdentity
 
 __all__ = [
     "Seed",
@@ -32,4 +33,5 @@ __all__ = [
     "IPv8KeyPair",
     "AppSigningKey",
     "AgentIdentity",
+    "OpenClawIdentity",
 ]
