@@ -16,7 +16,7 @@ from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
-from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
+from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry, ServiceProofLedger
 
 
 class GatewayState:
@@ -46,6 +46,7 @@ class GatewayState:
         )
         self.registry = SeedboxRegistry()
         self.ledger = DonationLedger(self.registry)
+        self.proof_ledger = ServiceProofLedger(self.registry)
         self.hands = Hands(proxy=None, allowed_tools=self._allowed_tools(), agent_id=local_agent_id)
         self.baseline = BaselineExecutor(
             proxy=None,
@@ -224,6 +225,14 @@ class GatewayState:
                         donation=evidence,
                         stolen_from_honest_agent=bool(decision.tool_kwargs.get("stolen_from_honest_agent")),
                     )
+            if decision.tool_name == "submit_seedbox_proof" and result.output:
+                self.log.append_event(
+                    reporter_id=self.local_agent_id,
+                    subject_id=subject_id,
+                    action=SecurityAction.SEEDBOX_PROOF_OF_SERVICE.value,
+                    severity=0,
+                    details=_jsonable(result.output),
+                )
 
     def _allowed_tools(self) -> dict[str, ToolPolicy]:
         return {
@@ -237,6 +246,11 @@ class GatewayState:
                 name="broadcast_seedbox_donation",
                 handler=self._broadcast_seedbox_donation,
                 required_args=("seedbox_id", "donor_id", "amount_sats", "txid"),
+            ),
+            "submit_seedbox_proof": ToolPolicy(
+                name="submit_seedbox_proof",
+                handler=self._submit_seedbox_proof,
+                required_args=("seedbox_id", "prover_id", "storage_url", "nonce", "proof_id"),
             ),
             "report_security_event": ToolPolicy(
                 name="report_security_event",
@@ -266,6 +280,16 @@ class GatewayState:
         )
         return {"donation": asdict(donation), "donation_evidence": donation.to_evidence()}
 
+    def _submit_seedbox_proof(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        proof = self.proof_ledger.submit_proof(
+            proof_id=str(kwargs["proof_id"]),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            prover_id=str(kwargs["prover_id"]),
+            storage_url=str(kwargs["storage_url"]),
+            nonce=str(kwargs["nonce"]),
+        )
+        return {"proof": asdict(proof)}
+
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:
         if tool_name == "register_seedbox":
@@ -273,6 +297,9 @@ class GatewayState:
         if tool_name == "broadcast_seedbox_donation":
             tool_kwargs.setdefault("donor_id", subject_id)
             tool_kwargs.setdefault("txid", f"mock-tx-{subject_id}-{int(time.time() * 1000)}")
+        if tool_name == "submit_seedbox_proof":
+            tool_kwargs.setdefault("prover_id", subject_id)
+            tool_kwargs.setdefault("proof_id", f"proof-{subject_id}-{int(time.time() * 1000)}")
         return tool_kwargs
 
     def _reputation_snapshot(self, agent_id: str) -> dict[str, Any]:

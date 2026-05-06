@@ -17,6 +17,8 @@ class ReputationEngine:
         SecurityAction.PRIVATE_KEY_EXFILTRATION.value: 25,
         SecurityAction.FAKE_SEEDBOX_CREATED.value: 10,
         SecurityAction.SEEDBOX_DONATION_BROADCAST.value: 5,
+        SecurityAction.SEEDBOX_PROOF_OF_SERVICE.value: 0,
+        SecurityAction.SEEDBOX_MISSING_PROOF.value: 10,
         SecurityAction.SELF_DONATION.value: 15,
         SecurityAction.WASH_TRADE_DETECTED.value: 20,
         SecurityAction.LOG_SPOOF_ATTEMPT.value: 15,

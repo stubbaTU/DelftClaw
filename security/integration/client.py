@@ -79,6 +79,24 @@ class DelftClawClient:
             payload["txid"] = txid
         return self.tool_call("broadcast_seedbox_donation", payload, payload_id=payload_id)
 
+    def submit_seedbox_proof(
+        self,
+        seedbox_id: str,
+        storage_url: str,
+        nonce: str,
+        *,
+        proof_id: str | None = None,
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "seedbox_id": seedbox_id,
+            "storage_url": storage_url,
+            "nonce": nonce,
+        }
+        if proof_id:
+            payload["proof_id"] = proof_id
+        return self.tool_call("submit_seedbox_proof", payload, payload_id=payload_id)
+
     def report_security_event(
         self,
         subject_id: str,

@@ -12,6 +12,8 @@ class SecurityAction(StrEnum):
     PRIVATE_KEY_EXFILTRATION = "private_key_exfiltration"
     FAKE_SEEDBOX_CREATED = "fake_seedbox_created"
     SEEDBOX_DONATION_BROADCAST = "seedbox_donation_broadcast"
+    SEEDBOX_PROOF_OF_SERVICE = "seedbox_proof_of_service"
+    SEEDBOX_MISSING_PROOF = "seedbox_missing_proof"
     SELF_DONATION = "self_donation"
     WASH_TRADE_DETECTED = "wash_trade_detected"
     LOG_SPOOF_ATTEMPT = "log_spoof_attempt"

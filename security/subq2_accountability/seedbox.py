@@ -41,6 +41,16 @@ class Donation:
         )
 
 
+@dataclass(frozen=True)
+class ServiceProof:
+    proof_id: str
+    seedbox_id: str
+    prover_id: str
+    storage_url: str
+    nonce: str
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 class SeedboxRegistry:
     def __init__(self):
         self.seedboxes: dict[str, Seedbox] = {}
@@ -109,3 +119,31 @@ class DonationLedger:
             for donation in self.donations
             if donation.recipient_id == subject_id and donation.fake_seedbox
         ]
+
+
+class ServiceProofLedger:
+    def __init__(self, registry: SeedboxRegistry):
+        self.registry = registry
+        self.proofs: list[ServiceProof] = []
+
+    def submit_proof(
+        self,
+        proof_id: str,
+        seedbox_id: str,
+        prover_id: str,
+        storage_url: str,
+        nonce: str,
+    ) -> ServiceProof:
+        self.registry.get(seedbox_id)
+        proof = ServiceProof(
+            proof_id=proof_id,
+            seedbox_id=seedbox_id,
+            prover_id=prover_id,
+            storage_url=storage_url,
+            nonce=nonce,
+        )
+        self.proofs.append(proof)
+        return proof
+
+    def proofs_for_seedbox(self, seedbox_id: str) -> list[ServiceProof]:
+        return [proof for proof in self.proofs if proof.seedbox_id == seedbox_id]
