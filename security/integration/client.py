@@ -104,6 +104,9 @@ class DelftClawClient:
     def reputation(self, agent_id: str | None = None) -> dict[str, Any]:
         return self._get(f"/reputation/{agent_id or self.agent_id}")
 
+    def openclaw_status(self) -> dict[str, Any]:
+        return self._get("/openclaw/status")
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = Request(

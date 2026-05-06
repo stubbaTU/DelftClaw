@@ -31,6 +31,12 @@ It handles:
 The gateway should bind to `127.0.0.1` so only software running on the same
 machine can access it.
 
+The gateway can also bridge into the repository's IPv8 OpenClaw proof of
+concept. In bridged mode, it uses `OpenClawIdentity` as the stable gateway
+identity and can start the IPv8 `OpenClawAgent` in the same process. This means
+one process can accept real Telegram/OpenClaw tool calls and also participate in
+the DelftClaw/OpenClaw peer identity layer.
+
 ## 1. Use Your Feature Branch
 
 On the VPS or machine where OpenClaw runs:
@@ -91,6 +97,19 @@ DELFTCLAW_LOG_PATH=logs/vuk_vps_append_only.jsonl
 OPENCLAW_FRONTEND=telegram
 ```
 
+Optional bridged OpenClaw identity/P2P mode:
+
+```env
+DELFTCLAW_USE_OPENCLAW_IDENTITY=true
+DELFTCLAW_ENABLE_OPENCLAW_P2P=true
+DELFTCLAW_OPENCLAW_NETWORK=MAINNET
+DELFTCLAW_OPENCLAW_P2P_PORT=9000
+```
+
+When `DELFTCLAW_USE_OPENCLAW_IDENTITY=true`, the gateway ignores the manual
+`DELFTCLAW_AGENT_ID` value and uses the persistent OpenClaw identity hash
+instead.
+
 Local files matching `configs/*.local.env` should not be committed. Keep bot
 tokens, wallet seeds, API keys, and chat IDs out of Git.
 
@@ -116,6 +135,9 @@ DelftClaw gateway listening on http://127.0.0.1:8765 ...
 ```
 
 Leave this terminal running.
+
+If bridged mode is enabled, the same command starts both the HTTP gateway and
+the IPv8 OpenClaw PoC node.
 
 ## 4. Test The Gateway Manually
 
@@ -168,6 +190,21 @@ Expected response contains:
 "tool_call_count": 1,
 "executed_count": 1,
 "integrity_ok": true
+```
+
+If bridged mode is enabled, check OpenClaw identity/P2P status:
+
+```bash
+curl http://127.0.0.1:8765/openclaw/status
+```
+
+Expected response contains:
+
+```json
+"enabled": true,
+"identity_hash": "...",
+"p2p_enabled": true,
+"p2p_running": true
 ```
 
 ## 5. Test Through Telegram OpenClaw
@@ -274,5 +311,6 @@ The tool-call and reputation counters should reflect the actions.
 - Use `DELFTCLAW_GATEWAY_MODE=baseline` only when measuring unsafe baseline
   behavior.
 - Keep the gateway on `127.0.0.1`; do not expose it publicly.
-- The P2P node is separate from the HTTP gateway and can be integrated after the
-  OpenClaw-to-gateway connection is reliable.
+- If `DELFTCLAW_ENABLE_OPENCLAW_P2P=true`, the HTTP gateway starts the IPv8
+  OpenClaw PoC node itself. If it is `false`, the gateway still works for
+  Telegram/OpenClaw tool-call experiments without starting IPv8.

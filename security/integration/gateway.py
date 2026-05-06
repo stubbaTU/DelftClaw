@@ -29,11 +29,13 @@ class GatewayState:
         log_path: str,
         mode: str = "defended",
         ban_threshold: int = 30,
+        openclaw_bridge: Any | None = None,
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
 
         self.local_agent_id = local_agent_id
+        self.openclaw_bridge = openclaw_bridge
         self.mode = mode
         self.log = AppendOnlyLog(log_path=log_path)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
@@ -145,11 +147,17 @@ class GatewayState:
             "integrity_errors": integrity_errors,
             "scores": self.reputation.scores,
             "banned_agents": sorted(self.reputation.banned_agents),
+            "openclaw": self.openclaw_status(),
         }
 
     def reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
         self.reputation.scan_log()
         return self._reputation_snapshot(agent_id)
+
+    def openclaw_status(self) -> dict[str, Any]:
+        if self.openclaw_bridge is None:
+            return {"enabled": False}
+        return self.openclaw_bridge.status()
 
     def _execute_defended(self, decision: ToolDecision, subject_id: str) -> ExecutionResult:
         try:
@@ -306,6 +314,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, {"ok": True})
         elif route == "/metrics":
             self._write_json(HTTPStatus.OK, self.state.metrics())
+        elif route == "/openclaw/status":
+            self._write_json(HTTPStatus.OK, self.state.openclaw_status())
         elif route.startswith("/reputation/"):
             agent_id = unquote(route.removeprefix("/reputation/"))
             self._write_json(HTTPStatus.OK, self.state.reputation_snapshot(agent_id))
@@ -340,7 +350,11 @@ def run_gateway(host: str, port: int, state: GatewayState) -> ThreadingHTTPServe
         f"DelftClaw gateway listening on http://{host}:{port} "
         f"(agent_id={state.local_agent_id}, mode={state.mode}, log={state.log.log_path})"
     )
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        if state.openclaw_bridge is not None:
+            state.openclaw_bridge.stop()
     return server
 
 
@@ -365,6 +379,13 @@ def env_or(config: dict[str, str], key: str, default: str) -> str:
     return os.getenv(key) or config.get(key) or default
 
 
+def env_bool(config: dict[str, str], key: str, default: bool = False) -> bool:
+    value = os.getenv(key) or config.get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return _jsonable(asdict(value))
@@ -384,10 +405,49 @@ def main() -> None:
     parser.add_argument("--log-path", help="Append-only log path.")
     parser.add_argument("--mode", choices=("defended", "baseline"), help="Gateway execution mode.")
     parser.add_argument("--ban-threshold", type=int, help="Reputation score required for expulsion.")
+    parser.add_argument(
+        "--use-openclaw-identity",
+        action="store_true",
+        help="Use OpenClawIdentity as the gateway agent id.",
+    )
+    parser.add_argument(
+        "--enable-openclaw-p2p",
+        action="store_true",
+        help="Start the IPv8 OpenClaw PoC node inside the gateway process.",
+    )
+    parser.add_argument("--openclaw-network", help="OpenClaw identity network label.")
+    parser.add_argument("--openclaw-key-path", help="Persistent OpenClaw identity key path.")
+    parser.add_argument("--openclaw-p2p-host", help="IPv8 bind host for bridged OpenClawAgent.")
+    parser.add_argument("--openclaw-p2p-port", type=int, help="IPv8 bind port for bridged OpenClawAgent.")
     args = parser.parse_args()
 
     env_values = load_env_file(args.env)
+    use_openclaw_identity = args.use_openclaw_identity or env_bool(
+        env_values,
+        "DELFTCLAW_USE_OPENCLAW_IDENTITY",
+    )
+    enable_openclaw_p2p = args.enable_openclaw_p2p or env_bool(
+        env_values,
+        "DELFTCLAW_ENABLE_OPENCLAW_P2P",
+    )
+    openclaw_bridge = None
     agent_id = args.agent_id or env_or(env_values, "DELFTCLAW_AGENT_ID", "local-openclaw-agent")
+
+    if use_openclaw_identity or enable_openclaw_p2p:
+        from security.integration.openclaw_bridge import OpenClawBridge
+
+        openclaw_bridge = OpenClawBridge(
+            network=args.openclaw_network or env_or(env_values, "DELFTCLAW_OPENCLAW_NETWORK", "MAINNET"),
+            key_path=args.openclaw_key_path or env_or(env_values, "DELFTCLAW_OPENCLAW_KEY_PATH", ""),
+            p2p_enabled=enable_openclaw_p2p,
+            p2p_host=args.openclaw_p2p_host or env_or(env_values, "DELFTCLAW_OPENCLAW_P2P_HOST", "0.0.0.0"),
+            p2p_port=args.openclaw_p2p_port or int(env_or(env_values, "DELFTCLAW_OPENCLAW_P2P_PORT", "9000")),
+            working_dir=env_or(env_values, "DELFTCLAW_OPENCLAW_WORKING_DIR", "."),
+        )
+        if use_openclaw_identity:
+            agent_id = openclaw_bridge.agent_id
+        openclaw_bridge.start()
+
     host = args.host or env_or(env_values, "DELFTCLAW_GATEWAY_HOST", "127.0.0.1")
     port = args.port or int(env_or(env_values, "DELFTCLAW_GATEWAY_PORT", "8765"))
     mode = args.mode or env_or(env_values, "DELFTCLAW_GATEWAY_MODE", "defended")
@@ -395,7 +455,13 @@ def main() -> None:
     threshold = args.ban_threshold or int(env_or(env_values, "DELFTCLAW_BAN_THRESHOLD", "30"))
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-    state = GatewayState(local_agent_id=agent_id, log_path=log_path, mode=mode, ban_threshold=threshold)
+    state = GatewayState(
+        local_agent_id=agent_id,
+        log_path=log_path,
+        mode=mode,
+        ban_threshold=threshold,
+        openclaw_bridge=openclaw_bridge,
+    )
     run_gateway(host=host, port=port, state=state)
 
 
