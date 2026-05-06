@@ -32,7 +32,7 @@ class RoomRegistry:
         ...
 
     def remove(self, room_id: RoomId) -> None:
-        # Drop the room entry once we have left and the SecureGroupSession is gone.
+        # Drop the room entry once we have left.
         ...
 
     def all_joined(self) -> list[RoomId]:

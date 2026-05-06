@@ -18,7 +18,6 @@ _log = get_logger("trustroom_community")
 if TYPE_CHECKING:
     from identity.agent_identity import AgentIdentity
     from communication.admission.join_protocol import AdmissionGate
-    from communication.messaging.secure_group_session import SecureGroupSessionFactory
     from communication.payload.application_message import PayloadRouter
     from communication.trustroom.policy import AdmissionPolicy
 
@@ -30,15 +29,15 @@ if TYPE_CHECKING:
 @vp_compile
 class JoinRequestPayload(VariablePayload):
     msg_id = 1
-    format_list = ["varlenH", "varlenH", "varlenH"]
-    names = ["room_id", "presentation", "ephemeral_key"]
+    format_list = ["varlenH", "varlenH"]
+    names = ["room_id", "presentation"]
 
 
 @vp_compile
 class JoinResponsePayload(VariablePayload):
     msg_id = 2
-    format_list = ["varlenH", "?", "varlenH"]
-    names = ["room_id", "accepted", "welcome_blob"]
+    format_list = ["varlenH", "?"]
+    names = ["room_id", "accepted"]
 
 
 @vp_compile
@@ -49,15 +48,8 @@ class ApplicationMessagePayload(VariablePayload):
 
 
 @vp_compile
-class GroupCommitPayload(VariablePayload):
-    msg_id = 4
-    format_list = ["varlenH", "varlenH"]
-    names = ["room_id", "commit_blob"]
-
-
-@vp_compile
 class RoomAdvertisementPayload(VariablePayload):
-    msg_id = 5
+    msg_id = 4
     format_list = ["varlenH"]
     names = ["advertisement"]
 
@@ -71,21 +63,18 @@ class TrustroomCommunity(Community):
         JOIN_REQUEST = 1
         JOIN_RESPONSE = 2
         APPLICATION = 3
-        GROUP_COMMIT = 4
-        ROOM_ADVERTISEMENT = 5
+        ROOM_ADVERTISEMENT = 4
 
     def __init__(self, settings: CommunitySettings) -> None:
         super().__init__(settings)
         self._identity: "AgentIdentity | None" = None
         self._admission: "AdmissionGate | None" = None
-        self._secure_session_factory: "SecureGroupSessionFactory | None" = None
         self._payload_router: "PayloadRouter | None" = None
         self._inbox: list[tuple[Any, ApplicationMessagePayload]] = []  # test seam
 
         self.add_message_handler(JoinRequestPayload, self.on_join_request)
         self.add_message_handler(JoinResponsePayload, self.on_join_response)
         self.add_message_handler(ApplicationMessagePayload, self.on_application_message)
-        self.add_message_handler(GroupCommitPayload, self.on_group_commit)
         self.add_message_handler(RoomAdvertisementPayload, self.on_room_advertisement)
 
     def wire(
@@ -93,7 +82,6 @@ class TrustroomCommunity(Community):
         *,
         identity: "AgentIdentity",
         admission: "AdmissionGate",
-        secure_session_factory: "SecureGroupSessionFactory",
         payload_router: "PayloadRouter",
     ) -> None:
         """Inject dependencies post-construction.
@@ -103,7 +91,6 @@ class TrustroomCommunity(Community):
         """
         self._identity = identity
         self._admission = admission
-        self._secure_session_factory = secure_session_factory
         self._payload_router = payload_router
 
     def started(self) -> None:
@@ -122,7 +109,7 @@ class TrustroomCommunity(Community):
         ...
 
     async def send_application(self, peer: Any, frame_bytes: bytes) -> None:
-        """Wire an already-encrypted WireFrame to ``peer`` via IPv8.
+        """Wire a signed WireFrame to ``peer`` via IPv8.
 
         Uses ``ez_send`` so IPv8 prefixes the community + msg id, signs, and frames.
         """
@@ -145,10 +132,6 @@ class TrustroomCommunity(Community):
     def on_application_message(self, peer: Any, payload: ApplicationMessagePayload) -> None:
         _log.info("on_application_message", frame_len=len(payload.frame))
         self._inbox.append((peer, payload))
-
-    @lazy_wrapper(GroupCommitPayload)
-    def on_group_commit(self, peer: Any, payload: GroupCommitPayload) -> None:
-        _log.info("on_group_commit", room_id=payload.room_id.hex())
 
     @lazy_wrapper(RoomAdvertisementPayload)
     def on_room_advertisement(self, peer: Any, payload: RoomAdvertisementPayload) -> None:

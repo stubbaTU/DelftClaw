@@ -45,11 +45,9 @@ class VerifiedCredential:
 
 @dataclass(frozen=True)
 class KeyBundle:
-    """Public-key triple a peer publishes so others can encrypt to / authenticate it."""
+    """Public-key pair a peer publishes so others can authenticate it."""
 
     ipv8: bytes
-    # `ipv8` is the Ed25519 long-term identity key.
-    mls: bytes
-    # `mls` is the MLS signature key (Path A) or ratchet sig key (Path B).
-    btc: bytes
-    # `btc` is the Bitcoin wallet public key used as payment recipient.
+    # `ipv8` is the Ed25519 long-term transport-layer key.
+    app: bytes
+    # `app` is the Ed25519 application-layer signing key (verifies WireFrame sigs).

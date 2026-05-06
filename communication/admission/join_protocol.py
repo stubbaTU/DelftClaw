@@ -49,8 +49,6 @@ class JoinRequestPayload:
 
     room_id: RoomId
     presentation: Presentation
-    ephemeral_key: bytes
-    # `ephemeral_key` is used by Layer 4 to encrypt the welcome blob back to the joiner.
 
 
 @dataclass(frozen=True)
@@ -59,5 +57,3 @@ class JoinResponsePayload:
 
     room_id: RoomId
     decision: AdmissionDecision
-    welcome_blob: bytes | None
-    # `welcome_blob` is the MLS Welcome (Path A) or seeded ratchet state (Path B); None if denied.

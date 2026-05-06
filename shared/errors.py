@@ -20,7 +20,7 @@ class CredentialInvalid(CommunicationError):
 
 
 class EpochMismatch(CommunicationError):
-    """Layer 4: the peer is in a different MLS / ratchet epoch."""
+    """The peer is in a different room-state epoch (admission state moved)."""
 
 
 class ReplayDetected(CommunicationError):
@@ -29,11 +29,3 @@ class ReplayDetected(CommunicationError):
 
 class PayloadInvalid(CommunicationError):
     """Layer 5 deserialisation or schema validation failed."""
-
-
-class WalletError(OpenClawError):
-    """Bitcoin signing, UTXO selection, or broadcast failed."""
-
-
-class IdentityError(OpenClawError):
-    """BIP-32 derivation, seed loading, or key construction failed."""

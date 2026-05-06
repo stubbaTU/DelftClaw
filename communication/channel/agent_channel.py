@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from shared.envelopes import BTCPayload
-from shared.ids import AgentId, CredentialId, MessageId, RoomId, Txid
+from shared.ids import AgentId, CredentialId, MessageId, RoomId
 from shared.logging import get_logger
 
 _log = get_logger("agent_channel")
 
 if TYPE_CHECKING:
     from communication.channel.inbox import Inbox, IncomingMessage
-    from communication.payload.broadcaster import Broadcaster
     from communication.transport.ipv8_runtime import IPv8Runtime
     from communication.trustroom.advertisement import RoomAdvertisement
     from communication.trustroom.community import TrustroomCommunity
@@ -24,8 +22,8 @@ if TYPE_CHECKING:
 class AgentChannel:
     """Single class OpenClaw integrates with.
 
-    Wraps `TrustroomCommunity` and exposes ~10 methods the LLM tool layer can call.
-    Method bodies will compose calls into community, trust_store, broadcaster, inbox.
+    Wraps `TrustroomCommunity` and exposes ~9 methods the LLM tool layer can call.
+    Method bodies will compose calls into community, trust_store, inbox.
     """
 
     def __init__(
@@ -34,7 +32,6 @@ class AgentChannel:
         runtime: "IPv8Runtime",
         community: "TrustroomCommunity",
         trust_store: "TrustStore",
-        broadcaster: "Broadcaster",
         inbox: "Inbox",
     ) -> None:
         # Store all dependencies; do not start the runtime here.
@@ -79,31 +76,11 @@ class AgentChannel:
 
     # --- messaging --------------------------------------------------------
 
-    async def send(
-        self,
-        room_id: RoomId,
-        text: str,
-        payment: BTCPayload | None = None,
-    ) -> MessageId:
+    async def send(self, room_id: RoomId, text: str) -> MessageId:
         # Build ApplicationMessage via MessageBuilder, hand to community.send.
-        _log.info(
-            "send_attempt",
-            room_id=str(room_id),
-            text_len=len(text),
-            has_payment=payment is not None,
-        )
+        _log.info("send_attempt", room_id=str(room_id), text_len=len(text))
         ...
 
     async def recv(self, timeout: float | None = None) -> "IncomingMessage":
         # Pull from the Inbox; blocks up to timeout.
-        ...
-
-    # --- payments ---------------------------------------------------------
-
-    def compose_payment(self, recipient: AgentId, amount_sats: int) -> BTCPayload:
-        # Resolve recipient's BTC pubkey from their KeyBundle, call PaymentBuilder.compose.
-        ...
-
-    def broadcast_payment(self, payload: BTCPayload) -> Txid:
-        # Delegate to the Broadcaster.
         ...

@@ -74,11 +74,7 @@ class Nonce(_RawBytes):
 
 
 class Epoch(int):
-    """MLS / ratchet epoch counter; monotonically increases per group state advance."""
-
-
-class Txid(str):
-    """Bitcoin txid (hex-encoded)."""
+    """Room-state epoch counter; monotonically increases when admission state changes."""
 
 
 class CredentialId(str):

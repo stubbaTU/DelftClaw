@@ -1,31 +1,27 @@
-"""Composite identity bundle: ipv8 + mls + wallet keys derived from one Seed."""
+"""Composite identity bundle: ipv8 + app-signing keys derived from one Seed."""
 
 from __future__ import annotations
-import hashlib
 
+from identity.app_key import AppSigningKey
 from identity.ipv8_key import IPv8KeyPair
-from identity.mls_key import MLSSigningKey
 from identity.seed import Seed
-from identity.wallet import Wallet
 from shared.credentials import KeyBundle
 from shared.ids import AgentId
 
 
 class AgentIdentity:
-    """Bundle of all keys an agent uses; the type every other package consumes."""
+    """Bundle of all keys an agent uses (IPv8 + app-signing); the type every other package consumes."""
 
-    def __init__(self, ipv8: IPv8KeyPair, mls: MLSSigningKey, wallet: Wallet) -> None:
+    def __init__(self, ipv8: IPv8KeyPair, app: AppSigningKey) -> None:
         self._ipv8 = ipv8
-        self._mls = mls
-        self._wallet = wallet
+        self._app = app
 
     @classmethod
     def from_seed(cls, seed: Seed) -> "AgentIdentity":
-        """Derive ipv8, mls, and wallet keys at fixed paths from the master seed."""
+        """Derive ipv8 and application-signing keys at fixed paths from the master seed."""
         return cls(
             ipv8=IPv8KeyPair.from_seed(seed),
-            mls=MLSSigningKey.from_seed(seed),
-            wallet=Wallet.from_seed(seed)
+            app=AppSigningKey.from_seed(seed),
         )
 
     @property
@@ -39,19 +35,13 @@ class AgentIdentity:
         return self._ipv8
 
     @property
-    def mls(self) -> MLSSigningKey:
-        """Return the MLS / ratchet signing key."""
-        return self._mls
-
-    @property
-    def wallet(self) -> Wallet:
-        """Return the Bitcoin HD wallet."""
-        return self._wallet
+    def app(self) -> AppSigningKey:
+        """Return the application-layer Ed25519 signing key (signs WireFrames)."""
+        return self._app
 
     def public_bundle(self) -> KeyBundle:
-        """Return the triple of public keys other peers need to encrypt to and authenticate us."""
+        """Return the pair of public keys other peers need to authenticate us."""
         return KeyBundle(
             ipv8=self._ipv8.pubkey,
-            mls=self._mls.pubkey,
-            btc=self._wallet.pubkey
+            app=self._app.pubkey,
         )
