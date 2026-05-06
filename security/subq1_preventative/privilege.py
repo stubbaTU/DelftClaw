@@ -1,6 +1,21 @@
 from typing import Any, Callable
 
-from security.contracts import ExecutionResult, ToolDecision, ToolPolicy, attack_success_rate
+from security.contracts import ExecutionResult, ToolDecision, ToolPolicy, ToolRisk, attack_success_rate
+
+
+RISK_ORDER = {
+    ToolRisk.SAFE: 0,
+    ToolRisk.SENSITIVE: 1,
+    ToolRisk.DANGEROUS: 2,
+}
+
+
+def risk_value(risk: ToolRisk | str | int) -> int:
+    if isinstance(risk, int):
+        return risk
+    if isinstance(risk, str):
+        risk = ToolRisk(risk)
+    return RISK_ORDER[risk]
 
 
 class Brain:
@@ -105,9 +120,11 @@ class Hands:
         proxy=None,
         allowed_tools: dict[str, ToolPolicy | Callable[[dict[str, Any]], Any]] | None = None,
         agent_id: str = "local-agent",
+        max_tool_risk: ToolRisk | str | int = ToolRisk.SENSITIVE,
     ):
         self.proxy = proxy
         self.agent_id = agent_id
+        self.max_tool_risk = risk_value(max_tool_risk)
         self.allowed_tools = self._normalize_tools(allowed_tools or self.default_tools())
 
     def execute(self, decision: ToolDecision | dict) -> ExecutionResult:
@@ -129,6 +146,19 @@ class Hands:
                 authorized=False,
                 attack_success=False,
                 reason="blocked: tool is not in actor allowlist",
+                payload_id=decision.payload_id,
+                sender_id=decision.sender_id,
+            )
+            self._log_block(decision, result)
+            return result
+
+        if risk_value(policy.risk) > self.max_tool_risk:
+            result = ExecutionResult(
+                requested_tool=decision.tool_name,
+                executed=False,
+                authorized=False,
+                attack_success=False,
+                reason=f"blocked: tool risk {policy.risk} exceeds actor max risk {self.max_tool_risk}",
                 payload_id=decision.payload_id,
                 sender_id=decision.sender_id,
             )

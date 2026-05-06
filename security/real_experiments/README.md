@@ -55,3 +55,57 @@ tool calls and infer evidence from:
 - self-donations where donor equals seedbox owner
 - seedboxes receiving donations but submitting no proof of service
 - append-only log integrity failures
+
+## Preventative Controls
+
+The gateway uses the Brain-vs-Hands separation implemented in
+`security.subq1_preventative.privilege`. The real OpenClaw agent may ask for a
+tool, but `Hands` controls whether that tool can execute.
+
+Configure the maximum allowed tool risk in `configs/*.local.env`:
+
+```env
+DELFTCLAW_MAX_TOOL_RISK=sensitive
+```
+
+Useful settings:
+
+- `safe`: only harmless communication/summarization tools
+- `sensitive`: seedbox registration, donations, proof submission, security reports
+- `dangerous`: reserved for intentionally unsafe baseline work
+
+## Game-Theoretic Threshold Sweep
+
+Use this before experiments to choose reputation thresholds and scan intervals:
+
+```bash
+python3 -m security.subq2_accountability.analyze_game_theory \
+  --thresholds 10,20,30,40,50 \
+  --scan-intervals 1,2,5 \
+  --malicious-action-weight 25 \
+  --output-dir results/game_theory
+```
+
+This exports expected blast-radius and deterrence margins for each policy.
+
+## Seedbox Audit
+
+After OpenClaw registers seedboxes and donations, ask the gateway to audit for
+donated seedboxes with no proof of service:
+
+```bash
+curl -X POST http://127.0.0.1:8765/audit/seedboxes -H "Content-Type: application/json" -d '{}'
+```
+
+This creates `seedbox_missing_proof` evidence based on observed ledger state.
+
+## gVisor / iptables Artifacts
+
+Generate a starting runbook and files for the sandbox experiment:
+
+```bash
+python3 -m security.subq3_integrity.gvisor_artifacts --output-dir sandbox_artifacts
+```
+
+Review the generated `iptables_sandbox.sh` before applying it. It changes host
+firewall policy and should be used on a disposable VPS or test VM first.

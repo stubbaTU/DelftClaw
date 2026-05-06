@@ -116,6 +116,9 @@ class DelftClawClient:
             },
         )
 
+    def audit_seedboxes(self) -> dict[str, Any]:
+        return self._post("/audit/seedboxes", {"agent_id": self.agent_id})
+
     def metrics(self) -> dict[str, Any]:
         return self._get("/metrics")
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from security.contracts import ExecutionResult, SecurityAction, ToolDecision, ToolPolicy
+from security.contracts import ExecutionResult, SecurityAction, ToolDecision, ToolPolicy, ToolRisk
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
@@ -30,6 +30,7 @@ class GatewayState:
         mode: str = "defended",
         ban_threshold: int = 30,
         openclaw_bridge: Any | None = None,
+        max_tool_risk: ToolRisk | str | int = ToolRisk.SENSITIVE,
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -37,6 +38,7 @@ class GatewayState:
         self.local_agent_id = local_agent_id
         self.openclaw_bridge = openclaw_bridge
         self.mode = mode
+        self.max_tool_risk = max_tool_risk
         self.log = AppendOnlyLog(log_path=log_path)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
         self.monitor = AccountabilityMonitor(
@@ -47,7 +49,12 @@ class GatewayState:
         self.registry = SeedboxRegistry()
         self.ledger = DonationLedger(self.registry)
         self.proof_ledger = ServiceProofLedger(self.registry)
-        self.hands = Hands(proxy=None, allowed_tools=self._allowed_tools(), agent_id=local_agent_id)
+        self.hands = Hands(
+            proxy=None,
+            allowed_tools=self._allowed_tools(),
+            agent_id=local_agent_id,
+            max_tool_risk=max_tool_risk,
+        )
         self.baseline = BaselineExecutor(
             proxy=None,
             safe_tools={name: policy.handler for name, policy in self._allowed_tools().items()},
@@ -55,6 +62,7 @@ class GatewayState:
         self.tool_call_count = 0
         self.blocked_count = 0
         self.executed_count = 0
+        self.missing_proof_audits: set[str] = set()
 
     def handle_tool_call(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.tool_call_count += 1
@@ -149,7 +157,38 @@ class GatewayState:
             "scores": self.reputation.scores,
             "banned_agents": sorted(self.reputation.banned_agents),
             "openclaw": self.openclaw_status(),
+            "max_tool_risk": str(self.max_tool_risk),
         }
+
+    def audit_seedboxes(self) -> dict[str, Any]:
+        self.monitor.next_step()
+        findings = []
+        for seedbox_id, seedbox in self.registry.seedboxes.items():
+            donations = [donation for donation in self.ledger.donations if donation.seedbox_id == seedbox_id]
+            proofs = self.proof_ledger.proofs_for_seedbox(seedbox_id)
+            if not donations or proofs or seedbox_id in self.missing_proof_audits:
+                continue
+
+            self.missing_proof_audits.add(seedbox_id)
+            severity = ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.SEEDBOX_MISSING_PROOF.value]
+            details = {
+                "step": self.monitor.current_step,
+                "seedbox_id": seedbox_id,
+                "owner_id": seedbox.owner_id,
+                "donation_count": len(donations),
+                "proof_count": len(proofs),
+            }
+            self.log.append_event(
+                reporter_id=self.local_agent_id,
+                subject_id=seedbox.owner_id,
+                action=SecurityAction.SEEDBOX_MISSING_PROOF.value,
+                severity=severity,
+                details=details,
+            )
+            findings.append(details)
+
+        self.reputation.scan_log()
+        return {"ok": True, "findings": findings, "finding_count": len(findings)}
 
     def reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
         self.reputation.scan_log()
@@ -241,21 +280,25 @@ class GatewayState:
                 name="register_seedbox",
                 handler=self._register_seedbox,
                 required_args=("seedbox_id", "donation_address", "advertised_capacity_gb", "owner_id"),
+                risk=ToolRisk.SENSITIVE,
             ),
             "broadcast_seedbox_donation": ToolPolicy(
                 name="broadcast_seedbox_donation",
                 handler=self._broadcast_seedbox_donation,
                 required_args=("seedbox_id", "donor_id", "amount_sats", "txid"),
+                risk=ToolRisk.SENSITIVE,
             ),
             "submit_seedbox_proof": ToolPolicy(
                 name="submit_seedbox_proof",
                 handler=self._submit_seedbox_proof,
                 required_args=("seedbox_id", "prover_id", "storage_url", "nonce", "proof_id"),
+                risk=ToolRisk.SENSITIVE,
             ),
             "report_security_event": ToolPolicy(
                 name="report_security_event",
                 handler=lambda kwargs: {"reported": True, "details": kwargs},
                 required_args=("subject_id", "action"),
+                risk=ToolRisk.SENSITIVE,
             ),
         }
 
@@ -324,6 +367,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, self.state.handle_tool_call(payload))
         elif route == "/security-report":
             self._write_json(HTTPStatus.OK, self.state.handle_security_report(payload))
+        elif route == "/audit/seedboxes":
+            self._write_json(HTTPStatus.OK, self.state.audit_seedboxes())
         elif route == "/donation":
             payload["tool_name"] = "broadcast_seedbox_donation"
             payload["tool_kwargs"] = payload.get("tool_kwargs") or {
@@ -413,6 +458,11 @@ def env_bool(config: dict[str, str], key: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_risk(config: dict[str, str], key: str, default: str = ToolRisk.SENSITIVE.value) -> ToolRisk:
+    value = env_or(config, key, default).strip().lower()
+    return ToolRisk(value)
+
+
 def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return _jsonable(asdict(value))
@@ -432,6 +482,7 @@ def main() -> None:
     parser.add_argument("--log-path", help="Append-only log path.")
     parser.add_argument("--mode", choices=("defended", "baseline"), help="Gateway execution mode.")
     parser.add_argument("--ban-threshold", type=int, help="Reputation score required for expulsion.")
+    parser.add_argument("--max-tool-risk", choices=("safe", "sensitive", "dangerous"), help="Highest risk tool Hands may execute.")
     parser.add_argument(
         "--use-openclaw-identity",
         action="store_true",
@@ -480,6 +531,7 @@ def main() -> None:
     mode = args.mode or env_or(env_values, "DELFTCLAW_GATEWAY_MODE", "defended")
     log_path = args.log_path or env_or(env_values, "DELFTCLAW_LOG_PATH", f"logs/{agent_id}_append_only.jsonl")
     threshold = args.ban_threshold or int(env_or(env_values, "DELFTCLAW_BAN_THRESHOLD", "30"))
+    max_tool_risk = ToolRisk(args.max_tool_risk) if args.max_tool_risk else env_risk(env_values, "DELFTCLAW_MAX_TOOL_RISK")
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     state = GatewayState(
@@ -488,6 +540,7 @@ def main() -> None:
         mode=mode,
         ban_threshold=threshold,
         openclaw_bridge=openclaw_bridge,
+        max_tool_risk=max_tool_risk,
     )
     run_gateway(host=host, port=port, state=state)
 
