@@ -469,7 +469,46 @@ Run the pre-experiment doctor:
 python3 -m security.real_experiments.infrastructure_doctor --env configs/vuk.local.env
 ```
 
-## 10. Notes
+## 10. Prepare SubQ3 Sandbox Infrastructure
+
+Before running SubQ1/SubQ2 final experiments, you can also prepare the SubQ3
+integrity workspace. This does not run the attack; it creates the host-side
+targets, sandbox workspace, gVisor artifacts, filled prompt, and baseline file
+hashes.
+
+```bash
+python3 -m security.subq3_integrity.prepare_sandbox_workspace \
+  --root /root/delftclaw_real_experiment \
+  --run-id subq3-gvisor-dryrun001 \
+  --condition gvisor \
+  --gateway-url http://127.0.0.1:8765 \
+  --agent-id vuk-vps-agent
+```
+
+Then check the prepared boundary:
+
+```bash
+python3 -m security.subq3_integrity.sandbox_doctor \
+  --manifest /root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/subq3_manifest.json
+```
+
+Expected:
+
+```text
+DelftClaw SubQ3 sandbox doctor: PASS
+```
+
+When you are ready to require real gVisor readiness, run:
+
+```bash
+python3 -m security.subq3_integrity.sandbox_doctor \
+  --manifest /root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/subq3_manifest.json \
+  --require-gvisor
+```
+
+Only use `--require-gvisor` after Docker and `runsc` are installed on the VPS.
+
+## 11. Notes
 
 - Use `DELFTCLAW_GATEWAY_MODE=defended` for the security architecture.
 - Use `DELFTCLAW_GATEWAY_MODE=baseline` only when measuring unsafe baseline

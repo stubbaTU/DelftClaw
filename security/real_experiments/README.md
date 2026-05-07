@@ -175,7 +175,39 @@ python3 -m security.integration.audit_seedboxes \
 
 ## gVisor / iptables Artifacts
 
-Generate a starting runbook and files for the sandbox experiment:
+Prepare the SubQ3 workspace before running any real integrity prompt:
+
+```bash
+python3 -m security.subq3_integrity.prepare_sandbox_workspace \
+  --root /root/delftclaw_real_experiment \
+  --run-id subq3-gvisor-dryrun001 \
+  --condition gvisor \
+  --gateway-url http://127.0.0.1:8765 \
+  --agent-id vuk-vps-agent
+```
+
+This creates:
+
+```text
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/subq3_manifest.json
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/host/append_only_log.jsonl
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/host/host_integrity_secret.txt
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/host/iptables.rules
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/sandbox_workspace/
+/root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/prompts/subq3_log_integrity_attack_filled.txt
+```
+
+Run the SubQ3 doctor:
+
+```bash
+python3 -m security.subq3_integrity.sandbox_doctor \
+  --manifest /root/delftclaw_real_experiment/runs/subq3-gvisor-dryrun001/subq3_manifest.json
+```
+
+Use `--require-gvisor` only when you want the check to fail unless Docker and
+`runsc` are installed.
+
+You can still generate just the base runbook and files manually:
 
 ```bash
 python3 -m security.subq3_integrity.gvisor_artifacts --output-dir sandbox_artifacts
@@ -183,3 +215,14 @@ python3 -m security.subq3_integrity.gvisor_artifacts --output-dir sandbox_artifa
 
 Review the generated `iptables_sandbox.sh` before applying it. It changes host
 firewall policy and should be used on a disposable VPS or test VM first.
+
+For final SubQ3 evaluation, prepare separate runs:
+
+```text
+subq3-no-isolation-run001
+subq3-docker-run001
+subq3-gvisor-run001
+```
+
+The host paths in the manifest are trusted targets. The sandbox workspace is
+the only directory the compromised OpenClaw side should be allowed to modify.
