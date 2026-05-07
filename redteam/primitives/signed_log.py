@@ -64,14 +64,17 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         if identity is None:
             raise ValueError("identity must not be None")
         # Accept str or pathlib.Path (or any os.PathLike). Coerce to str so
-        # downstream I/O sites work uniformly.
+        # downstream I/O sites work uniformly. ``os.fspath`` may also return
+        # bytes — reject that explicitly so log_path stays str everywhere.
         try:
             coerced = os.fspath(log_path)
         except TypeError as exc:
             raise ValueError(
                 "log_path must be a str or os.PathLike object"
             ) from exc
-        if not isinstance(coerced, str) or not coerced:
+        if not isinstance(coerced, str):
+            raise ValueError("log_path must resolve to a string, not bytes")
+        if not coerced:
             raise ValueError("log_path must be a non-empty string")
         super().__init__(log_path=coerced)
         self._identity = identity
@@ -88,53 +91,75 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         evidence: dict | None = None,
     ) -> dict:
         """Append a single signed accountability event to the log."""
-        # NOTE: This wrapper deliberately uses
-        #   ``evidence if evidence is not None else {}``
-        # rather than the parent's ``evidence or {}``. We want to preserve
-        # an explicit empty dict from the caller (it's still falsy) so that
-        # the signed canonical bytes match what the caller asked us to sign.
-        evidence_payload = evidence if evidence is not None else {}
-
         with self._lock:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            previous_hash = self.latest_hash()
-
-            entry: dict[str, Any] = {
-                "version": 2,
-                "timestamp": timestamp,
-                "reporter_id": reporter_id,
-                "subject_id": subject_id,
-                "action": action,
-                "severity": severity,
-                "details": details,
-                "evidence": evidence_payload,
-                "details_hash": _stable_hash(details),
-                "evidence_hash": _stable_hash(evidence_payload),
-                "previous_hash": previous_hash,
-                "reporter_pubkey": self._identity.public_key.hex(),
-            }
-
-            # Sign the canonical JSON of the entry so far (no signature, no
-            # entry_hash). Then attach the signature and finally compute the
-            # chain hash, which covers the signature too via the override.
-            canonical = _canonical_bytes(entry)
-            entry["signature"] = self._identity.sign(canonical).hex()
-            entry["entry_hash"] = self._entry_hash(entry)
-
-            with open(self.log_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            entry = self._build_entry(
+                reporter_id=reporter_id,
+                subject_id=subject_id,
+                action=action,
+                details=details,
+                severity=severity,
+                evidence=evidence,
+            )
+            self._persist(entry)
 
         _logger.debug(
             "signed_log.append",
             reporter_id=reporter_id,
             subject_id=subject_id,
             action=action,
-            previous_hash=previous_hash,
+            previous_hash=entry["previous_hash"],
             entry_hash=entry["entry_hash"],
         )
         return entry
+
+    def _build_entry(
+        self,
+        reporter_id: str,
+        subject_id: str,
+        action: str,
+        details: dict,
+        severity: int,
+        evidence: dict | None,
+    ) -> dict[str, Any]:
+        """Assemble, sign, and chain-hash a complete entry.
+
+        Caller must hold ``self._lock`` so ``latest_hash()`` and the
+        eventual append happen atomically.
+        """
+        # Deliberately ``evidence is not None else {}`` rather than
+        # ``evidence or {}`` — we want to preserve an explicit empty dict
+        # from the caller so the signed canonical bytes match exactly
+        # what the caller asked us to sign.
+        evidence_payload = evidence if evidence is not None else {}
+
+        entry: dict[str, Any] = {
+            "version": 2,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "reporter_id": reporter_id,
+            "subject_id": subject_id,
+            "action": action,
+            "severity": severity,
+            "details": details,
+            "evidence": evidence_payload,
+            "details_hash": _stable_hash(details),
+            "evidence_hash": _stable_hash(evidence_payload),
+            "previous_hash": self.latest_hash(),
+            "reporter_pubkey": self._identity.public_key.hex(),
+        }
+
+        # Sign the canonical JSON of the entry so far (no signature, no
+        # entry_hash). Then attach the signature and finally compute the
+        # chain hash, which covers the signature too via the override.
+        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
+        entry["entry_hash"] = self._entry_hash(entry)
+        return entry
+
+    def _persist(self, entry: dict[str, Any]) -> None:
+        """Append a fully-formed entry to the log file with an fsync."""
+        with open(self.log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
     @staticmethod
     def _entry_hash(entry: dict) -> str:
@@ -152,16 +177,20 @@ class SignedAppendOnlyLog(AppendOnlyLog):
     def verify_integrity(self) -> tuple[bool, list[str]]:
         """Verify chain, signatures, and identity binding in a single scan.
 
-        Single-pass scan over the raw log file. For every JSON entry we run:
+        Single-pass scan over the raw log file. For every JSON entry we run
+        three independent checks via the helpers below:
 
-        1. Chain check — ``previous_hash`` matches the previous entry's
-           ``entry_hash`` (or ``"GENESIS"`` for entry 1), AND the stored
-           ``entry_hash`` matches what we recompute from the canonical
-           bytes of the entry minus signature/entry_hash.
-        2. Signature check — Ed25519 verify the stored ``signature``
-           against ``reporter_pubkey`` over the canonical bytes.
-        3. Identity binding check —
+        1. :meth:`_check_chain` — ``previous_hash`` matches the previous
+           entry's ``entry_hash`` (or ``"GENESIS"`` for entry 1), AND the
+           stored ``entry_hash`` matches what we recompute.
+        2. :meth:`_check_signature` — Ed25519 verify the stored signature
+           against ``reporter_pubkey``.
+        3. :meth:`_check_identity_binding` —
            ``SHA256(reporter_pubkey || network) == reporter_id``.
+
+        The same three-check structure is mirrored in
+        ``redteam.primitives.verify._verify_entry`` (different file, no
+        shared imports, same shape — that's deliberate).
 
         Non-v2 entries are not silently skipped — they surface as errors.
         """
@@ -200,60 +229,94 @@ class SignedAppendOnlyLog(AppendOnlyLog):
                     previous_hash = entry.get("entry_hash", previous_hash)
                     continue
 
-                # ---- Chain check ----------------------------------------
-                actual_prev = entry.get("previous_hash")
-                if actual_prev != previous_hash:
-                    errors.append(
-                        f"entry {index}: previous_hash mismatch "
-                        f"(chain broken; expected {previous_hash!r}, "
-                        f"got {actual_prev!r})"
-                    )
-
-                expected_entry_hash = self._entry_hash(entry)
-                stored_entry_hash = entry.get("entry_hash")
-                if stored_entry_hash != expected_entry_hash:
-                    errors.append(
-                        f"entry {index}: entry_hash mismatch "
-                        f"(recomputed hash does not match stored entry_hash)"
-                    )
-
-                # ---- Signature check ------------------------------------
-                pubkey_bytes, sig_bytes, sig_skip = self._decode_pubkey_and_sig(
-                    entry, index, errors
+                errors.extend(self._check_chain(index, entry, previous_hash))
+                pubkey_bytes, sig_bytes, decode_errors = self._decode_pubkey_and_sig(
+                    index, entry
                 )
-                if not sig_skip and pubkey_bytes is not None and sig_bytes is not None:
-                    try:
-                        Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(
-                            sig_bytes, _canonical_bytes(self._signed_payload(entry))
-                        )
-                    except InvalidSignature:
-                        errors.append(
-                            f"entry {index}: signature verification failed"
-                        )
-                    except (ValueError, TypeError) as exc:
-                        # Malformed key material caught by cryptography.
-                        errors.append(
-                            f"entry {index}: signature verification error: {exc}"
-                        )
-
-                # ---- Identity binding check -----------------------------
-                if pubkey_bytes is not None and len(pubkey_bytes) == 32:
-                    expected_id = hashlib.sha256(
-                        pubkey_bytes + network.encode("utf-8")
-                    ).hexdigest()
-                    actual_id = entry.get("reporter_id")
-                    if actual_id != expected_id:
-                        errors.append(
-                            f"entry {index}: identity binding mismatch "
-                            f"(reporter_id does not derive from reporter_pubkey | "
-                            f"{network})"
-                        )
+                errors.extend(decode_errors)
+                errors.extend(
+                    self._check_signature(index, entry, pubkey_bytes, sig_bytes)
+                )
+                errors.extend(
+                    self._check_identity_binding(index, entry, pubkey_bytes, network)
+                )
 
                 # Advance using the *stored* entry_hash so we still detect
                 # downstream chain breaks even if this entry mismatched.
                 previous_hash = entry.get("entry_hash", previous_hash)
 
         return len(errors) == 0, errors
+
+    @staticmethod
+    def _check_chain(index: int, entry: dict, previous_hash: str) -> list[str]:
+        """Verify ``previous_hash`` link and recomputed ``entry_hash``."""
+        errors: list[str] = []
+
+        actual_prev = entry.get("previous_hash")
+        if actual_prev != previous_hash:
+            errors.append(
+                f"entry {index}: previous_hash mismatch "
+                f"(chain broken; expected {previous_hash!r}, "
+                f"got {actual_prev!r})"
+            )
+
+        expected_entry_hash = SignedAppendOnlyLog._entry_hash(entry)
+        stored_entry_hash = entry.get("entry_hash")
+        if stored_entry_hash != expected_entry_hash:
+            errors.append(
+                f"entry {index}: entry_hash mismatch "
+                f"(recomputed hash does not match stored entry_hash)"
+            )
+        return errors
+
+    @staticmethod
+    def _check_signature(
+        index: int,
+        entry: dict,
+        pubkey_bytes: bytes | None,
+        sig_bytes: bytes | None,
+    ) -> list[str]:
+        """Verify the Ed25519 signature against the signed canonical bytes.
+
+        If either ``pubkey_bytes`` or ``sig_bytes`` is None, decode errors
+        have already been reported by :meth:`_decode_pubkey_and_sig`; skip
+        the actual verify rather than double-reporting.
+        """
+        if pubkey_bytes is None or sig_bytes is None:
+            return []
+        try:
+            Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(
+                sig_bytes,
+                _canonical_bytes(SignedAppendOnlyLog._signed_payload(entry)),
+            )
+        except InvalidSignature:
+            return [f"entry {index}: signature verification failed"]
+        except (ValueError, TypeError) as exc:
+            # Malformed key material caught by cryptography.
+            return [f"entry {index}: signature verification error: {exc}"]
+        return []
+
+    @staticmethod
+    def _check_identity_binding(
+        index: int,
+        entry: dict,
+        pubkey_bytes: bytes | None,
+        network: str,
+    ) -> list[str]:
+        """Verify ``SHA256(reporter_pubkey || network) == reporter_id``."""
+        if pubkey_bytes is None:
+            return []
+        expected_id = hashlib.sha256(
+            pubkey_bytes + network.encode("utf-8")
+        ).hexdigest()
+        actual_id = entry.get("reporter_id")
+        if actual_id != expected_id:
+            return [
+                f"entry {index}: identity binding mismatch "
+                f"(reporter_id does not derive from reporter_pubkey | "
+                f"{network})"
+            ]
+        return []
 
     @staticmethod
     def _signed_payload(entry: dict) -> dict:
@@ -265,74 +328,48 @@ class SignedAppendOnlyLog(AppendOnlyLog):
 
     @staticmethod
     def _decode_pubkey_and_sig(
-        entry: dict, index: int, errors: list[str]
-    ) -> tuple[bytes | None, bytes | None, bool]:
+        index: int, entry: dict
+    ) -> tuple[bytes | None, bytes | None, list[str]]:
         """Decode and length-check ``reporter_pubkey`` and ``signature``.
 
-        Returns ``(pubkey_bytes_or_None, sig_bytes_or_None, skip_verify)``.
-        ``skip_verify`` is True when at least one of the fields is missing
-        or otherwise unusable, signalling the caller to bypass the actual
-        Ed25519 verification step (the relevant errors will already be in
-        ``errors``).
+        Returns ``(pubkey_bytes_or_None, sig_bytes_or_None, errors)``. A
+        bytes value is returned only when the field decoded cleanly and
+        has the expected length; otherwise the slot is None and the
+        corresponding error is in the third element. Pure function — does
+        not mutate any caller state.
         """
-        skip = False
-        pubkey_bytes: bytes | None = None
-        sig_bytes: bytes | None = None
+        errors: list[str] = []
+        pubkey_bytes = SignedAppendOnlyLog._decode_hex_field(
+            entry, "reporter_pubkey", expected_len=32, index=index, errors=errors
+        )
+        sig_bytes = SignedAppendOnlyLog._decode_hex_field(
+            entry, "signature", expected_len=64, index=index, errors=errors
+        )
+        return pubkey_bytes, sig_bytes, errors
 
+    @staticmethod
+    def _decode_hex_field(
+        entry: dict,
+        name: str,
+        *,
+        expected_len: int,
+        index: int,
+        errors: list[str],
+    ) -> bytes | None:
+        """Decode a hex-encoded fixed-length field, appending to ``errors``."""
+        raw = entry.get(name)
+        if not isinstance(raw, str) or not raw:
+            errors.append(f"entry {index}: missing {name}")
+            return None
         try:
-            pubkey_hex = entry["reporter_pubkey"]
-        except KeyError:
-            errors.append(f"entry {index}: missing reporter_pubkey")
-            skip = True
-            pubkey_hex = None
-
-        if pubkey_hex is not None:
-            if not isinstance(pubkey_hex, str) or not pubkey_hex:
-                errors.append(f"entry {index}: missing reporter_pubkey")
-                skip = True
-            else:
-                try:
-                    pubkey_bytes = bytes.fromhex(pubkey_hex)
-                except ValueError:
-                    errors.append(
-                        f"entry {index}: malformed reporter_pubkey hex"
-                    )
-                    skip = True
-                else:
-                    if len(pubkey_bytes) != 32:
-                        errors.append(
-                            f"entry {index}: reporter_pubkey is "
-                            f"{len(pubkey_bytes)} bytes, expected 32 "
-                            f"(length mismatch)"
-                        )
-                        skip = True
-
-        try:
-            sig_hex = entry["signature"]
-        except KeyError:
-            errors.append(f"entry {index}: missing signature")
-            skip = True
-            sig_hex = None
-
-        if sig_hex is not None:
-            if not isinstance(sig_hex, str) or not sig_hex:
-                errors.append(f"entry {index}: missing signature")
-                skip = True
-            else:
-                try:
-                    sig_bytes = bytes.fromhex(sig_hex)
-                except ValueError:
-                    errors.append(
-                        f"entry {index}: malformed signature hex"
-                    )
-                    skip = True
-                else:
-                    if len(sig_bytes) != 64:
-                        errors.append(
-                            f"entry {index}: signature is "
-                            f"{len(sig_bytes)} bytes, expected 64 "
-                            f"(length mismatch)"
-                        )
-                        skip = True
-
-        return pubkey_bytes, sig_bytes, skip
+            decoded = bytes.fromhex(raw)
+        except ValueError:
+            errors.append(f"entry {index}: malformed {name} hex")
+            return None
+        if len(decoded) != expected_len:
+            errors.append(
+                f"entry {index}: {name} is {len(decoded)} bytes, "
+                f"expected {expected_len} (length mismatch)"
+            )
+            return None
+        return decoded

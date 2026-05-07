@@ -105,6 +105,20 @@ _ALLOWED_METHODS = "GET, POST, OPTIONS"
 _ALLOWED_METHODS_SET = {"GET", "POST", "OPTIONS"}
 
 
+def resolve_severity(action: str, explicit: int | None) -> int:
+    """Resolve the severity for an entry.
+
+    An explicit caller-supplied ``severity`` (including 0) always wins;
+    otherwise look up ``action`` in :data:`DEFAULT_SEVERITY_WEIGHTS` and
+    fall back to :data:`DEFAULT_SEVERITY_FALLBACK` for unknown actions.
+    Pulled out of the route handler so the policy is testable in
+    isolation and easy to relocate when a non-HTTP writer also needs it.
+    """
+    if explicit is not None:
+        return explicit
+    return DEFAULT_SEVERITY_WEIGHTS.get(action, DEFAULT_SEVERITY_FALLBACK)
+
+
 def check_loopback_host(host: str) -> None:
     """Raise ``ValueError`` if ``host`` is not a loopback alias.
 
@@ -293,19 +307,10 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
         # impersonate the signer.
         subject_id = body.subject_id or reporter_id
 
-        # Resolve severity. Distinguish "not provided" (None → table lookup
-        # with fallback) from "explicit 0" (caller forces severity 0). The
-        # ``is not None`` check is load-bearing: a falsy-but-explicit 0 is
-        # honored, but an absent value falls through to the table.
-        if body.severity is not None:
-            severity = body.severity
-        else:
-            severity = DEFAULT_SEVERITY_WEIGHTS.get(
-                body.action, DEFAULT_SEVERITY_FALLBACK
-            )
-
-        # ``evidence`` already defaults to {} via Pydantic's default_factory.
-        evidence = body.evidence
+        # Resolve severity via the policy helper. Distinguishes "not
+        # provided" (None → table lookup with fallback) from "explicit 0"
+        # (caller forces severity 0).
+        severity = resolve_severity(body.action, body.severity)
 
         try:
             entry = signed_log.append_event(
@@ -314,7 +319,7 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
                 action=body.action,
                 details=body.details,
                 severity=severity,
-                evidence=evidence,
+                evidence=body.evidence,
             )
         except Exception as exc:  # surface as 500, do not swallow
             _log.error(
@@ -334,7 +339,7 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
 
 
 def main() -> None:
-    """Module CLI entry point. Used by ``python -m redteam.primitives.server``.
+    """Module CLI entry point. Used by ``python -m redteam.integration.server``.
 
     Loads / creates an :class:`OpenClawIdentity`, builds the FastAPI app,
     and serves it via ``uvicorn.run`` on a loopback host until interrupted.
@@ -342,7 +347,7 @@ def main() -> None:
     import argparse
     import os
 
-    parser = argparse.ArgumentParser(prog="redteam.primitives.server")
+    parser = argparse.ArgumentParser(prog="redteam.integration.server")
     parser.add_argument(
         "--log", default="signed.log", help="path to the signed log file"
     )

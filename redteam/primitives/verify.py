@@ -55,17 +55,10 @@ def _recompute_entry_hash(entry: dict) -> str:
     return hashlib.sha256(_canonical_bytes(entry)).hexdigest()
 
 
-def _verify_entry(
-    index: int, entry: dict, prev_hash: str, network: str
-) -> list[str]:
-    """Run the three integrity checks for a single entry.
-
-    Returns a list of human-readable error strings (empty if everything
-    passed).
-    """
+def _check_chain(index: int, entry: dict, prev_hash: str) -> list[str]:
+    """Verify ``previous_hash`` link and recomputed ``entry_hash``."""
     errors: list[str] = []
 
-    # ---- Check 1: Hash chain ------------------------------------------------
     actual_prev = entry.get("previous_hash")
     if actual_prev != prev_hash:
         errors.append(
@@ -80,79 +73,113 @@ def _verify_entry(
             f"entry {index}: entry_hash mismatch "
             f"(recomputed hash does not match stored entry_hash)"
         )
+    return errors
 
-    # ---- Check 2: Signature -------------------------------------------------
-    pubkey_bytes: bytes | None = None
-    sig_bytes: bytes | None = None
-    sig_decode_failed = False
 
-    pubkey_hex = entry.get("reporter_pubkey")
-    sig_hex = entry.get("signature")
+def _check_signature(
+    index: int,
+    entry: dict,
+    pubkey_bytes: bytes | None,
+    sig_bytes: bytes | None,
+) -> list[str]:
+    """Verify the Ed25519 signature against the canonical bytes.
 
-    if not isinstance(pubkey_hex, str) or not pubkey_hex:
-        errors.append(f"entry {index}: missing reporter_pubkey")
-        sig_decode_failed = True
-    else:
-        try:
-            pubkey_bytes = bytes.fromhex(pubkey_hex)
-        except ValueError:
-            errors.append(
-                f"entry {index}: malformed reporter_pubkey hex (cannot decode)"
-            )
-            sig_decode_failed = True
-        else:
-            if len(pubkey_bytes) != 32:
-                errors.append(
-                    f"entry {index}: reporter_pubkey is {len(pubkey_bytes)} bytes, "
-                    f"expected 32"
-                )
-                sig_decode_failed = True
+    If either field failed to decode, ``_decode_pubkey_and_sig`` already
+    reported the reason — skip the verify rather than double-report.
+    """
+    if pubkey_bytes is None or sig_bytes is None:
+        return []
+    try:
+        Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(
+            sig_bytes, _canonical_bytes(entry)
+        )
+    except InvalidSignature:
+        return [
+            f"entry {index}: signature verification failed "
+            f"(invalid Ed25519 signature for reporter_pubkey)"
+        ]
+    except Exception as exc:  # pragma: no cover - defensive
+        return [f"entry {index}: signature verification error: {exc}"]
+    return []
 
-    if not isinstance(sig_hex, str) or not sig_hex:
-        errors.append(f"entry {index}: missing signature")
-        sig_decode_failed = True
-    else:
-        try:
-            sig_bytes = bytes.fromhex(sig_hex)
-        except ValueError:
-            errors.append(
-                f"entry {index}: malformed signature hex (cannot decode)"
-            )
-            sig_decode_failed = True
-        else:
-            if len(sig_bytes) != 64:
-                errors.append(
-                    f"entry {index}: signature is {len(sig_bytes)} bytes, "
-                    f"expected 64"
-                )
-                sig_decode_failed = True
 
-    if not sig_decode_failed and pubkey_bytes is not None and sig_bytes is not None:
-        try:
-            verify_key = Ed25519PublicKey.from_public_bytes(pubkey_bytes)
-            verify_key.verify(sig_bytes, _canonical_bytes(entry))
-        except InvalidSignature:
-            errors.append(
-                f"entry {index}: signature verification failed "
-                f"(invalid Ed25519 signature for reporter_pubkey)"
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            errors.append(
-                f"entry {index}: signature verification error: {exc}"
-            )
+def _check_identity_binding(
+    index: int, entry: dict, pubkey_bytes: bytes | None, network: str
+) -> list[str]:
+    """Verify ``SHA256(reporter_pubkey || network) == reporter_id``."""
+    if pubkey_bytes is None:
+        return []
+    expected_id = hashlib.sha256(
+        pubkey_bytes + network.encode("utf-8")
+    ).hexdigest()
+    actual_id = entry.get("reporter_id")
+    if actual_id != expected_id:
+        return [
+            f"entry {index}: identity binding mismatch "
+            f"(reporter_id does not derive from reporter_pubkey | {network})"
+        ]
+    return []
 
-    # ---- Check 3: Identity binding -----------------------------------------
-    if pubkey_bytes is not None and len(pubkey_bytes) == 32:
-        expected_id = hashlib.sha256(
-            pubkey_bytes + network.encode("utf-8")
-        ).hexdigest()
-        actual_id = entry.get("reporter_id")
-        if actual_id != expected_id:
-            errors.append(
-                f"entry {index}: identity binding mismatch "
-                f"(reporter_id does not derive from reporter_pubkey | {network})"
-            )
 
+def _decode_hex_field(
+    entry: dict, name: str, *, expected_len: int, index: int, errors: list[str]
+) -> bytes | None:
+    """Decode a hex-encoded fixed-length field, appending to ``errors``."""
+    raw = entry.get(name)
+    if not isinstance(raw, str) or not raw:
+        errors.append(f"entry {index}: missing {name}")
+        return None
+    try:
+        decoded = bytes.fromhex(raw)
+    except ValueError:
+        errors.append(f"entry {index}: malformed {name} hex (cannot decode)")
+        return None
+    if len(decoded) != expected_len:
+        errors.append(
+            f"entry {index}: {name} is {len(decoded)} bytes, "
+            f"expected {expected_len}"
+        )
+        return None
+    return decoded
+
+
+def _decode_pubkey_and_sig(
+    index: int, entry: dict
+) -> tuple[bytes | None, bytes | None, list[str]]:
+    """Return ``(pubkey_bytes_or_None, sig_bytes_or_None, errors)``.
+
+    A bytes value is returned only when the field decoded cleanly and has
+    the expected length; otherwise the slot is None and the corresponding
+    error is in the third element.
+    """
+    errors: list[str] = []
+    pubkey_bytes = _decode_hex_field(
+        entry, "reporter_pubkey", expected_len=32, index=index, errors=errors
+    )
+    sig_bytes = _decode_hex_field(
+        entry, "signature", expected_len=64, index=index, errors=errors
+    )
+    return pubkey_bytes, sig_bytes, errors
+
+
+def _verify_entry(
+    index: int, entry: dict, prev_hash: str, network: str
+) -> list[str]:
+    """Run the three integrity checks for a single entry.
+
+    Same three-check structure (chain / signature / binding) and the same
+    helper names as :class:`SignedAppendOnlyLog` in the producer file —
+    deliberately mirrored so a reviewer can diff the two at a glance.
+    The producer-side implementation is independent (no shared imports);
+    this verifier exists so a producer-side bug surfaces here as a
+    verification failure instead of silently propagating.
+    """
+    errors: list[str] = []
+    errors.extend(_check_chain(index, entry, prev_hash))
+    pubkey_bytes, sig_bytes, decode_errors = _decode_pubkey_and_sig(index, entry)
+    errors.extend(decode_errors)
+    errors.extend(_check_signature(index, entry, pubkey_bytes, sig_bytes))
+    errors.extend(_check_identity_binding(index, entry, pubkey_bytes, network))
     return errors
 
 

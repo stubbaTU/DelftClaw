@@ -36,7 +36,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from identity.openclaw_identity import OpenClawIdentity
-from redteam.primitives.server import (
+from redteam.integration.server import (
     DEFAULT_SEVERITY_FALLBACK,
     DEFAULT_SEVERITY_WEIGHTS,
     LOOPBACK_HOSTS,
