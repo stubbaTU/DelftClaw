@@ -1,0 +1,17 @@
+[Unit]
+Description=DelftClaw Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/DelftClaw
+Environment=PYTHONPATH=/root/DelftClaw
+ExecStart=/root/DelftClaw/.venv/bin/python -m security.integration.gateway --env /root/DelftClaw/configs/vuk.local.env
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

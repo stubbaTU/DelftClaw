@@ -31,6 +31,9 @@ class GatewayState:
         ban_threshold: int = 30,
         openclaw_bridge: Any | None = None,
         max_tool_risk: ToolRisk | str | int = ToolRisk.SENSITIVE,
+        run_id: str = "",
+        experiment_condition: str = "",
+        experiment_root: str = "",
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -39,7 +42,19 @@ class GatewayState:
         self.openclaw_bridge = openclaw_bridge
         self.mode = mode
         self.max_tool_risk = max_tool_risk
-        self.log = AppendOnlyLog(log_path=log_path)
+        self.run_id = run_id
+        self.experiment_condition = experiment_condition or mode
+        self.experiment_root = experiment_root
+        self.run_metadata = {
+            "run_id": run_id,
+            "experiment_condition": self.experiment_condition,
+            "gateway_mode": mode,
+            "agent_id": local_agent_id,
+            "ban_threshold": ban_threshold,
+            "max_tool_risk": str(max_tool_risk),
+            "experiment_root": experiment_root,
+        }
+        self.log = AppendOnlyLog(log_path=log_path, run_metadata=self.run_metadata)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
         self.monitor = AccountabilityMonitor(
             log=self.log,
@@ -158,6 +173,9 @@ class GatewayState:
             "banned_agents": sorted(self.reputation.banned_agents),
             "openclaw": self.openclaw_status(),
             "max_tool_risk": str(self.max_tool_risk),
+            "run_id": self.run_id,
+            "experiment_condition": self.experiment_condition,
+            "experiment_root": self.experiment_root,
         }
 
     def audit_seedboxes(self) -> dict[str, Any]:
@@ -483,6 +501,9 @@ def main() -> None:
     parser.add_argument("--mode", choices=("defended", "baseline"), help="Gateway execution mode.")
     parser.add_argument("--ban-threshold", type=int, help="Reputation score required for expulsion.")
     parser.add_argument("--max-tool-risk", choices=("safe", "sensitive", "dangerous"), help="Highest risk tool Hands may execute.")
+    parser.add_argument("--run-id", help="Experiment run id written into every append-only log event.")
+    parser.add_argument("--experiment-condition", help="Condition label written into every append-only log event.")
+    parser.add_argument("--experiment-root", help="Experiment workspace root for evidence and canary files.")
     parser.add_argument(
         "--use-openclaw-identity",
         action="store_true",
@@ -532,6 +553,9 @@ def main() -> None:
     log_path = args.log_path or env_or(env_values, "DELFTCLAW_LOG_PATH", f"logs/{agent_id}_append_only.jsonl")
     threshold = args.ban_threshold or int(env_or(env_values, "DELFTCLAW_BAN_THRESHOLD", "30"))
     max_tool_risk = ToolRisk(args.max_tool_risk) if args.max_tool_risk else env_risk(env_values, "DELFTCLAW_MAX_TOOL_RISK")
+    run_id = args.run_id or env_or(env_values, "DELFTCLAW_RUN_ID", "")
+    experiment_condition = args.experiment_condition or env_or(env_values, "DELFTCLAW_EXPERIMENT_CONDITION", mode)
+    experiment_root = args.experiment_root or env_or(env_values, "DELFTCLAW_EXPERIMENT_ROOT", "")
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     state = GatewayState(
@@ -541,6 +565,9 @@ def main() -> None:
         ban_threshold=threshold,
         openclaw_bridge=openclaw_bridge,
         max_tool_risk=max_tool_risk,
+        run_id=run_id,
+        experiment_condition=experiment_condition,
+        experiment_root=experiment_root,
     )
     run_gateway(host=host, port=port, state=state)
 

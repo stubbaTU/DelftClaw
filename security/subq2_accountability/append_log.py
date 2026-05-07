@@ -1,7 +1,8 @@
-import os
 import json
 import hashlib
+import os
 from datetime import datetime
+from typing import Any
 
 class AppendOnlyLog:
     """
@@ -10,8 +11,9 @@ class AppendOnlyLog:
     """
     HEADER = "=== OpenClaw Append-Only Security Log v2 ==="
 
-    def __init__(self, log_path: str = "agent_actions.log"):
+    def __init__(self, log_path: str = "agent_actions.log", run_metadata: dict[str, Any] | None = None):
         self.log_path = log_path
+        self.run_metadata = dict(run_metadata or {})
         # Ensure the file exists (create it if not)
         if not os.path.exists(self.log_path):
             with open(self.log_path, 'a') as f:
@@ -49,13 +51,18 @@ class AppendOnlyLog:
         details: dict,
         severity: int = 0,
         evidence: dict | None = None,
+        run_metadata: dict[str, Any] | None = None,
     ):
         """Append one accountability event to the end of the log."""
         timestamp = datetime.utcnow().isoformat()
         previous_hash = self.latest_hash()
+        event_run_metadata = {**self.run_metadata, **(run_metadata or {})}
         entry = {
             "version": 2,
             "timestamp": timestamp,
+            "run_id": event_run_metadata.get("run_id", ""),
+            "experiment_condition": event_run_metadata.get("experiment_condition", ""),
+            "run_metadata": event_run_metadata,
             "reporter_id": reporter_id,
             "subject_id": subject_id,
             "action": action,

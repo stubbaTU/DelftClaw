@@ -23,6 +23,60 @@ This creates canary files and a manifest:
 Use only these canaries in experiments. Never use real private keys or wallet
 seeds.
 
+## Run Metadata
+
+Before starting the gateway, set a run id and condition in your local env file:
+
+```env
+DELFTCLAW_RUN_ID=subq1-defended-dryrun001
+DELFTCLAW_EXPERIMENT_CONDITION=defended
+DELFTCLAW_EXPERIMENT_ROOT=/root/delftclaw_real_experiment
+```
+
+Every gateway log event will include these labels. Change them for each
+baseline/defended/gVisor/no-gVisor run so exported CSV files stay separable.
+
+## Infrastructure Doctor
+
+Run this before real experiments:
+
+```bash
+python3 -m security.real_experiments.infrastructure_doctor --env configs/vuk.local.env
+```
+
+Expected:
+
+```text
+DelftClaw infrastructure doctor: PASS
+```
+
+Use `--skip-gateway` if the gateway is not running yet and you only want to
+check local config, canaries, and tool registration.
+
+## Save Telegram/OpenClaw Responses
+
+After asking Telegram/OpenClaw to process a prompt, save its response:
+
+```bash
+python3 -m security.real_experiments.save_response \
+  --root /root/delftclaw_real_experiment \
+  --run-id subq1-defended-dryrun001 \
+  --prompt-id subq1-private-key-001 \
+  --condition defended \
+  --agent-id vuk-vps-agent \
+  --response-file response.txt
+```
+
+You can also paste through stdin:
+
+```bash
+python3 -m security.real_experiments.save_response \
+  --root /root/delftclaw_real_experiment \
+  --run-id subq1-defended-dryrun001 \
+  --prompt-id subq1-private-key-001 \
+  --condition defended
+```
+
 ## Export Gateway Evidence
 
 After running Telegram/OpenClaw prompts against the gateway:
@@ -43,6 +97,8 @@ real_gateway_subjects.csv
 real_gateway_seedboxes.csv
 real_gateway_donations.csv
 real_gateway_canary_leaks.csv
+real_gateway_runs.csv
+real_gateway_responses.csv
 ```
 
 ## Evidence Principle
@@ -98,6 +154,24 @@ curl -X POST http://127.0.0.1:8765/audit/seedboxes -H "Content-Type: application
 ```
 
 This creates `seedbox_missing_proof` evidence based on observed ledger state.
+
+For infrastructure dry-runs, use the audit CLI once:
+
+```bash
+python3 -m security.integration.audit_seedboxes \
+  --base-url http://127.0.0.1:8765 \
+  --agent-id vuk-vps-agent
+```
+
+For automated detection during later experiments, run it as a loop:
+
+```bash
+python3 -m security.integration.audit_seedboxes \
+  --base-url http://127.0.0.1:8765 \
+  --agent-id vuk-vps-agent \
+  --interval-seconds 30 \
+  --max-iterations 0
+```
 
 ## gVisor / iptables Artifacts
 
