@@ -28,6 +28,13 @@ Behavior notes:
       downstream entries will still fire chain errors. Per-entry
       integrity errors (hash / signature / binding) do *not* abort the
       scan — every entry is independently checked and reported.
+    * Every entry must declare an explicit ``kind`` of either ``"self"``
+      or ``"witness"``; missing or unknown values fail verification.
+      Witness entries get the same four subject-side checks the producer
+      runs at write time (decode pubkey/sig, identity binding, claim
+      consistency, Ed25519 verify of subject_signature over canonical
+      subject_claim) — independently re-implemented here so a producer
+      bug surfaces as a verification failure.
 """
 
 from __future__ import annotations
@@ -48,6 +55,15 @@ def _canonical_bytes(entry: dict) -> bytes:
     hashable.pop("entry_hash", None)
     hashable.pop("signature", None)
     return json.dumps(hashable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _canonical_payload_bytes(payload: dict) -> bytes:
+    """Return canonical JSON bytes of ``payload`` verbatim (no field stripping).
+
+    Used for hashing arbitrary payloads (claim envelope, details, evidence)
+    where there is no entry_hash/signature to pop.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _recompute_entry_hash(entry: dict) -> str:
@@ -162,17 +178,149 @@ def _decode_pubkey_and_sig(
     return pubkey_bytes, sig_bytes, errors
 
 
+def _decode_subject_pubkey_and_sig(
+    index: int, entry: dict
+) -> tuple[bytes | None, bytes | None, list[str]]:
+    """Verifier-side: decode ``subject_pubkey``/``subject_signature`` off entry."""
+    errors: list[str] = []
+    pubkey_bytes = _decode_hex_field(
+        entry, "subject_pubkey", expected_len=32, index=index, errors=errors
+    )
+    sig_bytes = _decode_hex_field(
+        entry, "subject_signature", expected_len=64, index=index, errors=errors
+    )
+    return pubkey_bytes, sig_bytes, errors
+
+
+def _check_subject_identity_binding(
+    pubkey_bytes: bytes | None, network: str, subject_id
+) -> list[str]:
+    """Verify ``SHA256(subject_pubkey || network) == subject_id``."""
+    if pubkey_bytes is None:
+        return []
+    expected = hashlib.sha256(
+        pubkey_bytes + network.encode("utf-8")
+    ).hexdigest()
+    if subject_id != expected:
+        return [
+            "subject identity binding mismatch "
+            f"(subject_id does not derive from subject_pubkey | {network})"
+        ]
+    return []
+
+
+def _check_claim_consistency(
+    subject_claim, *, subject_id, action, details_hash
+) -> list[str]:
+    """Verify the claim envelope against the entry's bound fields + schema."""
+    errors: list[str] = []
+    if not isinstance(subject_claim, dict):
+        return ["subject_claim missing or not an object"]
+    if subject_claim.get("kind") != "claim":
+        errors.append(
+            "subject_claim kind is not 'claim' "
+            f"(got {subject_claim.get('kind')!r})"
+        )
+    if not isinstance(subject_claim.get("version"), int):
+        errors.append("subject_claim version is not an integer")
+    nonce = subject_claim.get("nonce")
+    if not isinstance(nonce, str):
+        errors.append("subject_claim nonce is missing or not a string")
+    else:
+        try:
+            nonce_bytes = bytes.fromhex(nonce)
+        except ValueError:
+            errors.append("subject_claim nonce is not a hex string")
+        else:
+            if len(nonce_bytes) != 16:
+                errors.append(
+                    "subject_claim nonce length mismatch (expected 16 bytes)"
+                )
+    claim_timestamp = subject_claim.get("claim_timestamp")
+    if not isinstance(claim_timestamp, str) or not claim_timestamp:
+        errors.append("subject_claim claim_timestamp missing or not a string")
+    if subject_claim.get("subject_id") != subject_id:
+        errors.append("subject_claim.subject_id does not match entry.subject_id")
+    if subject_claim.get("action") != action:
+        errors.append("subject_claim.action does not match entry.action")
+    if subject_claim.get("details_hash") != details_hash:
+        errors.append("subject_claim.details_hash does not match hash(entry.details)")
+    return errors
+
+
+def _check_subject_signature(
+    pubkey_bytes: bytes | None,
+    sig_bytes: bytes | None,
+    subject_claim,
+) -> list[str]:
+    """Ed25519 verify ``subject_signature`` over canonical(subject_claim)."""
+    if pubkey_bytes is None or sig_bytes is None:
+        return []
+    if not isinstance(subject_claim, dict):
+        return ["subject_claim missing or not an object"]
+    try:
+        Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(
+            sig_bytes, _canonical_payload_bytes(subject_claim)
+        )
+    except InvalidSignature:
+        return ["subject signature verification failed"]
+    except Exception as exc:  # pragma: no cover - defensive
+        return [f"subject signature verification error: {exc}"]
+    return []
+
+
+def _verify_witness_fields(
+    index: int, entry: dict, network: str
+) -> list[str]:
+    """Run the four subject-side checks on a witness entry."""
+    errors: list[str] = []
+    if "subject_claim" not in entry:
+        errors.append(f"entry {index}: missing subject_claim")
+    if "subject_pubkey" not in entry:
+        errors.append(f"entry {index}: missing subject_pubkey")
+    if "subject_signature" not in entry:
+        errors.append(f"entry {index}: missing subject_signature")
+    if errors:
+        return errors
+
+    sub_pk, sub_sig, decode_errors = _decode_subject_pubkey_and_sig(index, entry)
+    errors.extend(decode_errors)
+
+    binding_errors = _check_subject_identity_binding(
+        sub_pk, network, entry.get("subject_id")
+    )
+    errors.extend(f"entry {index}: {e}" for e in binding_errors)
+
+    consistency_errors = _check_claim_consistency(
+        entry.get("subject_claim"),
+        subject_id=entry.get("subject_id"),
+        action=entry.get("action"),
+        details_hash=entry.get("details_hash"),
+    )
+    errors.extend(f"entry {index}: {e}" for e in consistency_errors)
+
+    sig_errors = _check_subject_signature(
+        sub_pk, sub_sig, entry.get("subject_claim")
+    )
+    errors.extend(f"entry {index}: {e}" for e in sig_errors)
+
+    return errors
+
+
 def _verify_entry(
     index: int, entry: dict, prev_hash: str, network: str
 ) -> list[str]:
-    """Run the three integrity checks for a single entry.
+    """Run the integrity checks for a single entry.
 
-    Same three-check structure (chain / signature / binding) and the same
-    helper names as :class:`SignedAppendOnlyLog` in the producer file —
-    deliberately mirrored so a reviewer can diff the two at a glance.
-    The producer-side implementation is independent (no shared imports);
-    this verifier exists so a producer-side bug surfaces here as a
-    verification failure instead of silently propagating.
+    Same three reporter-side checks (chain / signature / binding) plus a
+    ``kind`` branch: ``self`` entries must not carry subject-* fields
+    (downgrade defense); ``witness`` entries get the four subject-side
+    checks (decode, binding, claim consistency, Ed25519 verify); any
+    other ``kind`` is rejected.
+
+    Helper names mirror :class:`SignedAppendOnlyLog` so a reviewer can
+    diff the two at a glance — the producer-side implementation is
+    independent (no shared imports).
     """
     errors: list[str] = []
     errors.extend(_check_chain(index, entry, prev_hash))
@@ -180,6 +328,22 @@ def _verify_entry(
     errors.extend(decode_errors)
     errors.extend(_check_signature(index, entry, pubkey_bytes, sig_bytes))
     errors.extend(_check_identity_binding(index, entry, pubkey_bytes, network))
+
+    kind = entry.get("kind")
+    if kind == "self":
+        for forbidden in ("subject_pubkey", "subject_claim", "subject_signature"):
+            if forbidden in entry:
+                errors.append(
+                    f"entry {index}: self entry must not carry {forbidden} "
+                    "(downgrade defense)"
+                )
+    elif kind == "witness":
+        errors.extend(_verify_witness_fields(index, entry, network))
+    else:
+        errors.append(
+            f"entry {index}: missing or unknown kind {kind!r} "
+            "(expected 'self' or 'witness')"
+        )
     return errors
 
 

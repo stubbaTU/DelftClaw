@@ -9,7 +9,10 @@ invariants, the empty-log case, and document the wrinkle that the plain
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,67 @@ from redteam.primitives.signed_log import SignedAppendOnlyLog
 def _make_identity(tmp_path: Path, name: str = "test_key.pem") -> OpenClawIdentity:
     """Create a fresh OpenClawIdentity backed by a key file in tmp_path."""
     return OpenClawIdentity(network="MAINNET", key_path=str(tmp_path / name))
+
+
+def _canonical(payload: dict) -> bytes:
+    """Local canonical-bytes mirror; intentionally re-implemented for tests."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _stable_hash_hex(payload: dict) -> str:
+    return hashlib.sha256(_canonical(payload)).hexdigest()
+
+
+def _make_subject_claim(
+    identity: OpenClawIdentity,
+    action: str,
+    details: dict,
+    *,
+    claim_timestamp: str = "2025-01-01T00:00:00+00:00",
+    nonce_hex: str = "00112233445566778899aabbccddeeff",
+) -> tuple[dict, bytes, bytes]:
+    """Build and Ed25519-sign a deterministic claim.
+
+    Returns ``(claim_dict, subject_pubkey_bytes, subject_signature_bytes)``.
+    Determinism (explicit timestamp + nonce) makes the bytes signed
+    reproducible across runs so tampering tests don't flake.
+    """
+    claim = {
+        "kind": "claim",
+        "version": 1,
+        "subject_id": str(identity.identity_hash),
+        "action": action,
+        "details_hash": _stable_hash_hex(details),
+        "claim_timestamp": claim_timestamp,
+        "nonce": nonce_hex,
+    }
+    sig = identity.sign(_canonical(claim))
+    return claim, identity.public_key, sig
+
+
+def _recompute_reporter_sig_and_hash(
+    entry: dict, identity: OpenClawIdentity
+) -> dict:
+    """Re-sign and re-hash an entry so the chain stays internally consistent.
+
+    Use after mutating a witness entry's *subject* fields (or any other
+    field) when you want everything *except* the targeted check to still
+    pass — i.e. only the subject-side check should fire on verify.
+    """
+    payload = dict(entry)
+    payload.pop("entry_hash", None)
+    payload.pop("signature", None)
+    sig = identity.sign(_canonical(payload)).hex()
+    entry["signature"] = sig
+    hashable = dict(entry)
+    hashable.pop("entry_hash", None)
+    hashable.pop("signature", None)
+    # Note: chain hash covers signature too via override (signature popped
+    # only from hashable for the *hash* input; the *signed* payload had no
+    # signature). Mirror the producer behavior exactly: hash input is
+    # entry minus entry_hash and signature.
+    entry["entry_hash"] = hashlib.sha256(_canonical(hashable)).hexdigest()
+    return entry
 
 
 def _append_three(wrapper: SignedAppendOnlyLog, identity: OpenClawIdentity) -> None:
@@ -96,6 +160,858 @@ def _mutate_entry(path: str, entry_index: int, mutation) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_self_entry_has_kind_field(tmp_path: Path) -> None:
+    """Every self entry must carry an explicit ``kind: "self"``."""
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+
+    _append_three(wrapper, identity)
+
+    entries = wrapper.read_entries()
+    assert len(entries) == 3
+    for entry in entries:
+        assert entry.get("kind") == "self"
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is True, errors
+
+
+def test_witness_entry_round_trip(tmp_path: Path) -> None:
+    """Happy path: B records A's signed claim. Wrapper + CLI both verify."""
+    identity_a = _make_identity(tmp_path, "key_a.pem")  # subject
+    identity_b = _make_identity(tmp_path, "key_b.pem")  # reporter
+
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    details = {"k": "v", "n": 1}
+    claim, subject_pubkey, subject_sig = _make_subject_claim(
+        identity_a, "observed_action", details
+    )
+
+    entry = wrapper.append_witness_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=subject_pubkey,
+        subject_claim=claim,
+        subject_signature=subject_sig,
+        action="observed_action",
+        details=details,
+    )
+
+    assert entry["kind"] == "witness"
+    assert entry["reporter_id"] == str(identity_b.identity_hash)
+    assert entry["subject_id"] == str(identity_a.identity_hash)
+    assert entry["action"] == "observed_action"
+    assert entry["details"] == details
+    assert entry["details_hash"] == _stable_hash_hex(details)
+    assert entry["subject_pubkey"] == subject_pubkey.hex()
+    assert entry["subject_signature"] == subject_sig.hex()
+    assert entry["subject_claim"] == claim
+    # Reporter signing key is B's, not A's.
+    assert entry["reporter_pubkey"] == identity_b.public_key.hex()
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is True, errors
+
+
+def test_mixed_self_and_witness_chain(tmp_path: Path) -> None:
+    """A chain interleaving self and witness entries verifies cleanly."""
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    # B writes one self entry first.
+    wrapper.append_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_b.identity_hash),
+        action="b_self_action",
+        details={"step": 1},
+    )
+
+    # B records A's signed claim as a witness entry.
+    details = {"step": 2, "by": "a"}
+    claim, pk, sig = _make_subject_claim(
+        identity_a, "a_action", details, nonce_hex="11" * 16
+    )
+    wrapper.append_witness_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=pk,
+        subject_claim=claim,
+        subject_signature=sig,
+        action="a_action",
+        details=details,
+    )
+
+    # B writes another self entry after.
+    wrapper.append_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_b.identity_hash),
+        action="b_self_action_2",
+        details={"step": 3},
+    )
+
+    entries = wrapper.read_entries()
+    assert len(entries) == 3
+    assert [e["kind"] for e in entries] == ["self", "witness", "self"]
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is True, errors
+
+
+def test_one_subject_claim_carried_by_two_witnesses(tmp_path: Path) -> None:
+    """The same A-signed claim, witnessed independently by B and by C.
+
+    Demonstrates the "narrow claim" design choice: A signs once, multiple
+    reporters can each independently record the same signed claim into
+    their own logs, and each log verifies independently.
+    """
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    identity_c = _make_identity(tmp_path, "key_c.pem")
+
+    details = {"event": "broadcast", "seq": 7}
+    claim, pk, sig = _make_subject_claim(
+        identity_a, "broadcast_action", details, nonce_hex="22" * 16
+    )
+
+    log_b = str(tmp_path / "log_b.jsonl")
+    wrapper_b = SignedAppendOnlyLog(identity_b, log_b)
+    wrapper_b.append_witness_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=pk,
+        subject_claim=claim,
+        subject_signature=sig,
+        action="broadcast_action",
+        details=details,
+    )
+
+    log_c = str(tmp_path / "log_c.jsonl")
+    wrapper_c = SignedAppendOnlyLog(identity_c, log_c)
+    wrapper_c.append_witness_event(
+        reporter_id=str(identity_c.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=pk,
+        subject_claim=claim,
+        subject_signature=sig,
+        action="broadcast_action",
+        details=details,
+    )
+
+    ok_b, errs_b = wrapper_b.verify_integrity()
+    assert ok_b is True, errs_b
+    ok_c, errs_c = wrapper_c.verify_integrity()
+    assert ok_c is True, errs_c
+
+    # Each entry's reporter_id is the *witness's* id, not A's.
+    entries_b = wrapper_b.read_entries()
+    entries_c = wrapper_c.read_entries()
+    assert entries_b[0]["reporter_id"] == str(identity_b.identity_hash)
+    assert entries_c[0]["reporter_id"] == str(identity_c.identity_hash)
+    # But both bind the same subject claim verbatim.
+    assert entries_b[0]["subject_claim"] == entries_c[0]["subject_claim"]
+    assert entries_b[0]["subject_signature"] == entries_c[0]["subject_signature"]
+
+
+# ---------------------------------------------------------------------------
+# Group 3 — producer rejection: append_witness_event must raise, never write
+# ---------------------------------------------------------------------------
+
+
+def _witness_kwargs(
+    identity_a: OpenClawIdentity,
+    identity_b: OpenClawIdentity,
+    *,
+    action: str = "act",
+    details: dict | None = None,
+    nonce_hex: str = "33" * 16,
+):
+    if details is None:
+        details = {"d": 1}
+    claim, pk, sig = _make_subject_claim(
+        identity_a, action, details, nonce_hex=nonce_hex
+    )
+    return {
+        "reporter_id": str(identity_b.identity_hash),
+        "subject_id": str(identity_a.identity_hash),
+        "subject_pubkey": pk,
+        "subject_claim": claim,
+        "subject_signature": sig,
+        "action": action,
+        "details": details,
+    }
+
+
+def _assert_no_log_written(log_path: str) -> None:
+    p = Path(log_path)
+    if not p.exists():
+        return
+    text = p.read_text(encoding="utf-8")
+    # Strip header / blank lines.
+    real_entries = [
+        line for line in text.splitlines()
+        if line and not line.startswith("===")
+    ]
+    assert real_entries == [], f"witness entry was persisted despite rejection: {real_entries!r}"
+
+
+def test_witness_rejects_bad_subject_signature(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # Replace the signature with all-zero bytes of correct length.
+    kwargs["subject_signature"] = b"\x00" * 64
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_subject_id_binding_mismatch(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # Wrong subject_id — does not derive from subject_pubkey + network.
+    kwargs["subject_id"] = "f" * 64
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_inconsistent_action(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b, action="claim_action")
+    # Entry's action disagrees with claim's action.
+    kwargs["action"] = "different_entry_action"
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_inconsistent_details_hash(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(
+        identity_a, identity_b, details={"original": True}
+    )
+    # The claim was signed over hash({"original": True}); pass different details.
+    kwargs["details"] = {"swapped": True}
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_malformed_pubkey_length(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # 31 bytes instead of 32.
+    kwargs["subject_pubkey"] = b"\x00" * 31
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_malformed_signature_length(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # 63 bytes instead of 64.
+    kwargs["subject_signature"] = b"\x00" * 63
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_missing_claim_timestamp(tmp_path: Path) -> None:
+    """Producer rejects a claim that's missing the claim_timestamp field."""
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # Drop claim_timestamp from the claim. The signature won't match either
+    # but the claim-consistency check fires before the signature check.
+    bad_claim = dict(kwargs["subject_claim"])
+    bad_claim.pop("claim_timestamp", None)
+    kwargs["subject_claim"] = bad_claim
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+def test_witness_rejects_short_nonce(tmp_path: Path) -> None:
+    """Producer rejects a claim whose nonce is shorter than 16 bytes."""
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    kwargs = _witness_kwargs(identity_a, identity_b)
+    # 4 hex chars = 2 bytes; valid hex, but too short.
+    bad_claim = dict(kwargs["subject_claim"])
+    bad_claim["nonce"] = "abcd"
+    kwargs["subject_claim"] = bad_claim
+
+    with pytest.raises(ValueError):
+        wrapper.append_witness_event(**kwargs)
+    _assert_no_log_written(log_path)
+
+
+# ---------------------------------------------------------------------------
+# Group 4 — verifier tamper detection on witness entries
+# Each test mutates one witness entry on disk, then recomputes the reporter
+# signature + entry_hash so the chain stays internally consistent except for
+# the targeted check.
+# ---------------------------------------------------------------------------
+
+
+def _setup_witness_log(
+    tmp_path: Path, *, name: str = "log.jsonl"
+) -> tuple[OpenClawIdentity, OpenClawIdentity, SignedAppendOnlyLog, str]:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / name)
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    details = {"k": "v"}
+    claim, pk, sig = _make_subject_claim(
+        identity_a, "obs", details, nonce_hex="44" * 16
+    )
+    wrapper.append_witness_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=pk,
+        subject_claim=claim,
+        subject_signature=sig,
+        action="obs",
+        details=details,
+    )
+    return identity_a, identity_b, wrapper, log_path
+
+
+def _mutate_and_repair(
+    log_path: str,
+    entry_index: int,
+    mutation,
+    reporter_identity: OpenClawIdentity,
+) -> None:
+    """Apply ``mutation`` then recompute reporter sig + entry_hash."""
+
+    def _wrap(entry: dict) -> None:
+        mutation(entry)
+        _recompute_reporter_sig_and_hash(entry, reporter_identity)
+
+    _mutate_entry(log_path, entry_index, _wrap)
+
+
+def test_witness_tamper_subject_signature_zeroed(tmp_path: Path) -> None:
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(subject_signature="00" * 64),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("subject signature verification failed" in err for err in errors)
+
+
+def test_witness_tamper_subject_pubkey_swap_binding_fires(tmp_path: Path) -> None:
+    """Swap subject_pubkey only — identity binding fires (subject_id no longer derives)."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+    other = _make_identity(tmp_path, "other.pem")
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(subject_pubkey=other.public_key.hex()),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("subject identity binding mismatch" in err for err in errors)
+
+
+def test_witness_tamper_consistent_pubkey_and_id_swap(tmp_path: Path) -> None:
+    """Swap both pubkey AND subject_id consistently — binding passes but subject sig fails."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+    other = _make_identity(tmp_path, "other.pem")
+
+    def _swap(entry: dict) -> None:
+        entry["subject_pubkey"] = other.public_key.hex()
+        entry["subject_id"] = str(other.identity_hash)
+        # Also patch the claim's subject_id so claim consistency stays
+        # internally aligned — this isolates the *signature* failure.
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"]["subject_id"] = str(other.identity_hash)
+
+    _mutate_and_repair(log_path, 1, _swap, identity_b)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("subject signature verification failed" in err for err in errors)
+
+
+def test_witness_tamper_action_in_entry_only(tmp_path: Path) -> None:
+    """Mutate entry.action; claim.action unchanged → claim consistency fires."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(action="evil_action"),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("subject_claim.action" in err for err in errors)
+
+
+def test_witness_tamper_action_in_claim_only(tmp_path: Path) -> None:
+    """Mutate claim.action; entry.action unchanged → claim consistency fires."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"]["action"] = "evil_action"
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any(
+        "subject_claim.action" in err
+        or "subject signature verification failed" in err
+        for err in errors
+    )
+
+
+def test_witness_tamper_details_breaks_details_hash(tmp_path: Path) -> None:
+    """Mutate entry.details; details_hash recomputes differently → claim mismatch."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["details"] = {"swapped": True}
+        # details_hash field should also be updated to match the new details
+        # so that the *primary* failure is "claim.details_hash != recomputed".
+        entry["details_hash"] = _stable_hash_hex({"swapped": True})
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("details_hash" in err for err in errors)
+
+
+def test_witness_tamper_claim_timestamp_removed(tmp_path: Path) -> None:
+    """Drop claim_timestamp from the claim → envelope-schema check fires."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"].pop("claim_timestamp", None)
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("claim_timestamp" in err for err in errors)
+
+
+def test_witness_tamper_nonce_truncated(tmp_path: Path) -> None:
+    """Truncate the nonce to 4 hex chars → either subject-sig or envelope-schema fires."""
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"]["nonce"] = "abcd"
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    # Mutating the claim bytes invalidates the subject signature; the
+    # envelope-schema check on nonce length also fires. Either is acceptable
+    # — what matters is the entry is rejected.
+    assert any(
+        "subject signature verification failed" in err
+        or "nonce length mismatch" in err
+        for err in errors
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 5 — missing-field + downgrade defenses
+# ---------------------------------------------------------------------------
+
+
+def test_witness_missing_subject_pubkey(tmp_path: Path) -> None:
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.pop("subject_pubkey", None),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("missing subject_pubkey" in err for err in errors)
+
+
+def test_witness_missing_subject_signature(tmp_path: Path) -> None:
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.pop("subject_signature", None),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("missing subject_signature" in err for err in errors)
+
+
+def test_witness_missing_subject_claim(tmp_path: Path) -> None:
+    identity_a, identity_b, wrapper, log_path = _setup_witness_log(tmp_path)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.pop("subject_claim", None),
+        identity_b,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("missing subject_claim" in err for err in errors)
+
+
+def test_entry_missing_kind(tmp_path: Path) -> None:
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.pop("kind", None),
+        identity,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("missing or unknown kind" in err for err in errors)
+
+
+def test_entry_unknown_kind_value(tmp_path: Path) -> None:
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(kind="delegate"),
+        identity,
+    )
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("missing or unknown kind" in err for err in errors)
+
+
+def test_self_entry_carrying_subject_signature_rejected(tmp_path: Path) -> None:
+    """Downgrade defense: a self entry with subject fields is rejected."""
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+
+    # Smuggle a fake subject_signature into a self entry. Re-sign + re-hash
+    # so the *only* failure is the downgrade defense.
+    def _smuggle(entry: dict) -> None:
+        entry["subject_signature"] = "00" * 64
+        entry["subject_pubkey"] = "00" * 32
+        entry["subject_claim"] = {
+            "kind": "claim", "version": 1, "subject_id": "0" * 64,
+            "action": "x", "details_hash": "0" * 64,
+            "claim_timestamp": "2025-01-01T00:00:00+00:00",
+            "nonce": "00" * 16,
+        }
+
+    _mutate_and_repair(log_path, 1, _smuggle, identity)
+
+    ok, errors = wrapper.verify_integrity()
+    assert ok is False
+    assert any("downgrade defense" in err for err in errors)
+
+
+# ---------------------------------------------------------------------------
+# Group 6 — CLI verifier mirror coverage for witness entries
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _run_cli_verify(log_path: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "redteam.primitives.verify",
+            "--log",
+            log_path,
+            "--network",
+            "MAINNET",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO_ROOT),
+        timeout=30,
+    )
+
+
+def test_cli_verifies_clean_witness_round_trip(tmp_path: Path) -> None:
+    identity_a = _make_identity(tmp_path, "key_a.pem")
+    identity_b = _make_identity(tmp_path, "key_b.pem")
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity_b, log_path)
+
+    # Mixed chain: self, witness, self.
+    wrapper.append_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_b.identity_hash),
+        action="b1",
+        details={"i": 0},
+    )
+    details = {"x": 9}
+    claim, pk, sig = _make_subject_claim(
+        identity_a, "wact", details, nonce_hex="55" * 16
+    )
+    wrapper.append_witness_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_a.identity_hash),
+        subject_pubkey=pk,
+        subject_claim=claim,
+        subject_signature=sig,
+        action="wact",
+        details=details,
+    )
+    wrapper.append_event(
+        reporter_id=str(identity_b.identity_hash),
+        subject_id=str(identity_b.identity_hash),
+        action="b2",
+        details={"i": 2},
+    )
+
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Verified 3 entries: OK" in result.stdout
+
+
+def test_cli_detects_witness_subject_signature_zeroed(tmp_path: Path) -> None:
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(subject_signature="00" * 64),
+        identity_b,
+    )
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "subject signature verification failed" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_witness_pubkey_swap_binding(tmp_path: Path) -> None:
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+    other = _make_identity(tmp_path, "other.pem")
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(subject_pubkey=other.public_key.hex()),
+        identity_b,
+    )
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "subject identity binding mismatch" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_witness_action_in_entry_only(tmp_path: Path) -> None:
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(action="evil"),
+        identity_b,
+    )
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "subject_claim.action" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_witness_details_hash_mismatch(tmp_path: Path) -> None:
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["details"] = {"swapped": True}
+        entry["details_hash"] = _stable_hash_hex({"swapped": True})
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "details_hash" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_missing_subject_claim(tmp_path: Path) -> None:
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.pop("subject_claim", None),
+        identity_b,
+    )
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "missing subject_claim" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_self_entry_with_subject_fields(tmp_path: Path) -> None:
+    """CLI rejects a self entry that smuggled in subject fields."""
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+
+    def _smuggle(entry: dict) -> None:
+        entry["subject_signature"] = "00" * 64
+
+    _mutate_and_repair(log_path, 1, _smuggle, identity)
+
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "downgrade defense" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_unknown_kind(tmp_path: Path) -> None:
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+    _mutate_and_repair(
+        log_path, 1,
+        lambda e: e.update(kind="delegate"),
+        identity,
+    )
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    assert "unknown kind" in (result.stdout + result.stderr)
+
+
+def test_cli_detects_witness_consistent_pubkey_and_id_swap(tmp_path: Path) -> None:
+    """CLI mirror of test_witness_tamper_consistent_pubkey_and_id_swap.
+
+    Swap subject_pubkey AND subject_id (and the claim's subject_id) to a
+    different identity's values so binding passes and claim consistency
+    stays internally aligned. The subject signature was made with the
+    original identity's secret key, so it must fail under the new pubkey.
+    """
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+    other = _make_identity(tmp_path, "other.pem")
+
+    def _swap(entry: dict) -> None:
+        entry["subject_pubkey"] = other.public_key.hex()
+        entry["subject_id"] = str(other.identity_hash)
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"]["subject_id"] = str(other.identity_hash)
+
+    _mutate_and_repair(log_path, 1, _swap, identity_b)
+
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    assert "subject signature verification failed" in output
+    # Sanity: it's the *subject*-sig that fails, not the binding check
+    # (since binding now passes after the consistent swap).
+    assert "subject identity binding mismatch" not in output
+
+
+def test_cli_detects_witness_action_in_claim_only(tmp_path: Path) -> None:
+    """CLI mirror of test_witness_tamper_action_in_claim_only.
+
+    Mutating only ``subject_claim["action"]`` (leaving entry.action alone)
+    invalidates A's signature over the claim bytes. Either the claim
+    consistency check or the subject-signature check fires; both indicate
+    rejection.
+    """
+    identity_a, identity_b, _wrapper, log_path = _setup_witness_log(tmp_path)
+
+    def _mutate(entry: dict) -> None:
+        entry["subject_claim"] = dict(entry["subject_claim"])
+        entry["subject_claim"]["action"] = "evil_action"
+
+    _mutate_and_repair(log_path, 1, _mutate, identity_b)
+
+    result = _run_cli_verify(log_path)
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    assert (
+        "subject_claim.action" in output
+        or "subject signature verification failed" in output
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 7 — regression guard: self entries via append_event omit subject fields
+# ---------------------------------------------------------------------------
+
+
+def test_witness_entry_omits_subject_fields_on_self(tmp_path: Path) -> None:
+    """Self entries written via ``append_event`` carry no subject_* fields."""
+    identity = _make_identity(tmp_path)
+    log_path = str(tmp_path / "log.jsonl")
+    wrapper = SignedAppendOnlyLog(identity, log_path)
+    _append_three(wrapper, identity)
+
+    entries = wrapper.read_entries()
+    for entry in entries:
+        assert entry["kind"] == "self"
+        assert "subject_pubkey" not in entry
+        assert "subject_claim" not in entry
+        assert "subject_signature" not in entry
 
 
 def test_round_trip_writes_signature_and_pubkey(tmp_path: Path) -> None:

@@ -54,6 +54,20 @@ class SignedAppendOnlyLog(AppendOnlyLog):
     Plain :class:`AppendOnlyLog.verify_integrity` will reject these entries
     because its ``_entry_hash`` does not pop ``signature`` — that asymmetry
     is intentional and is documented by ``test_signed_log.py``.
+
+    Every entry carries an explicit ``kind`` field of either ``"self"`` or
+    ``"witness"``. ``append_event`` writes self entries (the reporter
+    describes its own action). ``append_witness_event`` writes witness
+    entries: a *reporter* (B) records an action by a *subject* (A) and
+    embeds A's own Ed25519 signature over a fixed-schema "claim" envelope
+    as cryptographic proof the underlying claim came from A's key. The
+    subject signature is computed by A over the canonical bytes of a
+    portable claim object (kind=claim, version=1, subject_id, action,
+    details_hash, claim_timestamp, nonce) — not the wrapping entry, so A
+    can sign once and have multiple reporters independently witness it.
+    The pre-write validations in ``append_witness_event`` raise on
+    failure: a witness entry containing an invalid subject signature is
+    never written to the log.
     """
 
     def __init__(
@@ -112,6 +126,60 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         )
         return entry
 
+    def append_witness_event(
+        self,
+        *,
+        reporter_id: str,
+        subject_id: str,
+        subject_pubkey: bytes | str,
+        subject_claim: dict,
+        subject_signature: bytes | str,
+        action: str,
+        details: dict,
+        severity: int = 0,
+        evidence: dict | None = None,
+    ) -> dict:
+        """Append a witness entry: B records A's signed claim into B's log.
+
+        Pre-write validations (raise on failure — never write a chain
+        entry containing an invalid subject signature):
+
+        1. ``subject_pubkey`` decodes to 32 bytes; ``subject_signature``
+           decodes to 64 bytes.
+        2. ``SHA256(subject_pubkey || self._identity.network) == subject_id``.
+        3. ``subject_claim["subject_id"] == subject_id`` AND
+           ``subject_claim["action"] == action`` AND
+           ``subject_claim["details_hash"] == _stable_hash(details)``.
+        4. Ed25519 verify of ``subject_signature`` over canonical bytes of
+           ``subject_claim`` against ``subject_pubkey``.
+
+        Cross-network witnesses are out of scope this iteration: if the
+        subject is on a different network the binding check (#2) fails.
+        """
+        with self._lock:
+            entry = self._build_witness_entry(
+                reporter_id=reporter_id,
+                subject_id=subject_id,
+                subject_pubkey=subject_pubkey,
+                subject_claim=subject_claim,
+                subject_signature=subject_signature,
+                action=action,
+                details=details,
+                severity=severity,
+                evidence=evidence,
+            )
+            self._persist(entry)
+
+        _logger.debug(
+            "signed_log.append_witness",
+            reporter_id=reporter_id,
+            subject_id=subject_id,
+            action=action,
+            previous_hash=entry["previous_hash"],
+            entry_hash=entry["entry_hash"],
+        )
+        return entry
+
     def _build_entry(
         self,
         reporter_id: str,
@@ -134,6 +202,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
 
         entry: dict[str, Any] = {
             "version": 2,
+            "kind": "self",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "reporter_id": reporter_id,
             "subject_id": subject_id,
@@ -150,6 +219,84 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         # Sign the canonical JSON of the entry so far (no signature, no
         # entry_hash). Then attach the signature and finally compute the
         # chain hash, which covers the signature too via the override.
+        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
+        entry["entry_hash"] = self._entry_hash(entry)
+        return entry
+
+    def _build_witness_entry(
+        self,
+        *,
+        reporter_id: str,
+        subject_id: str,
+        subject_pubkey: bytes | str,
+        subject_claim: dict,
+        subject_signature: bytes | str,
+        action: str,
+        details: dict,
+        severity: int,
+        evidence: dict | None,
+    ) -> dict[str, Any]:
+        """Assemble, validate, sign, and chain-hash a witness entry.
+
+        Caller must hold ``self._lock``. Runs the four pre-write checks;
+        any failure raises before persistence.
+        """
+        # (1) Decode pubkey/sig and length-check. Raises ValueError on
+        # malformed/wrong-length inputs.
+        pubkey_bytes, sig_bytes = self._decode_subject_pubkey_and_sig_strict(
+            subject_pubkey, subject_signature
+        )
+
+        # (2) Identity binding: SHA256(pubkey || network) == subject_id.
+        binding_errors = self._check_subject_identity_binding(
+            pubkey_bytes, self._identity.network, subject_id
+        )
+        if binding_errors:
+            raise ValueError("; ".join(binding_errors))
+
+        # (3) Claim consistency with the entry: subject_id, action, details_hash.
+        details_hash = _stable_hash(details)
+        consistency_errors = self._check_claim_consistency(
+            subject_claim,
+            subject_id=subject_id,
+            action=action,
+            details_hash=details_hash,
+        )
+        if consistency_errors:
+            raise ValueError("; ".join(consistency_errors))
+
+        # (4) Ed25519 verify of subject_signature over canonical(subject_claim).
+        sig_errors = self._check_subject_signature(
+            pubkey_bytes, sig_bytes, subject_claim
+        )
+        if sig_errors:
+            raise ValueError("; ".join(sig_errors))
+
+        evidence_payload = evidence if evidence is not None else {}
+
+        entry: dict[str, Any] = {
+            "version": 2,
+            "kind": "witness",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "reporter_id": reporter_id,
+            "subject_id": subject_id,
+            "action": action,
+            "severity": severity,
+            "details": details,
+            "evidence": evidence_payload,
+            "details_hash": details_hash,
+            "evidence_hash": _stable_hash(evidence_payload),
+            "previous_hash": self.latest_hash(),
+            "reporter_pubkey": self._identity.public_key.hex(),
+            "subject_pubkey": pubkey_bytes.hex(),
+            "subject_claim": subject_claim,
+            "subject_signature": sig_bytes.hex(),
+        }
+
+        # Reporter signs canonical bytes of entry (sans signature/entry_hash).
+        # subject_signature rides along into the reporter signature and the
+        # chain hash, so an attacker who later swaps in a different valid
+        # subject sig invalidates the reporter sig and the entry_hash.
         entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
         entry["entry_hash"] = self._entry_hash(entry)
         return entry
@@ -240,6 +387,29 @@ class SignedAppendOnlyLog(AppendOnlyLog):
                 errors.extend(
                     self._check_identity_binding(index, entry, pubkey_bytes, network)
                 )
+
+                # Discriminate self vs witness. Reject anything else, and
+                # reject self entries that smuggle subject fields (downgrade
+                # defense).
+                kind = entry.get("kind")
+                if kind == "self":
+                    for forbidden in (
+                        "subject_pubkey",
+                        "subject_claim",
+                        "subject_signature",
+                    ):
+                        if forbidden in entry:
+                            errors.append(
+                                f"entry {index}: self entry must not carry "
+                                f"{forbidden} (downgrade defense)"
+                            )
+                elif kind == "witness":
+                    errors.extend(self._verify_witness_fields(index, entry, network))
+                else:
+                    errors.append(
+                        f"entry {index}: missing or unknown kind {kind!r} "
+                        "(expected 'self' or 'witness')"
+                    )
 
                 # Advance using the *stored* entry_hash so we still detect
                 # downstream chain breaks even if this entry mismatched.
@@ -373,3 +543,196 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             )
             return None
         return decoded
+
+    # ------------------------------------------------------------------
+    # Witness-entry helpers (mirrored by name in redteam.primitives.verify)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _coerce_hex_or_bytes(value: bytes | str, *, name: str, expected_len: int) -> bytes:
+        """Strict decode: bytes ``value`` of correct length, or hex string thereof.
+
+        Raises ``ValueError`` on type mismatch, hex-decode failure, or
+        wrong length. Used by the producer-side strict path.
+        """
+        if isinstance(value, bytes):
+            decoded = value
+        elif isinstance(value, str):
+            try:
+                decoded = bytes.fromhex(value)
+            except ValueError as exc:
+                raise ValueError(f"malformed {name} hex") from exc
+        else:
+            raise ValueError(f"{name} must be bytes or hex string")
+        if len(decoded) != expected_len:
+            raise ValueError(
+                f"{name} is {len(decoded)} bytes, expected {expected_len}"
+            )
+        return decoded
+
+    @classmethod
+    def _decode_subject_pubkey_and_sig_strict(
+        cls, subject_pubkey: bytes | str, subject_signature: bytes | str
+    ) -> tuple[bytes, bytes]:
+        """Producer-side: raise on any decode/length failure."""
+        pubkey_bytes = cls._coerce_hex_or_bytes(
+            subject_pubkey, name="subject_pubkey", expected_len=32
+        )
+        sig_bytes = cls._coerce_hex_or_bytes(
+            subject_signature, name="subject_signature", expected_len=64
+        )
+        return pubkey_bytes, sig_bytes
+
+    @staticmethod
+    def _decode_subject_pubkey_and_sig(
+        index: int, entry: dict
+    ) -> tuple[bytes | None, bytes | None, list[str]]:
+        """Verifier-side: decode hex fields off a witness entry.
+
+        Returns ``(pubkey_or_None, sig_or_None, errors)``. Mirrors the
+        shape of :meth:`_decode_pubkey_and_sig` so a reviewer can diff
+        the two at a glance.
+        """
+        errors: list[str] = []
+        pubkey_bytes = SignedAppendOnlyLog._decode_hex_field(
+            entry, "subject_pubkey", expected_len=32, index=index, errors=errors
+        )
+        sig_bytes = SignedAppendOnlyLog._decode_hex_field(
+            entry, "subject_signature", expected_len=64, index=index, errors=errors
+        )
+        return pubkey_bytes, sig_bytes, errors
+
+    @staticmethod
+    def _check_subject_identity_binding(
+        pubkey_bytes: bytes | None, network: str, subject_id: str | None
+    ) -> list[str]:
+        """Verify ``SHA256(subject_pubkey || network) == subject_id``."""
+        if pubkey_bytes is None:
+            return []
+        expected = hashlib.sha256(
+            pubkey_bytes + network.encode("utf-8")
+        ).hexdigest()
+        if subject_id != expected:
+            return [
+                "subject identity binding mismatch "
+                f"(subject_id does not derive from subject_pubkey | {network})"
+            ]
+        return []
+
+    @staticmethod
+    def _check_claim_consistency(
+        subject_claim: dict | None,
+        *,
+        subject_id: str,
+        action: str,
+        details_hash: str,
+    ) -> list[str]:
+        """Verify the claim envelope agrees with the entry's bound fields.
+
+        Also enforces the envelope schema (``kind == "claim"``, integer
+        ``version``, hex string ``nonce``).
+        """
+        errors: list[str] = []
+        if not isinstance(subject_claim, dict):
+            return ["subject_claim missing or not an object"]
+        if subject_claim.get("kind") != "claim":
+            errors.append(
+                "subject_claim kind is not 'claim' "
+                f"(got {subject_claim.get('kind')!r})"
+            )
+        if not isinstance(subject_claim.get("version"), int):
+            errors.append("subject_claim version is not an integer")
+        nonce = subject_claim.get("nonce")
+        if not isinstance(nonce, str):
+            errors.append("subject_claim nonce is missing or not a string")
+        else:
+            try:
+                nonce_bytes = bytes.fromhex(nonce)
+            except ValueError:
+                errors.append("subject_claim nonce is not a hex string")
+            else:
+                if len(nonce_bytes) != 16:
+                    errors.append(
+                        "subject_claim nonce length mismatch (expected 16 bytes)"
+                    )
+        claim_timestamp = subject_claim.get("claim_timestamp")
+        if not isinstance(claim_timestamp, str) or not claim_timestamp:
+            errors.append(
+                "subject_claim claim_timestamp missing or not a string"
+            )
+        if subject_claim.get("subject_id") != subject_id:
+            errors.append(
+                "subject_claim.subject_id does not match entry.subject_id"
+            )
+        if subject_claim.get("action") != action:
+            errors.append(
+                "subject_claim.action does not match entry.action"
+            )
+        if subject_claim.get("details_hash") != details_hash:
+            errors.append(
+                "subject_claim.details_hash does not match hash(entry.details)"
+            )
+        return errors
+
+    @staticmethod
+    def _check_subject_signature(
+        pubkey_bytes: bytes | None,
+        sig_bytes: bytes | None,
+        subject_claim: dict | None,
+    ) -> list[str]:
+        """Ed25519 verify ``subject_signature`` over canonical ``subject_claim``."""
+        if pubkey_bytes is None or sig_bytes is None:
+            return []
+        if not isinstance(subject_claim, dict):
+            return ["subject_claim missing or not an object"]
+        try:
+            Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(
+                sig_bytes, _canonical_bytes(subject_claim)
+            )
+        except InvalidSignature:
+            return ["subject signature verification failed"]
+        except (ValueError, TypeError) as exc:
+            return [f"subject signature verification error: {exc}"]
+        return []
+
+    @staticmethod
+    def _verify_witness_fields(
+        index: int, entry: dict, network: str
+    ) -> list[str]:
+        """Run the four subject-side checks on a witness entry."""
+        errors: list[str] = []
+
+        if "subject_claim" not in entry:
+            errors.append(f"entry {index}: missing subject_claim")
+        if "subject_pubkey" not in entry:
+            errors.append(f"entry {index}: missing subject_pubkey")
+        if "subject_signature" not in entry:
+            errors.append(f"entry {index}: missing subject_signature")
+        if errors:
+            # Without these, the rest can't run meaningfully.
+            return errors
+
+        sub_pubkey, sub_sig, decode_errors = (
+            SignedAppendOnlyLog._decode_subject_pubkey_and_sig(index, entry)
+        )
+        errors.extend(decode_errors)
+
+        binding_errors = SignedAppendOnlyLog._check_subject_identity_binding(
+            sub_pubkey, network, entry.get("subject_id")
+        )
+        errors.extend(f"entry {index}: {e}" for e in binding_errors)
+
+        consistency_errors = SignedAppendOnlyLog._check_claim_consistency(
+            entry.get("subject_claim"),
+            subject_id=entry.get("subject_id"),
+            action=entry.get("action"),
+            details_hash=entry.get("details_hash"),
+        )
+        errors.extend(f"entry {index}: {e}" for e in consistency_errors)
+
+        sig_errors = SignedAppendOnlyLog._check_subject_signature(
+            sub_pubkey, sub_sig, entry.get("subject_claim")
+        )
+        errors.extend(f"entry {index}: {e}" for e in sig_errors)
+
+        return errors
