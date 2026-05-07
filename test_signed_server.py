@@ -564,7 +564,8 @@ def test_options_log_returns_204(test_client) -> None:
     allow = resp.headers.get("allow")
     assert allow is not None
     methods = {m.strip() for m in allow.split(",")}
-    assert {"GET", "POST", "OPTIONS"}.issubset(methods)
+    # /log is POST-only (no GET); per-route Allow header reflects that.
+    assert {"POST", "OPTIONS"}.issubset(methods)
 
 
 def test_head_log_returns_405(test_client) -> None:
@@ -576,7 +577,7 @@ def test_head_log_returns_405(test_client) -> None:
     allow = resp.headers.get("allow")
     assert allow is not None
     methods = {m.strip() for m in allow.split(",")}
-    assert {"GET", "POST", "OPTIONS"}.issubset(methods)
+    assert {"POST", "OPTIONS"}.issubset(methods)
 
 
 def test_patch_log_returns_405(test_client) -> None:
@@ -588,7 +589,7 @@ def test_patch_log_returns_405(test_client) -> None:
     allow = resp.headers.get("allow")
     assert allow is not None
     methods = {m.strip() for m in allow.split(",")}
-    assert {"GET", "POST", "OPTIONS"}.issubset(methods)
+    assert {"POST", "OPTIONS"}.issubset(methods)
 
 
 def test_unknown_path_returns_404(test_client) -> None:

@@ -695,6 +695,75 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             return [f"subject signature verification error: {exc}"]
         return []
 
+    @classmethod
+    def verify_foreign_entry(
+        cls, entry: dict, network: str
+    ) -> tuple[bool, list[str]]:
+        """Verify an isolated signed entry without chain context.
+
+        Internal-consistency check on a single foreign signed entry: no
+        ``previous_hash`` walk (we don't have the foreign peer's chain),
+        but full signature + identity binding + per-kind validation.
+        Reuses the same static helpers that drive ``verify_integrity``.
+
+        Returns ``(ok, errors)``. ``ok`` is True iff ``errors`` is empty.
+        """
+        errors: list[str] = []
+
+        if not isinstance(entry, dict):
+            return False, ["entry must be a dict"]
+
+        version = entry.get("version")
+        if version != 2:
+            return False, [f"unsupported version {version!r}"]
+
+        # Recompute and compare entry_hash. _entry_hash strips entry_hash
+        # and signature before hashing, so this catches post-signing
+        # tampering of any other field.
+        expected_hash = cls._entry_hash(entry)
+        stored_hash = entry.get("entry_hash")
+        if stored_hash != expected_hash:
+            errors.append(
+                "entry_hash mismatch "
+                "(recomputed hash does not match stored entry_hash)"
+            )
+
+        pubkey_bytes, sig_bytes, decode_errors = cls._decode_pubkey_and_sig(
+            0, entry
+        )
+        errors.extend(decode_errors)
+        errors.extend(cls._check_signature(0, entry, pubkey_bytes, sig_bytes))
+        errors.extend(
+            cls._check_identity_binding(0, entry, pubkey_bytes, network)
+        )
+
+        kind = entry.get("kind")
+        if kind == "self":
+            for forbidden in (
+                "subject_pubkey",
+                "subject_claim",
+                "subject_signature",
+            ):
+                if forbidden in entry:
+                    errors.append(
+                        f"self entry must not carry {forbidden} "
+                        "(downgrade defense)"
+                    )
+        elif kind == "witness":
+            errors.extend(cls._verify_witness_fields(0, entry, network))
+        else:
+            errors.append(
+                f"missing or unknown kind {kind!r} "
+                "(expected 'self' or 'witness')"
+            )
+
+        # The reused helpers prefix errors with ``entry 0: `` because they
+        # were originally built for the chain-walking ``verify_integrity``
+        # path. In single-entry context the index is meaningless, so strip
+        # the prefix uniformly across every error source.
+        cleaned = [err.removeprefix("entry 0: ") for err in errors]
+        return len(cleaned) == 0, cleaned
+
     @staticmethod
     def _verify_witness_fields(
         index: int, entry: dict, network: str

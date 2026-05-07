@@ -2,9 +2,24 @@
 
 A small FastAPI application that exposes:
 
-* ``GET  /health`` — liveness probe returning ``{"ok": true}``.
-* ``POST /log``    — append a signed event to the underlying log and return
-  its ``entry_hash``.
+* ``GET  /health``                — liveness probe returning ``{"ok": true}``.
+* ``POST /log``                   — append a signed event to the underlying
+  log and return its ``entry_hash``.
+* ``GET  /identity``              — node identity advert (identity_hash,
+  pubkey_hex, network).
+* ``GET  /head``                  — current chain head (``"GENESIS"`` if
+  the log is empty).
+* ``GET  /entries``               — incremental sync (``since=<hash>``,
+  ``limit=<n>``); ``since="GENESIS"`` (or omitted) reads from the start.
+* ``GET  /entries/{entry_hash}``  — single entry by chain hash, or 404.
+* ``POST /entries``               — accept a foreign signed entry into the
+  per-source peer cache.
+
+Peer-cache scope (Layer 3 dev mode): the receiver does NOT splice
+foreign entries into its own chain. Each accepted foreign entry is
+appended to ``<peer_log_dir>/<source_id>.jsonl`` (one entry per line,
+no header, no chain semantics on receive). The receiver's own chain is
+left untouched. ``source_id`` is the foreign entry's ``reporter_id``.
 
 The single factory exported here is :func:`build_app`, which returns a
 configured ``FastAPI`` app. A single :class:`SignedAppendOnlyLog` is built
@@ -42,6 +57,8 @@ The crypto guarantees this server does **not** provide:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -53,6 +70,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.peer_log import PeerLog
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from shared.logging import get_logger
 
@@ -171,6 +189,24 @@ class _LogEntryRequest(BaseModel):
         return v
 
 
+class _PeerEntryRequest(BaseModel):
+    """Pydantic model for the POST /entries body (foreign signed entry).
+
+    Loose by design: only the top-level shape is enforced here so a
+    malformed *recursive* JSON body (deeply nested, malicious) is
+    rejected at parse time. The real cryptographic verification happens
+    inside :meth:`SignedAppendOnlyLog.verify_foreign_entry` via the
+    :class:`PeerLog`. Required fields: ``version`` (int) and ``kind``
+    (str). All other foreign-entry fields pass through unchanged via
+    ``model_config = {"extra": "allow"}``.
+    """
+
+    version: int
+    kind: str
+
+    model_config = {"extra": "allow"}
+
+
 class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
     """Reject oversize requests via ``Content-Length`` before reading body.
 
@@ -198,23 +234,42 @@ class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
+def build_app(
+    identity: OpenClawIdentity,
+    log_path: str,
+    peer_log_dir: "str | os.PathLike[str] | None" = None,
+) -> FastAPI:
     """Return a configured FastAPI app.
 
-    The ``SignedAppendOnlyLog`` is built once here and captured by the
-    route handlers, so every request reuses the same instance and the
-    file handle / chain state stays shared. The reporter identity is
-    likewise captured at build time — rotating ``identity`` requires
-    rebuilding the app.
+    The ``SignedAppendOnlyLog`` and ``PeerLog`` are built once here and
+    captured by the route handlers, so every request reuses the same
+    instances and the file handles / chain state stay shared. The
+    reporter identity is likewise captured at build time — rotating
+    ``identity`` requires rebuilding the app.
+
+    ``peer_log_dir`` defaults to a ``peer_logs`` sibling of ``log_path``
+    when omitted, so callers that don't care about peer-cache placement
+    (e.g. legacy POST /log smoke tests) need not supply it.
     """
     if identity is None:
         raise ValueError("identity must not be None")
 
     signed_log = SignedAppendOnlyLog(identity, log_path)
     reporter_id = str(identity.identity_hash)
+    if peer_log_dir is None:
+        peer_log_dir = str(Path(log_path).resolve().parent / "peer_logs")
+    peer_log = PeerLog(
+        peer_log_dir, network=identity.network, own_id=reporter_id
+    )
 
     app = FastAPI()
     app.add_middleware(_BodySizeLimitMiddleware)
+
+    # Per-route Allow header registry. Built from ``app.routes`` after
+    # all routes are registered so the 405 handler can return the actual
+    # method set for the request's path instead of a one-size-fits-all
+    # default. Closure-captured by ``_http_exc_handler`` below.
+    path_methods: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # Exception handlers
@@ -250,10 +305,19 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
         request: Request, exc: StarletteHTTPException
     ) -> Response:
         if exc.status_code == 405:
+            # Per-route Allow header: look up methods registered for this
+            # exact path. Falls back to the global allow-set only when
+            # the path is unknown (e.g. an unrelated 405 produced
+            # somewhere we didn't anticipate).
+            allowed = path_methods.get(request.url.path)
+            if allowed:
+                allow_header = ", ".join(sorted(allowed))
+            else:
+                allow_header = _ALLOWED_METHODS
             return Response(
                 status_code=405,
                 headers={
-                    "Allow": _ALLOWED_METHODS,
+                    "Allow": allow_header,
                     "Content-Length": "0",
                 },
             )
@@ -275,9 +339,11 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
     @app.options("/log")
     async def _log_options() -> Response:
         # Conventional non-CORS preflight: 204 + Allow header.
+        # /log is POST-only (no GET) so the per-path allow set differs
+        # from the multi-verb /entries route.
         return Response(
             status_code=204,
-            headers={"Allow": _ALLOWED_METHODS, "Content-Length": "0"},
+            headers={"Allow": "POST, OPTIONS", "Content-Length": "0"},
         )
 
     @app.post("/log")
@@ -335,6 +401,173 @@ def build_app(identity: OpenClawIdentity, log_path: str) -> FastAPI:
             {"entry_hash": entry["entry_hash"]}, status_code=200
         )
 
+    # ------------------------------------------------------------------
+    # Layer 3: peer-to-peer endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/identity")
+    async def _get_identity() -> JSONResponse:
+        """Node identity advert: identity_hash, hex pubkey, network."""
+        return JSONResponse(
+            {
+                "identity_hash": reporter_id,
+                "pubkey_hex": identity.public_key.hex(),
+                "network": identity.network,
+            },
+            status_code=200,
+        )
+
+    @app.options("/identity")
+    async def _identity_options() -> Response:
+        # /identity only services GET (and OPTIONS for preflight).
+        return Response(
+            status_code=204,
+            headers={"Allow": "GET, OPTIONS", "Content-Length": "0"},
+        )
+
+    @app.get("/head")
+    async def _get_head() -> JSONResponse:
+        """Current chain head (``"GENESIS"`` if the log is empty)."""
+        return JSONResponse(
+            {"head_hash": signed_log.latest_hash()}, status_code=200
+        )
+
+    @app.options("/head")
+    async def _head_options() -> Response:
+        return Response(
+            status_code=204,
+            headers={"Allow": "GET, OPTIONS", "Content-Length": "0"},
+        )
+
+    @app.get("/entries")
+    async def _get_entries(
+        since: str | None = None, limit: int = 100
+    ) -> JSONResponse:
+        """Incremental sync. ``since`` omitted ⇒ from genesis.
+
+        ``since="GENESIS"`` is treated identically to omitting ``since``
+        (symmetry with ``/head`` returning ``"GENESIS"`` on an empty
+        chain). ``since`` set to any other value not present in the
+        chain → 404. ``limit`` clamped to [0, 1000]; negative ``limit``
+        → 400.
+        """
+        if limit < 0:
+            return JSONResponse(
+                {"error": "limit must be non-negative"}, status_code=400
+            )
+        limit = min(limit, 1000)
+
+        all_entries = signed_log.read_entries()
+        head_hash = signed_log.latest_hash()
+
+        if since is None or since == "GENESIS":
+            # "from start of chain" — symmetry with /head's GENESIS sentinel.
+            sliced = all_entries
+        else:
+            start_index: int | None = None
+            for idx, entry in enumerate(all_entries):
+                if entry.get("entry_hash") == since:
+                    start_index = idx + 1
+                    break
+            if start_index is None:
+                # 404 — the cursor is not in our chain. Malformed-hex
+                # cursors fall through here too: we don't pre-validate
+                # shape, "not in chain" covers the case.
+                return Response(status_code=404, headers={"Content-Length": "0"})
+            sliced = all_entries[start_index:]
+
+        return JSONResponse(
+            {
+                "entries": sliced[:limit],
+                "head_hash": head_hash,
+            },
+            status_code=200,
+        )
+
+    @app.get("/entries/{entry_hash}")
+    async def _get_entry_by_hash(entry_hash: str) -> JSONResponse:
+        """Return a single entry by its chain hash, or 404."""
+        for entry in signed_log.read_entries():
+            if entry.get("entry_hash") == entry_hash:
+                return JSONResponse(entry, status_code=200)
+        return Response(status_code=404, headers={"Content-Length": "0"})
+
+    @app.options("/entries/{entry_hash}")
+    async def _entry_by_hash_options(entry_hash: str) -> Response:
+        return Response(
+            status_code=204,
+            headers={"Allow": "GET, OPTIONS", "Content-Length": "0"},
+        )
+
+    @app.options("/entries")
+    async def _entries_options() -> Response:
+        return Response(
+            status_code=204,
+            headers={"Allow": _ALLOWED_METHODS, "Content-Length": "0"},
+        )
+
+    @app.post("/entries")
+    async def _post_entries(body: _PeerEntryRequest) -> JSONResponse:
+        """Accept a foreign signed entry into the per-source peer cache.
+
+        Body is the full v2 entry dict. Top-level shape (``version``
+        int + ``kind`` str) is enforced by Pydantic; full cryptographic
+        verification (entry_hash, signature, identity binding, per-kind
+        checks) is delegated to the ``PeerLog``. Same-identity
+        submissions and verification failures return 400; success and
+        idempotent duplicates return 200.
+        """
+        # ``model_dump(mode="python")`` collapses the Pydantic model
+        # back into a plain dict, including any extra-allow fields, so
+        # ``verify_foreign_entry`` sees the same shape it would have
+        # seen pre-Pydantic.
+        body_dict = body.model_dump(mode="python")
+
+        try:
+            stored, source_id, errors, duplicate = peer_log.accept_entry(
+                body_dict
+            )
+        except Exception as exc:  # surface as 500, do not swallow
+            _log.error(
+                "server.peer_accept_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return JSONResponse(
+                {"error": "failed to store foreign entry"}, status_code=500
+            )
+
+        if errors:
+            return JSONResponse(
+                {
+                    "error": "foreign entry verification failed",
+                    "detail": errors,
+                },
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "stored": stored,
+                "source_id": source_id,
+                "duplicate": duplicate,
+            },
+            status_code=200,
+        )
+
+    # All routes registered. Capture the ``path -> {methods}`` map so the
+    # 405 handler returns the right ``Allow`` for each path. Iterating
+    # ``app.routes`` after registration is the only stable place we have
+    # the full set; a route added later (none currently) would silently
+    # fall back to the global default until this is rebuilt.
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path is None or methods is None:
+            continue
+        bucket = path_methods.setdefault(path, set())
+        bucket.update(methods)
+
     return app
 
 
@@ -345,7 +578,6 @@ def main() -> None:
     and serves it via ``uvicorn.run`` on a loopback host until interrupted.
     """
     import argparse
-    import os
 
     parser = argparse.ArgumentParser(prog="redteam.integration.server")
     parser.add_argument(
@@ -361,6 +593,14 @@ def main() -> None:
         "--network",
         default=os.environ.get("OPENCLAW_NETWORK", "MAINNET"),
     )
+    parser.add_argument(
+        "--peer-log-dir",
+        default=None,
+        help=(
+            "directory for per-source foreign entry caches; "
+            "defaults to <dir of --log>/peer_logs"
+        ),
+    )
     args = parser.parse_args()
 
     # Defence in depth: refuse to bind a non-loopback host even if the
@@ -369,7 +609,11 @@ def main() -> None:
     check_loopback_host(args.host)
 
     identity = OpenClawIdentity(network=args.network, key_path=args.key_path)
-    app = build_app(identity, args.log)
+
+    # Default peer-log dir derivation lives inside ``build_app`` (single
+    # source of truth). Pass ``args.peer_log_dir`` straight through —
+    # ``None`` lets ``build_app`` pick the sibling ``peer_logs/`` default.
+    app = build_app(identity, args.log, args.peer_log_dir)
 
     uvicorn.run(
         app,
