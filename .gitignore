@@ -40,3 +40,6 @@ pnpm-lock.yaml
 
 # Local trustroom socket
 *.sock
+
+# Local per-agent DelftClaw/OpenClaw configs
+configs/*.local.env

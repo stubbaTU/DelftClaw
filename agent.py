@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import json
 from network import UDPEndpoint
 from identity.seed import MnemonicSeedSource
@@ -171,7 +172,19 @@ class P2PAgent:
 
 if __name__ == "__main__":
     async def main():
-        agent = P2PAgent(port=8090)
+        parser = argparse.ArgumentParser(description="Run a DelftClaw P2P agent node.")
+        parser.add_argument("--host", default="0.0.0.0", help="UDP bind host.")
+        parser.add_argument("--port", type=int, default=8090, help="UDP bind port.")
+        parser.add_argument("--seed-phrase", help="Optional mnemonic seed phrase for stable identity.")
+        parser.add_argument("--log-path", help="Append-only log path for this node.")
+        args = parser.parse_args()
+
+        agent = P2PAgent(
+            host=args.host,
+            port=args.port,
+            seed_phrase=args.seed_phrase,
+            log_path=args.log_path,
+        )
         await agent.start()
 
         # Keep alive

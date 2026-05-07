@@ -40,6 +40,18 @@ class AgentId(_RawBytes):
         return base64.b32encode(self._raw[:10]).decode("ascii").rstrip("=").lower()
 
 
+class IdentityHash(_RawBytes):
+    """32-byte SHA-256 digest binding a public key to a network name."""
+    _SIZE = 32
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "IdentityHash":
+        return cls(raw)
+
+    def __str__(self) -> str:
+        return self._raw.hex()
+
+
 class RoomId(_RawBytes):
     """128-bit opaque identifier for a Trustroom."""
     _SIZE = 16

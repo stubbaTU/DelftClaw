@@ -35,8 +35,13 @@ class IPv8KeyPair:
 
     @property
     def pubkey(self) -> bytes:
-        """Return the 32-byte Ed25519 public key."""
+        """Return the serialized IPv8 public key bytes used by py-ipv8."""
         return self.key.pub().key_to_bin()
+
+    @property
+    def raw_pubkey(self) -> bytes:
+        """Return the canonical 32-byte Ed25519 verify key bytes."""
+        return self.key.pub().veri.vk
 
     def sign(self, data: bytes) -> bytes:
         """Produce an Ed25519 signature over `data`; used implicitly by IPv8 for peer auth."""
