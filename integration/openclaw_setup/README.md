@@ -1,0 +1,239 @@
+# Connecting OpenClaw to DelftClaw
+
+This directory documents how to drive DelftClaw's `AgentChannel` from a real
+OpenClaw LLM agent over the **Model Context Protocol** (MCP). The Python
+code that exposes the channel as MCP tools lives in
+[`integration/mcp_server/`](../mcp_server). The OpenClaw side is configured
+through its single config file (`~/.openclaw/openclaw.json`).
+
+There are three checkpoints, in increasing order of LLM autonomy:
+
+| Phase | Who is the LLM? | Verifies |
+|-------|-----------------|----------|
+| 0     | none — bench `ping` | OpenClaw can reach a localhost streamable-HTTP MCP server at all. See [`bench/README.md`](../../bench/README.md). |
+| 4     | one — Bob (LLM) talks to a Python-driven Alice host | The 10 `delftclaw_*` tools function end-to-end against real IPv8. See [`PHASE4.md`](PHASE4.md). |
+| 5     | two — Alice and Bob both LLM-driven, autonomous | The full M2 six-step flow runs without any human prompting after launch. See [`PHASE5.md`](PHASE5.md). |
+
+Phase 1, 2, 3 are infrastructure-only checkpoints (schemas, boot wiring,
+two-server smoke without LLMs) — they do not need an OpenClaw install. See
+[`../../PROJECT_DESIGN.md` §17](../../PROJECT_DESIGN.md) for the architecture.
+
+## Quickstart (assumes Phases 0 & 4 already worked once)
+
+If you have already run Phase 0 and Phase 4 successfully, the autonomous
+two-agent demo is:
+
+```bash
+# Terminal 1 — boot both MCP servers + create the room
+cd "<repo root>"
+. venv/bin/activate
+python -m integration.mcp_server.phase5_orchestrator
+
+# Terminals 2 and 3 — paste the printed system prompts into two
+# `openclaw chat` sessions. Each LLM runs autonomously.
+```
+
+Logs land in `logs/mcp_alice_phase5.stdout.log` and
+`logs/mcp_bob_phase5.stdout.log`.
+
+The rest of this README walks through the prerequisites in order.
+
+## Prerequisites
+
+### 1. OpenClaw
+
+```bash
+# Install (one of these — npm/pnpm path also works)
+curl -fsSL https://openclaw.ai/install.sh | bash
+openclaw --version              # confirm — tested with 2026.5.6
+```
+
+OpenClaw 2026.5.6 stores all config in **one** file at
+`~/.openclaw/openclaw.json`. There is no `OPENCLAW_HOME` env var. There is
+no separate `mcp_config.json`. MCP servers go inside the main config under
+`mcp.servers`.
+
+### 2. Ollama with a tool-capable model
+
+OpenClaw's local-embedded mode dispatches LLM calls to a local Ollama
+endpoint by default.
+
+```bash
+# Make sure Ollama is up
+ollama serve &                  # in another terminal if not already
+ollama list                     # see what models are local
+```
+
+Model recommendations, smallest first:
+
+| Model | Size (Q4) | Notes |
+|-------|-----------|-------|
+| `hermes3:8b` | ~5 GB | Nous Research's tool-use fine-tune of Llama 3.1. Best 8B option for autonomous chaining. |
+| `llama3.1:8b` | ~5 GB | Meta's tool-call training is the gold standard at this scale. |
+| `mistral-small:22b` | ~13 GB | Strong instruction-following; biggest model that fits on most laptops. |
+| `qwen2.5:14b` | ~9 GB | OpenClaw's default. Reliable for single tool calls; **does not** chain 5+ calls autonomously in our testing. |
+| `qwen2.5:7b` | ~4.5 GB | Faster than 14b, similar single-call quality, **also fails** at autonomous chaining. |
+
+For Phase 4 (manual chat session, one tool call per message) any of the
+above works. For Phase 5 (autonomous), use `hermes3:8b` or larger.
+
+```bash
+ollama pull hermes3:8b
+```
+
+To set OpenClaw's default model, find the right config key in your version
+(it's not always `model.default`):
+
+```bash
+openclaw config get             # dumps current config — find the model field
+# or
+cat ~/.openclaw/openclaw.json   # same data, more direct
+```
+
+The model can also typically be selected per session inside the OpenClaw
+TUI; check `openclaw chat --help` or the in-TUI `/help`.
+
+### 3. The DelftClaw venv
+
+```bash
+cd "<repo root>"
+python -m venv venv
+. venv/bin/activate
+pip install -r requirements.txt
+```
+
+`requirements.txt` includes `fastmcp>=3.0` and `pyyaml>=6.0`, the only
+M3-specific additions on top of the existing communication-layer deps.
+
+## Per-agent configuration
+
+Each agent's MCP server is configured through one YAML file. The two demo
+configs are:
+
+- [`../configs/alice.yaml`](../configs/alice.yaml) — Alice as host (port 8081, IPv8 9091).
+- [`../configs/bob.yaml`](../configs/bob.yaml) — Bob as joiner (port 8082, IPv8 9092).
+
+Each config wires:
+
+- `agent.name`, `agent.seed_path`, `agent.network` — passed to
+  `KeyfileSeedSource` and `AgentIdentity.from_seed`.
+- `ipv8.bind_ip`, `ipv8.bind_port` — IPv8 UDP bind.
+- `mcp.bind_ip`, `mcp.bind_port` — FastMCP HTTP bind.
+- `peers_file` — path to a shared `peers.yaml` mapping aliases to
+  `(agent_id, ip, ipv8_port, pubkey_bin_hex)`.
+- `vc_store` — list of VCs to load at boot (each `vc_id` + `file`).
+- `faucet.amount` — optional dev-only initial sat credit.
+
+The peers.yaml file is generated by
+[`integration.mcp_server.setup_demo`](../mcp_server/setup_demo.py) — it
+re-derives both agent identities from their seed files, computes the full
+74-byte IPv8 `LibNaCLPK:` pubkey form, mints an issuer keypair, and issues
+Bob's `dev-vc`. It is idempotent; re-running it recomputes everything from
+the same seeds, so the ids and pubkeys are stable across runs.
+
+## Phase recipes
+
+### Phase 0 — bench check
+
+A 30-line FastMCP server with one `ping` tool, registered with OpenClaw,
+called once from a chat session. Proves OpenClaw + Ollama can reach a
+localhost streamable-HTTP MCP server. See [`bench/README.md`](../../bench/README.md).
+
+### Phase 4 — one real LLM (Bob), Python-driven Alice
+
+Phase 4 is the first checkpoint that involves a real LLM. Alice is a
+**scripted host** — the orchestrator (`phase4_alice_host.py`) drives her via
+her own MCP server and runs a single inbox-poll-then-reply loop. Bob is
+driven by the LLM through OpenClaw's chat session.
+
+Walkthrough: [`PHASE4.md`](PHASE4.md). Summary:
+
+```bash
+# Terminal 1
+python -m integration.mcp_server.phase4_alice_host
+
+# Terminal 2
+openclaw config set mcp.servers.delftclaw-bob \
+  '{"url":"http://127.0.0.1:8082/mcp","transport":"streamable-http"}'
+openclaw chat
+# paste the prompt the host driver printed (one tool call per message
+# is fine if the model can't chain).
+```
+
+Pass criterion: Alice's terminal logs `[alice] received: 'hello from bob'`
+followed by `[alice] replied: 'hello back, bob'`; Bob's LLM eventually
+reports `balance=3800, locked={admission:room=...: 1000}`.
+
+### Phase 5 — two real LLMs, autonomous
+
+Phase 5 replaces the scripted reply loop with a second LLM. The
+orchestrator (`phase5_orchestrator.py`) boots both MCP servers, creates the
+room programmatically, prints two system prompts (one per agent), and just
+holds the servers alive. You paste each system prompt into a separate
+`openclaw chat` session and the LLMs run to completion without further
+input.
+
+Walkthrough: [`PHASE5.md`](PHASE5.md). Summary:
+
+```bash
+# Terminal 1
+python -m integration.mcp_server.phase5_orchestrator
+
+# Terminal 2 (Alice agent)
+openclaw config set mcp.servers.delftclaw-alice \
+  '{"url":"http://127.0.0.1:8081/mcp","transport":"streamable-http"}'
+openclaw chat
+# paste contents of integration/configs/phase5_alice_prompt.txt
+
+# Terminal 3 (Bob agent)
+openclaw config set mcp.servers.delftclaw-bob \
+  '{"url":"http://127.0.0.1:8082/mcp","transport":"streamable-http"}'
+openclaw chat
+# paste contents of integration/configs/phase5_bob_prompt.txt
+```
+
+Pass criterion: both LLMs complete their goals, final balances reconcile to
+3800 (Bob) and 5200 (Alice), `mcp_bob_phase5.stdout.log` shows the full
+six-step sequence.
+
+## Tool surface (frozen at 10)
+
+Every tool name is prefixed `delftclaw_` for namespace cleanliness in the
+LLM's tool list. OpenClaw additionally namespaces by server, so the LLM
+sees them as `delftclaw-alice__delftclaw_whoami`, etc.
+
+| # | Tool | Purpose |
+|---|------|---------|
+| 1 | `delftclaw_whoami` | Read this agent's `agent_id`, `network`, `app_pubkey_hex`, `wallet_pubkey_hex`. |
+| 2 | `delftclaw_list_peers` | Enumerate known peer aliases. |
+| 3 | `delftclaw_create_room` | Create a stake-gated room. Returns `room_id_hex`. |
+| 4 | `delftclaw_lock_for_admission` | Lock sats and broadcast the lock op to the host. Returns `stake_proof`. |
+| 5 | `delftclaw_join_room` | Submit a presentation (VC + optional `stake_proof`) to a host. |
+| 6 | `delftclaw_send_message` | Send a signed `WireFrame` to a peer in a room. |
+| 7 | `delftclaw_recv_message` | Non-blocking poll of the inbox; optional `timeout_ms`. |
+| 8 | `delftclaw_transfer` | Sat transfer to another peer. Broadcasts the op. |
+| 9 | `delftclaw_list_rooms` | Enumerate joined rooms. |
+| 10 | `delftclaw_wallet_balance` | Read `balance` and `locked` (per-purpose) from the local oracle. |
+
+Schemas in [`integration/mcp_server/schemas.py`](../mcp_server/schemas.py).
+
+## Troubleshooting
+
+- **OpenClaw shows zero tools for our server.** The server is not running
+  or the URL has a trailing slash. FastMCP serves at `/mcp` and 307-redirects
+  `/mcp/`. Re-register without the slash.
+- **Bob's LLM emits JSON code blocks instead of real tool calls.** The
+  model is too small / under-trained for OpenClaw's tool-call grammar. Use
+  `hermes3:8b` or larger.
+- **`unknown_room` rejection on the host.** The joiner is using a stale
+  room id from a previous orchestrator run. Restart with the current id —
+  every orchestrator run picks a fresh `RoomId.fresh()`.
+- **`stake_lock_attempt` event but no `on_stake_op_received` on the host.**
+  IPv8 peer discovery hasn't completed. The peer directory's
+  `add_verified_peer + discover_services` should fire on first call to any
+  alias-resolved tool; if it doesn't, check that `peers.yaml` was
+  regenerated by `setup_demo` against the current seed files.
+- **File logs are empty (only stdout has events).** Known issue with the
+  structlog → stdlib bridge under uvicorn — the `*.jsonl` files do not
+  receive runtime events from `AgentChannel`. The `*_phase{4,5}.stdout.log`
+  files capture everything. Tracked as deferred in §17.

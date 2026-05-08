@@ -1,4 +1,4 @@
-"""BIP-32 derived agent identity: one seed, three keys (IPv8, MLS, Bitcoin)."""
+"""BIP-32 derived agent identity: one seed, two keys (IPv8, app-signing)."""
 
 __version__ = "0.1.0"
 
@@ -8,19 +8,18 @@ from identity.seed import (
     MnemonicSeedSource,
     EnvSeedSource,
     KeyringSeedSource,
+    KeyfileSeedSource,
 )
 from identity.derivation import (
     DerivationPath,
     derive,
     IPV8_PATH,
-    MLS_PATH,
-    BTC_PATH,
-    REPLICA_PATH_TEMPLATE,
+    APP_PATH,
+    WALLET_PATH,
 )
 from identity.ipv8_key import IPv8KeyPair
-from identity.openclaw_identity import OpenClawIdentity
-from identity.mls_key import MLSSigningKey
-from identity.wallet import Wallet, SignedTransaction, UTXO
+from identity.app_key import AppSigningKey
+from identity.wallet import Wallet
 from identity.agent_identity import AgentIdentity
 
 __all__ = [
@@ -29,17 +28,14 @@ __all__ = [
     "MnemonicSeedSource",
     "EnvSeedSource",
     "KeyringSeedSource",
+    "KeyfileSeedSource",
     "DerivationPath",
     "derive",
     "IPV8_PATH",
-    "MLS_PATH",
-    "BTC_PATH",
-    "REPLICA_PATH_TEMPLATE",
+    "APP_PATH",
+    "WALLET_PATH",
     "IPv8KeyPair",
-    "OpenClawIdentity",
-    "MLSSigningKey",
+    "AppSigningKey",
     "Wallet",
-    "SignedTransaction",
-    "UTXO",
     "AgentIdentity",
 ]

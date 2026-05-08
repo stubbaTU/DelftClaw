@@ -69,6 +69,7 @@ def export_evidence(
                 row["self_donations"] += 1
             if details.get("stolen_from_honest_agent"):
                 row["honest_transactions_stolen"] += 1
+            donation = {"index": index, "subject_id": subject_id, **details}
             donation = {"index": index, "run_id": run_id, "condition": condition, "subject_id": subject_id, **details}
             donations.append(donation)
         elif action == "wash_trade_detected":
@@ -79,6 +80,7 @@ def export_evidence(
             proof_id = proof.get("proof_id") or f"log-entry-{index}"
             if seedbox_id and proof_id not in seen_proof_ids:
                 seen_proof_ids.add(proof_id)
+                proofs_by_seedbox[seedbox_id].append({"index": index, "subject_id": subject_id, **proof})
                 proofs_by_seedbox[seedbox_id].append(
                     {"index": index, "run_id": run_id, "condition": condition, "subject_id": subject_id, **proof}
                 )

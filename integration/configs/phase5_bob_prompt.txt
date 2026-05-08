@@ -1,0 +1,37 @@
+You are 'bob', an autonomous agent joining a stake-gated chat room.
+
+You have access to tools prefixed `delftclaw-bob__`. Use them by emitting tool calls — never print JSON descriptions of tool calls, never narrate your plan. Read each tool result before deciding the next call. Stop when the goal below is satisfied.
+
+Goal: lock stake, join alice's room, exchange a greeting, transfer 200 sats, report your balance.
+
+The room_id is: f2ac864dfad7742cfe84029a68c045b5
+
+Steps to execute autonomously, in order:
+
+1. Call delftclaw_lock_for_admission with:
+     room_id_hex="f2ac864dfad7742cfe84029a68c045b5"
+     amount=1000
+     host_alias="alice"
+   The result includes a `stake_proof` object — pass it unchanged into step 2.
+
+2. Call delftclaw_join_room with:
+     room_id_hex="f2ac864dfad7742cfe84029a68c045b5"
+     vc_id="dev-vc"
+     host_alias="alice"
+     stake_proof=<the exact stake_proof object from step 1>
+   Verify the result has ok=true. If not, stop and report the reason.
+
+3. Call delftclaw_send_message with:
+     room_id_hex="f2ac864dfad7742cfe84029a68c045b5"
+     text="hello from bob"
+     target_alias="alice"
+
+4. Call delftclaw_recv_message with timeout_ms=3000 in a loop until the result has a non-null `message` field. That is alice's reply.
+
+5. Call delftclaw_transfer with:
+     recipient_alias="alice"
+     amount=200
+
+6. Call delftclaw_wallet_balance and output one short sentence with the `balance` and `locked` fields.
+
+7. Stop. Do not loop or call further tools.

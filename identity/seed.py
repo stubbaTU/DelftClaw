@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 import os
 import hashlib
+import secrets
 
 
 @dataclass(frozen=True)
@@ -79,3 +81,35 @@ class KeyringSeedSource(SeedSource):
             return Seed(bytes.fromhex(secret_hex))
         except ValueError:
             raise ValueError("Seed in keyring must be valid hex")
+
+
+def _default_seed_path() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "OpenClaw" / "identity" / "seed.txt"
+    return Path.home() / ".openclaw" / "identity" / "seed.txt"
+
+
+class KeyfileSeedSource(SeedSource):
+    """Persist a 32-byte seed as a hex-encoded text file. First run generates; later runs load."""
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else _default_seed_path()
+
+    def load(self) -> Seed:
+        if self.path.exists():
+            text = self.path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise ValueError(f"Seed file is empty: {self.path}")
+            try:
+                seed_bytes = bytes.fromhex(text)
+            except ValueError as exc:
+                raise ValueError(f"Seed file is not valid hex: {self.path}") from exc
+            if len(seed_bytes) != 32:
+                raise ValueError(f"Seed file must be 32 bytes; got {len(seed_bytes)}")
+            return Seed(seed_bytes)
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        seed_bytes = secrets.token_bytes(32)
+        self.path.write_text(seed_bytes.hex(), encoding="ascii")
+        return Seed(seed_bytes)
