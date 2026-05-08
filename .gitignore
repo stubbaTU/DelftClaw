@@ -41,5 +41,8 @@ pnpm-lock.yaml
 # Local trustroom socket
 *.sock
 
+# Runtime logs (signed audit logs, agent action logs, harness output)
+*.log
+
 # Local per-agent DelftClaw/OpenClaw configs
 configs/*.local.env
