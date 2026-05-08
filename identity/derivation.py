@@ -21,6 +21,8 @@ class DerivationPath(str):
 IPV8_PATH = DerivationPath("m/44'/0'/0'/0/0")
 APP_PATH = DerivationPath("m/44'/0'/0'/1/0")
 """`APP_PATH` derives the Ed25519 key used for application-layer WireFrame signatures."""
+WALLET_PATH = DerivationPath("m/44'/0'/0'/2/0")
+"""`WALLET_PATH` derives the Ed25519 key used for synthetic-BTC ``StakeOp`` signatures."""
 
 
 def derive(seed: Seed, path: DerivationPath) -> bytes:

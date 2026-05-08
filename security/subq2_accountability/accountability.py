@@ -1,8 +1,9 @@
 from typing import Any
 
-from security.contracts import AccountabilityMetrics
+from security.contracts import AccountabilityMetrics, SecurityAction, SeedboxDonationEvidence
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
+from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
 
 
 class AccountabilityMonitor:
@@ -26,6 +27,9 @@ class AccountabilityMonitor:
         self.unauthorized_executions: dict[str, int] = {}
         self.blocked_actions: dict[str, int] = {}
         self.expulsion_steps: dict[str, int] = {}
+        self.fake_donations: dict[str, int] = {}
+        self.honest_transactions_stolen: dict[str, int] = {}
+        self.wash_trades_detected: dict[str, int] = {}
         self.current_step = 0
 
     def next_step(self) -> int:
@@ -51,8 +55,8 @@ class AccountabilityMonitor:
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
-            action="unauthorized_tool_execution",
-            severity=ReputationEngine.DEFAULT_WEIGHTS["unauthorized_tool_execution"],
+            action=SecurityAction.UNAUTHORIZED_TOOL_EXECUTION.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.UNAUTHORIZED_TOOL_EXECUTION.value],
             details={
                 "step": self.current_step,
                 "tool": tool_name,
@@ -72,8 +76,8 @@ class AccountabilityMonitor:
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
-            action="unauthorized_tool_request",
-            severity=ReputationEngine.DEFAULT_WEIGHTS["unauthorized_tool_request"],
+            action=SecurityAction.UNAUTHORIZED_TOOL_REQUEST.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.UNAUTHORIZED_TOOL_REQUEST.value],
             details={
                 "step": self.current_step,
                 "tool": tool_name,
@@ -81,6 +85,89 @@ class AccountabilityMonitor:
             },
             evidence=evidence,
         )
+
+    def record_private_key_exfiltration(
+        self,
+        subject_id: str,
+        payload_id: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ):
+        self.attempted_actions[subject_id] = self.attempted_actions.get(subject_id, 0) + 1
+        self.unauthorized_executions[subject_id] = self.unauthorized_executions.get(subject_id, 0) + 1
+        self.log.append_event(
+            reporter_id=self.reporter_id,
+            subject_id=subject_id,
+            action=SecurityAction.PRIVATE_KEY_EXFILTRATION.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.PRIVATE_KEY_EXFILTRATION.value],
+            details={
+                "step": self.current_step,
+                "payload_id": payload_id,
+                "asset": "local_private_identity_key",
+            },
+            evidence=evidence,
+        )
+
+    def record_fake_seedbox_creation(
+        self,
+        subject_id: str,
+        seedbox_id: str,
+        evidence: dict[str, Any] | None = None,
+    ):
+        self.log.append_event(
+            reporter_id=self.reporter_id,
+            subject_id=subject_id,
+            action=SecurityAction.FAKE_SEEDBOX_CREATED.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.FAKE_SEEDBOX_CREATED.value],
+            details={"step": self.current_step, "seedbox_id": seedbox_id},
+            evidence=evidence,
+        )
+
+    def record_seedbox_donation(
+        self,
+        subject_id: str,
+        donation: SeedboxDonationEvidence,
+        stolen_from_honest_agent: bool = False,
+    ):
+        self.attempted_actions[subject_id] = self.attempted_actions.get(subject_id, 0) + 1
+        if donation.fake_seedbox or donation.self_donation:
+            self.fake_donations[subject_id] = self.fake_donations.get(subject_id, 0) + 1
+        if stolen_from_honest_agent:
+            self.honest_transactions_stolen[subject_id] = self.honest_transactions_stolen.get(subject_id, 0) + 1
+
+        self.log.append_event(
+            reporter_id=self.reporter_id,
+            subject_id=subject_id,
+            action=SecurityAction.SEEDBOX_DONATION_BROADCAST.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.SEEDBOX_DONATION_BROADCAST.value],
+            details={
+                "step": self.current_step,
+                "donation_id": donation.donation_id,
+                "seedbox_id": donation.seedbox_id,
+                "donor_id": donation.donor_id,
+                "recipient_id": donation.recipient_id,
+                "amount_sats": donation.amount_sats,
+                "txid": donation.txid,
+                "self_donation": donation.self_donation,
+                "fake_seedbox": donation.fake_seedbox,
+                "stolen_from_honest_agent": stolen_from_honest_agent,
+            },
+        )
+
+        if donation.self_donation:
+            self.wash_trades_detected[subject_id] = self.wash_trades_detected.get(subject_id, 0) + 1
+            self.log.append_event(
+                reporter_id=self.reporter_id,
+                subject_id=subject_id,
+                action=SecurityAction.WASH_TRADE_DETECTED.value,
+                severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.WASH_TRADE_DETECTED.value],
+                details={
+                    "step": self.current_step,
+                    "donation_id": donation.donation_id,
+                    "seedbox_id": donation.seedbox_id,
+                    "donor_id": donation.donor_id,
+                    "recipient_id": donation.recipient_id,
+                },
+            )
 
     def scan(self):
         self.reputation.scan_log()
@@ -100,6 +187,9 @@ class AccountabilityMonitor:
             expulsion_step=self.expulsion_steps.get(subject_id),
             integrity_ok=integrity_ok,
             integrity_errors=integrity_errors,
+            fake_donations=self.fake_donations.get(subject_id, 0),
+            honest_transactions_stolen=self.honest_transactions_stolen.get(subject_id, 0),
+            wash_trades_detected=self.wash_trades_detected.get(subject_id, 0),
         )
 
 
@@ -122,6 +212,15 @@ def run_harm_until_expulsion_experiment(
     log = AppendOnlyLog(log_path=log_path)
     reputation = ReputationEngine(log_path=log.log_path, ban_threshold=threshold)
     monitor = AccountabilityMonitor(log=log, reputation=reputation, reporter_id=reporter_id)
+    registry = SeedboxRegistry()
+    ledger = DonationLedger(registry)
+    fake_seedbox = registry.register(
+        seedbox_id="fake-seedbox-1",
+        owner_id=subject_id,
+        donation_address="mock-donation-address-fake-seedbox-1",
+        advertised_capacity_gb=10_000,
+        fake=True,
+    )
 
     for action_index in range(1, total_malicious_actions + 1):
         monitor.next_step()
@@ -130,10 +229,19 @@ def run_harm_until_expulsion_experiment(
             monitor.record_blocked_action(subject_id)
             continue
 
-        monitor.record_unauthorized_execution(
+        donation = ledger.broadcast_donation(
+            donation_id=f"fake-donation-{action_index}",
+            seedbox_id=fake_seedbox.seedbox_id,
+            donor_id=subject_id,
+            amount_sats=10_000,
+            txid=f"fake-tx-{action_index}",
+        )
+        if action_index == 1:
+            monitor.record_fake_seedbox_creation(subject_id=subject_id, seedbox_id=fake_seedbox.seedbox_id)
+        monitor.record_seedbox_donation(
             subject_id=subject_id,
-            tool_name="dangerous_tool",
-            details={"sequence": action_index},
+            donation=donation.to_evidence(),
+            stolen_from_honest_agent=donation.stolen_from_honest_agent,
         )
 
         if accountability_enabled and action_index % scan_interval == 0:

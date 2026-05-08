@@ -9,3 +9,5 @@ structlog>=25.5
 pytest-asyncio>=1.3
 import-linter>=2.11
 keyring>=25
+fastmcp>=3.0
+pyyaml>=6.0

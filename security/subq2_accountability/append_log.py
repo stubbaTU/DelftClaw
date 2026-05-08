@@ -62,6 +62,8 @@ class AppendOnlyLog:
             "severity": severity,
             "details": details,
             "evidence": evidence or {},
+            "details_hash": self._stable_hash(details),
+            "evidence_hash": self._stable_hash(evidence or {}),
             "previous_hash": previous_hash,
         }
         entry["entry_hash"] = self._entry_hash(entry)
@@ -134,4 +136,9 @@ class AppendOnlyLog:
         hashable = dict(entry)
         hashable.pop("entry_hash", None)
         encoded = json.dumps(hashable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _stable_hash(value: dict) -> str:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()

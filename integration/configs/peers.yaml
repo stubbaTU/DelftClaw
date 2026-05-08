@@ -1,0 +1,11 @@
+peers:
+  alice:
+    agent_id: fjappzkalihe4kch
+    pubkey_bin_hex: 4c69624e61434c504b3a7af1bbaf5a4e98dc2f6870a5bcbe85ab91323ed7dccb44efa447520bdd814d732a40f7e5405a0e4e2847a3ddb6846a625c21ccd0ccb7397585d5755300302d8e
+    ip: 127.0.0.1
+    ipv8_port: 9091
+  bob:
+    agent_id: xvb4zag3wj7ly2nh
+    pubkey_bin_hex: 4c69624e61434c504b3afb4bd15e82887d4f26f5d4b1a1f9f0a629019cd5d2d71eb2dddf4e93db0aec1abd43cc80dbb27ebc69a700ee0e13235e58d4a552a753f6f4ae14189302fd7448
+    ip: 127.0.0.1
+    ipv8_port: 9092
