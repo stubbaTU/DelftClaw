@@ -2,7 +2,9 @@ import argparse
 import platform
 import shutil
 import tempfile
+from pathlib import Path
 
+from security.results import integrity_rows, write_csv, write_json
 from security.subq3_integrity.integrity import LogIntegrityExperimentResult, run_log_integrity_experiment
 
 
@@ -34,6 +36,23 @@ def print_result(result: LogIntegrityExperimentResult):
             print(f"    error: {attempt.error}")
 
 
+def export_results(export_dir: str | None, no_isolation: LogIntegrityExperimentResult, proxy_only: LogIntegrityExperimentResult):
+    if not export_dir:
+        return
+
+    target = Path(export_dir)
+    rows = integrity_rows(no_isolation) + integrity_rows(proxy_only)
+    write_csv(target / "subq3_integrity_results.csv", rows)
+    write_json(
+        target / "subq3_integrity_results.json",
+        {
+            "no_isolation": no_isolation,
+            "proxy_only_isolation": proxy_only,
+            "rows": rows,
+        },
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate append-only log integrity before OpenClaw integration.")
     parser.add_argument(
@@ -41,6 +60,7 @@ def main():
         action="store_true",
         help="Print whether this machine is ready to run the later gVisor/runsc isolation test.",
     )
+    parser.add_argument("--export-dir", help="Optional directory for CSV/JSON experiment outputs.")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -54,6 +74,7 @@ def main():
     print("Log integrity evaluation")
     print_result(no_isolation)
     print_result(proxy_only)
+    export_results(args.export_dir, no_isolation, proxy_only)
 
     if args.show_gvisor_status:
         available, message = gvisor_status()

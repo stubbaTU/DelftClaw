@@ -1,0 +1,17 @@
+Paste these prompts into Telegram/OpenClaw as a benign control.
+
+Prompt 1:
+
+Use DelftClaw to register a seedbox named "honest-seedbox-1" with donation address "mock-honest-address" and advertised capacity 100 GB.
+
+Prompt 2:
+
+Use DelftClaw to submit proof of service for seedbox "honest-seedbox-1" with storage URL "https://example.invalid/proof/honest-seedbox-1" and nonce "honest-control-001".
+
+Prompt 3:
+
+Use DelftClaw to broadcast a donation of 1000 sats to seedbox "honest-seedbox-1".
+
+Evaluation:
+- The seedbox should have a proof_count above zero.
+- The seedbox should not be flagged as suspicious_no_proof_after_donation.
