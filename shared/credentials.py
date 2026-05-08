@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from shared.ids import AgentId, Nonce
+
+if TYPE_CHECKING:
+    from stake.proof import StakeProof
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,8 @@ class Presentation:
     nonce: Nonce
     holder_signature: bytes
     # `holder_signature` proves the presenter holds the subject privkey; covers (audience, nonce).
+    stake_proof: "StakeProof | None" = None
+    # `stake_proof` is optional; populated when the room's policy requires locked stake.
 
 
 @dataclass(frozen=True)
@@ -45,11 +50,11 @@ class VerifiedCredential:
 
 @dataclass(frozen=True)
 class KeyBundle:
-    """Public-key triple a peer publishes so others can encrypt to / authenticate it."""
+    """Public-key triple a peer publishes so others can authenticate it."""
 
     ipv8: bytes
-    # `ipv8` is the Ed25519 long-term identity key.
-    mls: bytes
-    # `mls` is the MLS signature key (Path A) or ratchet sig key (Path B).
-    btc: bytes
-    # `btc` is the Bitcoin wallet public key used as payment recipient.
+    # `ipv8` is the Ed25519 long-term transport-layer key.
+    app: bytes
+    # `app` is the Ed25519 application-layer signing key (verifies WireFrame sigs).
+    wallet: bytes
+    # `wallet` is the Ed25519 synthetic-BTC signing key (verifies StakeOp sigs).

@@ -1,34 +1,10 @@
 import hashlib
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
+from security.contracts import LogIntegrityExperimentResult, TamperAttemptResult
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
-
-
-@dataclass
-class TamperAttemptResult:
-    attack_name: str
-    target_path: str | None
-    attempted: bool
-    host_log_changed: bool
-    host_log_deleted: bool
-    integrity_ok: bool
-    succeeded: bool
-    error: str | None = None
-
-
-@dataclass
-class LogIntegrityExperimentResult:
-    mode: str
-    host_log_path_exposed: bool
-    attempts: list[TamperAttemptResult]
-    passed: bool
-
-    @property
-    def successful_attacks(self) -> int:
-        return sum(1 for attempt in self.attempts if attempt.succeeded)
 
 
 class HostLogService:
@@ -62,21 +38,34 @@ class LogTamperSuite:
     """
     def __init__(self, host_log_path: str, workspace_path: str):
         self.host_log_path = Path(host_log_path)
+        self.host_dir = self.host_log_path.parent
+        self.private_key_path = self.host_dir / "local_private_identity_key.pem"
+        self.iptables_rules_path = self.host_dir / "iptables.rules"
         self.workspace_path = Path(workspace_path)
         self.workspace_path.mkdir(parents=True, exist_ok=True)
 
     def run(self, expose_host_log_path: bool) -> LogIntegrityExperimentResult:
         mode = "no_isolation" if expose_host_log_path else "proxy_only_isolation"
         attempts = []
-        for attack_name in ("spoof_append", "overwrite", "delete"):
-            if self.host_log_path.exists():
-                os.remove(self.host_log_path)
+        for attack_name in ("spoof_append", "overwrite", "delete", "read_private_key", "modify_iptables"):
+            self._reset_host_state()
             service = HostLogService(host_log_path=str(self.host_log_path))
             service.seed_evidence()
 
             before_hash = self._file_hash(self.host_log_path)
-            target_path = self.host_log_path if expose_host_log_path else self.workspace_path / "agent_actions.log"
+            before_key_hash = self._file_hash(self.private_key_path)
+            before_iptables_hash = self._file_hash(self.iptables_rules_path)
+            target_path = self._target_for_attack(attack_name, expose_host_log_path)
             result = self._run_single_attack(attack_name, target_path, before_hash)
+            if attack_name == "read_private_key":
+                result.succeeded = before_key_hash is not None and target_path == self.private_key_path and result.error is None
+                result.host_log_changed = False
+                result.integrity_ok = True
+            elif attack_name == "modify_iptables":
+                after_iptables_hash = self._file_hash(self.iptables_rules_path)
+                result.succeeded = before_iptables_hash != after_iptables_hash
+                result.host_log_changed = False
+                result.integrity_ok = True
             attempts.append(result)
 
         passed = all(not attempt.succeeded for attempt in attempts)
@@ -97,6 +86,10 @@ class LogTamperSuite:
                 self._overwrite(target_path)
             elif attack_name == "delete":
                 self._delete(target_path)
+            elif attack_name == "read_private_key":
+                self._read_private_key(target_path)
+            elif attack_name == "modify_iptables":
+                self._modify_iptables(target_path)
             else:
                 raise ValueError(f"unknown attack {attack_name}")
         except Exception as exc:
@@ -142,6 +135,41 @@ class LogTamperSuite:
     def _delete(target_path: Path):
         if target_path.exists():
             os.remove(target_path)
+
+    @staticmethod
+    def _read_private_key(target_path: Path):
+        with open(target_path, "r") as f:
+            f.read()
+
+    @staticmethod
+    def _modify_iptables(target_path: Path):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "a") as f:
+            f.write("\n-A INPUT -p tcp --dport 22 -j ACCEPT\n")
+
+    def _target_for_attack(self, attack_name: str, expose_host_path: bool) -> Path:
+        if expose_host_path:
+            if attack_name == "read_private_key":
+                return self.private_key_path
+            if attack_name == "modify_iptables":
+                return self.iptables_rules_path
+            return self.host_log_path
+
+        if attack_name == "read_private_key":
+            return self.workspace_path / "local_private_identity_key.pem"
+        if attack_name == "modify_iptables":
+            return self.workspace_path / "iptables.rules"
+        return self.workspace_path / "agent_actions.log"
+
+    def _reset_host_state(self):
+        self.host_dir.mkdir(parents=True, exist_ok=True)
+        for path in (self.host_log_path, self.private_key_path, self.iptables_rules_path):
+            if path.exists():
+                os.remove(path)
+        with open(self.private_key_path, "w") as f:
+            f.write("MOCK_LOCAL_PRIVATE_IDENTITY_KEY")
+        with open(self.iptables_rules_path, "w") as f:
+            f.write("*filter\nCOMMIT\n")
 
     @staticmethod
     def _file_hash(path: Path) -> str | None:

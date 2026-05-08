@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -23,13 +24,12 @@ class Inbox:
     """Bounded asyncio queue with synchronous put for non-async producers."""
 
     def __init__(self, maxsize: int = 1024) -> None:
-        # Build the underlying asyncio.Queue; cap to prevent unbounded buffering.
-        ...
+        self._q: asyncio.Queue[IncomingMessage] = asyncio.Queue(maxsize=maxsize)
 
     def put(self, msg: IncomingMessage) -> None:
-        # Synchronous push from PayloadRouter; raise QueueFull on overflow.
-        ...
+        self._q.put_nowait(msg)
 
     async def get(self, timeout: float | None) -> IncomingMessage:
-        # Wait for the next IncomingMessage; raise asyncio.TimeoutError on timeout.
-        ...
+        if timeout is None:
+            return await self._q.get()
+        return await asyncio.wait_for(self._q.get(), timeout)

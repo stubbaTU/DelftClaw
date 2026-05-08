@@ -20,21 +20,16 @@ class RoomRegistry:
     """In-memory map of RoomId → RoomState for every room this agent has touched."""
 
     def __init__(self) -> None:
-        # Initialise empty registry.
-        ...
+        self._states: dict[RoomId, RoomState] = {}
 
     def add(self, room_id: RoomId, state: RoomState) -> None:
-        # Insert (or replace) the room's current state.
-        ...
+        self._states[room_id] = state
 
     def state(self, room_id: RoomId) -> RoomState:
-        # Look up a room's state; raise KeyError if unknown.
-        ...
+        return self._states[room_id]
 
     def remove(self, room_id: RoomId) -> None:
-        # Drop the room entry once we have left and the SecureGroupSession is gone.
-        ...
+        self._states.pop(room_id, None)
 
     def all_joined(self) -> list[RoomId]:
-        # Return the RoomIds currently in JOINED state — useful for sending heartbeats.
-        ...
+        return [rid for rid, st in self._states.items() if st == RoomState.JOINED]

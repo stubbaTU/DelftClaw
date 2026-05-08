@@ -2,45 +2,62 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from shared.envelopes import ApplicationMessage, BTCPayload
+import msgpack
+
+from shared.envelopes import ApplicationMessage
+from shared.errors import PayloadInvalid
 from shared.ids import AgentId, RoomId
 
 if TYPE_CHECKING:
     from communication.channel.inbox import Inbox
 
 
+def pack_application_message(msg: ApplicationMessage) -> bytes:
+    """Canonical msgpack bytes carried in ``WireFrame.payload`` (no L4 encryption)."""
+    return msgpack.packb(
+        (msg.text, msg.sent_at.isoformat()),
+        use_bin_type=True,
+    )
+
+
+def unpack_application_message(blob: bytes) -> ApplicationMessage:
+    unpacked = msgpack.unpackb(blob, raw=False, use_list=False)
+    if not isinstance(unpacked, tuple) or len(unpacked) != 2:
+        raise ValueError("ApplicationMessage: malformed payload")
+    text, sent_at_iso = unpacked
+    return ApplicationMessage(
+        text=text,
+        sent_at=datetime.fromisoformat(sent_at_iso).astimezone(timezone.utc),
+    )
+
+
 class MessageBuilder:
     """Fluent builder used by AgentChannel to assemble an ApplicationMessage."""
 
     def __init__(self) -> None:
-        # Initialise empty fields.
-        ...
+        self._text: str | None = None
 
     def with_text(self, s: str) -> "MessageBuilder":
-        # Set the text body; chainable.
-        ...
-
-    def with_payment(self, p: BTCPayload) -> "MessageBuilder":
-        # Attach a BTCPayload; chainable.
-        ...
-
-    def with_intent_attestation(self, blob: bytes) -> "MessageBuilder":
-        # Attach a signed digest of the producing prompt (SQ4 mechanism hook); chainable.
-        ...
+        self._text = s
+        return self
 
     def build(self) -> ApplicationMessage:
-        # Validate that at least one of {text, payment} is set; stamp sent_at; return frozen instance.
-        ...
+        if self._text is None:
+            raise PayloadInvalid("ApplicationMessage requires a text body")
+        return ApplicationMessage(
+            text=self._text,
+            sent_at=datetime.now(timezone.utc),
+        )
 
 
 class PayloadRouter:
-    """Inbound side: hands decrypted ApplicationMessages to the Inbox."""
+    """Inbound side: hands unpacked ApplicationMessages to the Inbox."""
 
     def __init__(self, inbox: "Inbox") -> None:
-        # Hold the inbox queue we deliver to.
-        ...
+        self._inbox = inbox
 
     def deliver(
         self,
@@ -48,5 +65,13 @@ class PayloadRouter:
         sender: AgentId,
         msg: ApplicationMessage,
     ) -> None:
-        # Validate payload, run any payment-side effects (e.g. PaymentVerifier), push onto the Inbox.
-        ...
+        from communication.channel.inbox import IncomingMessage
+
+        self._inbox.put(
+            IncomingMessage(
+                room_id=room_id,
+                sender=sender,
+                message=msg,
+                received_at=datetime.now(timezone.utc),
+            )
+        )
