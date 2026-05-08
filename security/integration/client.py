@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+<<<<<<< HEAD
 from urllib.error import HTTPError
+=======
+from urllib.error import HTTPError, URLError
+>>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
 from urllib.request import Request, urlopen
 
 
@@ -154,3 +158,8 @@ class DelftClawClient:
                 parsed = {"error": error_body}
             parsed.setdefault("status", exc.code)
             return parsed
+<<<<<<< HEAD
+=======
+        except (OSError, URLError) as exc:
+            return {"ok": False, "error": str(exc)}
+>>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
