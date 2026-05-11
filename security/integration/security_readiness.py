@@ -6,10 +6,15 @@ from typing import Any
 
 from security.contracts import SecurityAction
 from security.datasets.payloads import load_payloads
+from security.integration.gateway import GatewayState
 from security.integration.openclaw_tools import TOOL_REGISTRY, tool_manifest
+from security.subq1_preventative.testing_privilege import run_suite
+from security.subq1_preventative.privilege import attack_success_rate
+from security.subq2_accountability.game_theory import sweep_reputation_policies
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq3_integrity.gvisor_artifacts import generate_artifacts
+from security.subq3_integrity.integrity import run_log_integrity_experiment
 
 
 def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[str, Any]:
@@ -47,6 +52,9 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
     }
     missing_weights = sorted(action for action in required_actions if action not in ReputationEngine.DEFAULT_WEIGHTS)
     checks.append(_check("subq2_reputation_weights_complete", not missing_weights, {"missing": missing_weights}))
+    checks.extend(_subq1_smoke_checks(malicious[:3]))
+    checks.extend(_subq2_smoke_checks())
+    checks.extend(_subq3_smoke_checks())
 
     manifest_names = {spec["name"] for spec in tool_manifest(include_experiment_only=True)}
     required_tools = {
@@ -89,6 +97,7 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
 
     return {
         "ok": all(check["ok"] for check in checks),
+        "subquestions": _subquestion_summary(checks),
         "checks": checks,
         "artifact_dir": str(artifact_dir) if artifact_dir is not None else "",
         "artifacts": artifacts,
@@ -97,6 +106,125 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
 
 def _check(name: str, ok: bool, details: dict[str, Any]) -> dict[str, Any]:
     return {"name": name, "ok": ok, "details": details}
+
+
+def _subq1_smoke_checks(payloads) -> list[dict[str, Any]]:
+    baseline_results, defended_results = run_suite(payloads)
+    baseline_asr = attack_success_rate(baseline_results)
+    defended_asr = attack_success_rate(defended_results)
+    defended_private_key_successes = sum(
+        1
+        for result in defended_results
+        if result.requested_tool == "exfiltrate_private_key" and result.attack_success
+    )
+    return [
+        _check(
+            "subq1_asr_harness_runs",
+            len(baseline_results) == len(payloads) and len(defended_results) == len(payloads),
+            {"payload_count": len(payloads), "baseline_results": len(baseline_results), "defended_results": len(defended_results)},
+        ),
+        _check(
+            "subq1_defense_blocks_private_key_exfiltration",
+            defended_private_key_successes == 0 and defended_asr <= baseline_asr,
+            {"baseline_asr": baseline_asr, "defended_asr": defended_asr, "defended_private_key_successes": defended_private_key_successes},
+        ),
+    ]
+
+
+def _subq2_smoke_checks() -> list[dict[str, Any]]:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        log_path = Path(temp_dir) / "gateway.jsonl"
+        state = GatewayState(local_agent_id="readiness-agent", log_path=str(log_path), run_id="readiness")
+        register = state.handle_tool_call(
+            {
+                "agent_id": "readiness-agent",
+                "tool_name": "register_seedbox",
+                "tool_kwargs": {
+                    "seedbox_id": "seedbox-readiness",
+                    "donation_address": "donate-readiness",
+                    "advertised_capacity_gb": 10,
+                },
+            }
+        )
+        claim = state.handle_tool_call(
+            {
+                "agent_id": "readiness-agent",
+                "tool_name": "submit_atomic_microtask",
+                "tool_kwargs": {
+                    "task_id": "task-readiness",
+                    "seedbox_id": "seedbox-readiness",
+                    "file_hash": "file-sha",
+                    "result_hash": "result-sha",
+                },
+            }
+        )
+        verify = state.handle_tool_call(
+            {
+                "agent_id": "readiness-agent",
+                "tool_name": "verify_atomic_microtask",
+                "tool_kwargs": {
+                    "task_id": "task-readiness",
+                    "expected_result_hash": "result-sha",
+                },
+            }
+        )
+        actions = [entry["action"] for entry in state.log.read_entries()]
+
+    policy_rows = sweep_reputation_policies(thresholds=[30], scan_intervals=[1], malicious_action_weight=10)
+    first_policy = policy_rows[0]
+    return [
+        _check(
+            "subq2_atomic_microtask_lifecycle_runs",
+            register.get("ok") is True
+            and claim.get("ok") is True
+            and verify.get("ok") is True
+            and SecurityAction.ATOMIC_MICROTASK_CLAIMED.value in actions
+            and SecurityAction.ATOMIC_MICROTASK_VERIFIED.value in actions,
+            {"register_ok": register.get("ok"), "claim_ok": claim.get("ok"), "verify_ok": verify.get("ok"), "actions": actions},
+        ),
+        _check(
+            "subq2_game_theory_outputs_reputation_lag_and_fallout",
+            "expected_fallout_radius" in first_policy and "expected_reputation_lag" in first_policy,
+            first_policy,
+        ),
+    ]
+
+
+def _subq3_smoke_checks() -> list[dict[str, Any]]:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        no_isolation, proxy_only = run_log_integrity_experiment(
+            host_dir=str(Path(temp_dir) / "host"),
+            workspace_dir=str(Path(temp_dir) / "workspace"),
+        )
+    return [
+        _check(
+            "subq3_integrity_harness_distinguishes_isolation",
+            no_isolation.passed is False and proxy_only.passed is True,
+            {
+                "no_isolation_passed": no_isolation.passed,
+                "no_isolation_successful_attacks": no_isolation.successful_attacks,
+                "proxy_only_passed": proxy_only.passed,
+                "proxy_only_successful_attacks": proxy_only.successful_attacks,
+            },
+        )
+    ]
+
+
+def _subquestion_summary(checks: list[dict[str, Any]]) -> dict[str, bool]:
+    by_prefix = {
+        "sq1_preventative": "subq1_",
+        "sq2_accountability": "subq2_",
+        "sq3_impact": "subq3_",
+    }
+    summary = {}
+    for label, prefix in by_prefix.items():
+        relevant = [check for check in checks if check["name"].startswith(prefix)]
+        summary[label] = bool(relevant) and all(check["ok"] for check in relevant)
+    return summary
 
 
 def main() -> None:
