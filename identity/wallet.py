@@ -1,114 +1,108 @@
-"""Synthetic-BTC wallet keyed off Ed25519 at WALLET_PATH.
-
-Balance state lives in ``stake.StakeOracle``, not on the wallet itself. The
-wallet object holds only the signing key — restart-safe, no balance recovery.
-"""
+"""Bitcoin HD wallet wrapper used by autonomous OpenClaw agents."""
 
 from __future__ import annotations
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import hashlib
 
-from identity.derivation import WALLET_PATH, derive
+from bitcoinlib.keys import HDKey
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from identity.derivation import DerivationPath, wallet_path
 from identity.seed import Seed
 
 
-class Wallet:
-    """Ed25519 signing key derived at WALLET_PATH; signs synthetic ``StakeOp`` ops."""
+def _bitcoin_network(network: str) -> str:
+    normalized = network.strip().upper()
+    if normalized == "MAINNET":
+        return "bitcoin"
+    if normalized in {"TESTNET", "REGTEST"}:
+        return "testnet"
+    raise ValueError(f"Unsupported network: {network}")
 
-    def __init__(self, key: Ed25519PrivateKey) -> None:
-        self.key = key
+
+class Wallet:
+    """BIP-32 wallet derived from the agent seed and BIP-44 path."""
+
+    def __init__(self, root: HDKey, child: HDKey, *, path: DerivationPath, network: str) -> None:
+        self._root = root
+        self._child = child
+        self._path = path
+        self._network = network
 
     @classmethod
-    def from_seed(cls, seed: Seed) -> "Wallet":
-        priv_bytes = derive(seed, WALLET_PATH)
-        if len(priv_bytes) == 64:
-            priv_bytes = priv_bytes[:32]
-        return cls(Ed25519PrivateKey.from_private_bytes(priv_bytes))
+    def from_seed(
+        cls,
+        seed: Seed,
+        *,
+        network: str = "MAINNET",
+        agent_index: int = 0,
+        path: DerivationPath | None = None,
+    ) -> "Wallet":
+        """Derive wallet keys at m/44'/0'/agent_index'/0/0 by default."""
+        net = _bitcoin_network(network)
+        root = HDKey.from_seed(seed.bytes, network=net)
+        resolved_path = path or wallet_path(agent_index)
+        child = root.subkey_for_path(str(resolved_path))
+        return cls(root, child, path=resolved_path, network=network.strip().upper())
+
+    @property
+    def path(self) -> str:
+        """Derivation path used to create this wallet child key."""
+        return str(self._path)
 
     @property
     def pubkey(self) -> bytes:
-        """Return the wallet's compressed secp256k1 public key."""
-        return self._wallet.get_key().key_public
+        """Compressed secp256k1 public key bytes."""
+        return bytes.fromhex(self._child.public_hex)
+
+    @property
+    def xpub(self) -> str:
+        """Extended public key string for this wallet account."""
+        return self._root.public_master().wif()
+
+    @property
+    def xpriv(self) -> str:
+        """Extended private key string for this wallet account."""
+        return self._root.wif_private()
+
+    @property
+    def network(self) -> str:
+        """Logical OpenClaw network label for this wallet."""
+        return self._network
 
     def address(self) -> str:
-        """Return the human-readable bech32 address for this wallet."""
-        return self._wallet.get_key().address
+        """Legacy P2PKH address (base58) for interoperability."""
+        return self._child.address(script_type="p2pkh", encoding="base58")
 
-    def compose_payment(
-        self,
-        recipient_pubkey: bytes,
-        amount_sats: int,
-        utxos: list[UTXO],
-    ) -> SignedTransaction:
-        """
-        Build a P2WPKH transaction from the supplied UTXOs, sign it, 
-        and return the SignedTransaction.
-        """
-        recipient_key = HDKey(import_key=recipient_pubkey.hex(), network='bitcoin', witness_type='segwit')
-        to_address = recipient_key.address
+    def sign(self, msg: bytes) -> bytes:
+        """Sign arbitrary bytes using ECDSA-secp256k1 over SHA-256(msg)."""
+        digest = hashlib.sha256(msg).digest()
+        priv = ec.derive_private_key(int(self._child.private_hex, 16), ec.SECP256K1())
+        return priv.sign(digest, ec.ECDSA(hashes.SHA256()))
 
-        t = Transaction(network='bitcoin')
-        for u in utxos:
-            t.add_input(prev_txid=u.txid, output_n=u.vout, value=u.amount_sats)
-            
-        t.add_output(amount_sats, to_address)
-        
-        # Sign with our key
-        wallet_key = self._wallet.get_key()
-        t.sign([{
-            'private': wallet_key.key_private.hex(),
-            'public': wallet_key.key_public.hex(),
-            'address': wallet_key.address
-        }])
-        
-        return SignedTransaction(raw=t.as_bytes(), txid_hint=Txid(t.txid))
-
-    def verify_counterparty_signature(
-        self,
-        tx: SignedTransaction,
-        expected_pubkey: bytes,
-    ) -> bool:
-        """
-        Confirm a transaction really was signed by the public key the sender claims to control.
-        """
+    def verify(self, msg: bytes, sig: bytes) -> bool:
+        """Verify signature produced by :meth:`sign`."""
+        digest = hashlib.sha256(msg).digest()
         try:
-            pub_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), expected_pubkey)
-            pub_key.verify(tx.raw, tx.raw, ec.ECDSA(hashes.SHA256()))
+            pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), self.pubkey)
+            pub.verify(sig, digest, ec.ECDSA(hashes.SHA256()))
             return True
-        except Exception:
+        except (InvalidSignature, ValueError):
             return False
 
-    def get_private_key(self):
-        """Get the private key in WIF format."""
-        return self._wallet.get_key().wif
+    def get_balance(self) -> int:
+        """Return on-chain balance in satoshis if available, otherwise 0."""
+        try:
+            from bitcoinlib.wallets import Wallet as BWallet
 
-    def get_balance(self, as_string=False):
-        """
-        Get wallet balance by scanning the blockchain.
-        
-        :param as_string: Return as string with BTC suffix if True
-        :return: Balance in satoshis (int) or formatted string
-        """
-        self.wallet.scan()
-        balance = self.wallet.balance()
-        
-        if as_string:
-            return f"{balance / 100000000:.8f} BTC"
-        return balance
-
-    def get_utxos(self):
-        """Get unspent transaction outputs."""
-        self.wallet.scan()
-        return self.wallet.utxos()
-
-
-        """Return the canonical 32-byte Ed25519 verify key."""
-        return self.key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-
-    def sign(self, data: bytes) -> bytes:
-        """Produce an Ed25519 signature; used by ``StakeOp.sign``."""
-        return self.key.sign(data)
+            name = f"openclaw_{self.address()}"
+            if BWallet.exists(name):
+                wallet = BWallet(name)
+            else:
+                wallet = BWallet.create(name=name, keys=self.xpriv, network=_bitcoin_network(self._network))
+            wallet.scan()
+            return int(wallet.balance())
+        except Exception:
+            return 0

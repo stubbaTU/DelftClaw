@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-identity": {
+      "url": "http://localhost:7701/mcp",
+      "description": "Cryptographic identity, wallet, and verification tools for this OpenClaw agent."
+    }
+  }
+}
+

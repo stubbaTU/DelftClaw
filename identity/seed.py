@@ -6,15 +6,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 import os
-import hashlib
 import secrets
+
+from bitcoinlib.mnemonic import Mnemonic
 
 
 @dataclass(frozen=True)
 class Seed:
-    """The master 32-byte seed. Treat the contents as cryptographic secret material."""
+    """BIP-39 derived seed bytes with optional mnemonic provenance."""
 
     bytes: bytes
+    mnemonic: str | None = None
+
+    @staticmethod
+    def generate_mnemonic(strength: int = 128) -> str:
+        """Generate a BIP-39 mnemonic phrase from entropy bits."""
+        return Mnemonic().generate(strength=strength)
+
+    @classmethod
+    def from_mnemonic(cls, mnemonic: str, passphrase: str = "") -> "Seed":
+        """Derive canonical BIP-39 seed bytes from mnemonic + passphrase."""
+        return cls(bytes=Mnemonic().to_seed(mnemonic, password=passphrase), mnemonic=mnemonic)
 
 
 class SeedSource(Protocol):
@@ -29,58 +41,49 @@ class MnemonicSeedSource(SeedSource):
     """Derive a Seed from a BIP-39 mnemonic phrase (with optional passphrase)."""
 
     def __init__(self, mnemonic: str, passphrase: str = "") -> None:
-        """Store the mnemonic and passphrase; do not derive yet."""
         self.mnemonic = mnemonic
         self.passphrase = passphrase
 
     def load(self) -> Seed:
-        """Run BIP-39 PBKDF2 to derive the 64-byte seed; truncate / hash to the 32-byte Seed."""
-        from bip_utils import Bip39SeedGenerator
-        # Derive 64-byte seed
-        bip39_seed = Bip39SeedGenerator(self.mnemonic).Generate(self.passphrase)
-        # Convert to 32 bytes (we will use sha256 to fold it)
-        truncated = hashlib.sha256(bip39_seed).digest()
-        return Seed(truncated)
+        """Run BIP-39 PBKDF2 and return the full seed bytes."""
+        return Seed.from_mnemonic(self.mnemonic, self.passphrase)
 
 
 class EnvSeedSource(SeedSource):
     """Read a hex-encoded seed from the OPENCLAW_SEED env var. Dev-only."""
 
     def load(self) -> Seed:
-        """Read OPENCLAW_SEED, hex-decode, raise ValueError if absent or malformed."""
         seed_hex = os.environ.get("OPENCLAW_SEED")
         if not seed_hex:
             raise ValueError("OPENCLAW_SEED environment variable is not set")
         try:
             seed_bytes = bytes.fromhex(seed_hex)
-        except ValueError:
-            raise ValueError("OPENCLAW_SEED must be valid hex")
+        except ValueError as exc:
+            raise ValueError("OPENCLAW_SEED must be valid hex") from exc
 
-        if len(seed_bytes) != 32:
-            raise ValueError("OPENCLAW_SEED must be exactly 32 bytes when hex-decoded")
+        if len(seed_bytes) < 16:
+            raise ValueError("OPENCLAW_SEED must decode to at least 16 bytes")
 
         return Seed(seed_bytes)
 
 
 class KeyringSeedSource(SeedSource):
-    """Read the seed from the OS keyring (secret-service / Keychain). Production path."""
+    """Read the seed from the OS keyring (secret-service / Keychain)."""
 
     def __init__(self, service: str, account: str) -> None:
-        """Store the keyring lookup parameters."""
         self.service = service
         self.account = account
 
     def load(self) -> Seed:
-        """Look up the secret in the OS keyring; raise ValueError on missing entry."""
         import keyring
+
         secret_hex = keyring.get_password(self.service, self.account)
         if not secret_hex:
             raise ValueError("Seed not found in keyring")
-
         try:
             return Seed(bytes.fromhex(secret_hex))
-        except ValueError:
-            raise ValueError("Seed in keyring must be valid hex")
+        except ValueError as exc:
+            raise ValueError("Seed in keyring must be valid hex") from exc
 
 
 def _default_seed_path() -> Path:
@@ -91,7 +94,7 @@ def _default_seed_path() -> Path:
 
 
 class KeyfileSeedSource(SeedSource):
-    """Persist a 32-byte seed as a hex-encoded text file. First run generates; later runs load."""
+    """Persist a seed source file. New files store mnemonic for portability."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else _default_seed_path()
@@ -101,15 +104,20 @@ class KeyfileSeedSource(SeedSource):
             text = self.path.read_text(encoding="utf-8").strip()
             if not text:
                 raise ValueError(f"Seed file is empty: {self.path}")
+
+            if " " in text:
+                return Seed.from_mnemonic(text)
+
             try:
                 seed_bytes = bytes.fromhex(text)
             except ValueError as exc:
                 raise ValueError(f"Seed file is not valid hex: {self.path}") from exc
-            if len(seed_bytes) != 32:
-                raise ValueError(f"Seed file must be 32 bytes; got {len(seed_bytes)}")
+            if len(seed_bytes) < 16:
+                raise ValueError(f"Seed file must be >=16 bytes; got {len(seed_bytes)}")
             return Seed(seed_bytes)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        seed_bytes = secrets.token_bytes(32)
-        self.path.write_text(seed_bytes.hex(), encoding="ascii")
-        return Seed(seed_bytes)
+        mnemonic = Seed.generate_mnemonic(128)
+        seed = Seed.from_mnemonic(mnemonic)
+        self.path.write_text(mnemonic, encoding="ascii")
+        return seed
