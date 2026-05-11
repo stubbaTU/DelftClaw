@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
 from security.contracts import SecurityAction
 from security.datasets.payloads import load_payloads
@@ -17,11 +23,15 @@ from security.subq3_integrity.gvisor_artifacts import generate_artifacts
 from security.subq3_integrity.integrity import run_log_integrity_experiment
 
 
+SECURITY_ROOT = Path(__file__).resolve().parents[1]
+DATASET_ROOT = SECURITY_ROOT / "datasets"
+
+
 def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
-    malicious = load_payloads("security/datasets/malicious_torrent_payloads.jsonl")
-    benign = load_payloads("security/datasets/benign_torrent_payloads.jsonl")
+    malicious = load_payloads(DATASET_ROOT / "malicious_torrent_payloads.jsonl")
+    benign = load_payloads(DATASET_ROOT / "benign_torrent_payloads.jsonl")
     checks.append(_check("subq1_malicious_payloads_loaded", len(malicious) > 0, {"count": len(malicious)}))
     checks.append(_check("subq1_benign_payloads_loaded", len(benign) > 0, {"count": len(benign)}))
 
