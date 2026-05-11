@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from random import choice
 
 from security.contracts import AtomicMicrotaskEvidence, SeedboxDonationEvidence
 
@@ -72,6 +73,19 @@ class AtomicMicrotask:
             result_hash=self.result_hash,
             verified=self.verified,
         )
+
+
+@dataclass(frozen=True)
+class IndexedFile:
+    file_id: str
+    seedbox_id: str
+    name: str
+    content_url: str
+    sha256: str = ""
+    size_bytes: int = 0
+    media_type: str = ""
+    tags: tuple[str, ...] = ()
+    indexed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
 class SeedboxRegistry:
@@ -219,3 +233,57 @@ class AtomicMicrotaskLedger:
         verified = replace(microtask, verified=True)
         self.microtasks.append(verified)
         return verified
+
+
+class SeedboxContentIndex:
+    def __init__(self, registry: SeedboxRegistry):
+        self.registry = registry
+        self.files: list[IndexedFile] = []
+
+    def index_file(
+        self,
+        *,
+        file_id: str,
+        seedbox_id: str,
+        name: str,
+        content_url: str,
+        sha256: str = "",
+        size_bytes: int = 0,
+        media_type: str = "",
+        tags: tuple[str, ...] = (),
+    ) -> IndexedFile:
+        self.registry.get(seedbox_id)
+        indexed_file = IndexedFile(
+            file_id=file_id,
+            seedbox_id=seedbox_id,
+            name=name,
+            content_url=content_url,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            media_type=media_type,
+            tags=tuple(tags),
+        )
+        self.files = [item for item in self.files if item.file_id != file_id]
+        self.files.append(indexed_file)
+        return indexed_file
+
+    def list_files(self) -> list[IndexedFile]:
+        return list(self.files)
+
+    def search(self, query: str) -> list[IndexedFile]:
+        normalized = query.casefold().strip()
+        if not normalized:
+            return self.list_files()
+        return [
+            item
+            for item in self.files
+            if normalized in item.name.casefold()
+            or normalized in item.media_type.casefold()
+            or any(normalized in tag.casefold() for tag in item.tags)
+        ]
+
+    def random_match(self, query: str = "") -> IndexedFile:
+        matches = self.search(query)
+        if not matches:
+            raise KeyError(query or "no indexed files")
+        return choice(matches)

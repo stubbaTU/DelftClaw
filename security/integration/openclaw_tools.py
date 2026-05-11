@@ -133,6 +133,50 @@ def delftclaw_report_security_event(
     )
 
 
+def delftclaw_index_seedbox_file(
+    file_id: str,
+    seedbox_id: str,
+    name: str,
+    content_url: str,
+    sha256: str = "",
+    size_bytes: int = 0,
+    media_type: str = "",
+    tags: list[str] | None = None,
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Add one file from a seedbox to the Claw Network content index."""
+
+    return _client().index_seedbox_file(
+        file_id=file_id,
+        seedbox_id=seedbox_id,
+        name=name,
+        content_url=content_url,
+        sha256=sha256,
+        size_bytes=size_bytes,
+        media_type=media_type,
+        tags=tags,
+        payload_id=payload_id,
+    )
+
+
+def delftclaw_list_files(payload_id: str | None = None) -> dict[str, Any]:
+    """List files currently known in the Claw Network content index."""
+
+    return _client().list_seedbox_files(payload_id=payload_id)
+
+
+def delftclaw_search_files(query: str, payload_id: str | None = None) -> dict[str, Any]:
+    """Search the Claw Network content index by name, media type, or tags."""
+
+    return _client().search_seedbox_files(query=query, payload_id=payload_id)
+
+
+def delftclaw_pick_random_file(query: str = "", payload_id: str | None = None) -> dict[str, Any]:
+    """Pick a random matching indexed file and return a playback intent for streaming skills."""
+
+    return _client().pick_random_seedbox_file(query=query, payload_id=payload_id)
+
+
 def delftclaw_audit_seedboxes() -> dict[str, Any]:
     """Audit registered seedboxes for donations without proof of service."""
 
@@ -184,6 +228,10 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_submit_atomic_microtask": delftclaw_submit_atomic_microtask,
     "delftclaw_verify_atomic_microtask": delftclaw_verify_atomic_microtask,
     "delftclaw_report_security_event": delftclaw_report_security_event,
+    "delftclaw_index_seedbox_file": delftclaw_index_seedbox_file,
+    "delftclaw_list_files": delftclaw_list_files,
+    "delftclaw_search_files": delftclaw_search_files,
+    "delftclaw_pick_random_file": delftclaw_pick_random_file,
     "delftclaw_audit_seedboxes": delftclaw_audit_seedboxes,
     "delftclaw_get_metrics": delftclaw_get_metrics,
     "delftclaw_get_reputation": delftclaw_get_reputation,
@@ -295,6 +343,56 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "action": {"type": "string"},
                     "details": {"type": "object"},
                     "severity": {"type": "integer", "default": 10},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_index_seedbox_file",
+            description="Add a seedbox-hosted file to the Claw Network searchable content index.",
+            parameters={
+                "type": "object",
+                "required": ["file_id", "seedbox_id", "name", "content_url"],
+                "properties": {
+                    "file_id": {"type": "string"},
+                    "seedbox_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content_url": {"type": "string"},
+                    "sha256": {"type": "string"},
+                    "size_bytes": {"type": "integer", "minimum": 0},
+                    "media_type": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_list_files",
+            description="Answer: what files are stored on our Claw Network?",
+            parameters={
+                "type": "object",
+                "properties": {"payload_id": {"type": "string"}},
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_search_files",
+            description="Answer: what Claw Network files contain a given search term?",
+            parameters={
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_pick_random_file",
+            description="Find a random matching Claw Network file and return a playback intent.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "payload_id": {"type": "string"},
                 },
             },
         ),

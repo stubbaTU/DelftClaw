@@ -19,6 +19,7 @@ from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import (
     AtomicMicrotaskLedger,
     DonationLedger,
+    SeedboxContentIndex,
     SeedboxRegistry,
     ServiceProofLedger,
 )
@@ -70,6 +71,7 @@ class GatewayState:
         self.ledger = DonationLedger(self.registry)
         self.proof_ledger = ServiceProofLedger(self.registry)
         self.microtask_ledger = AtomicMicrotaskLedger(self.registry)
+        self.content_index = SeedboxContentIndex(self.registry)
         self.hands = Hands(
             proxy=None,
             allowed_tools=self._allowed_tools(),
@@ -336,6 +338,30 @@ class GatewayState:
                 required_args=("subject_id", "action"),
                 risk=ToolRisk.SENSITIVE,
             ),
+            "index_seedbox_file": ToolPolicy(
+                name="index_seedbox_file",
+                handler=self._index_seedbox_file,
+                required_args=("file_id", "seedbox_id", "name", "content_url"),
+                risk=ToolRisk.SENSITIVE,
+            ),
+            "list_seedbox_files": ToolPolicy(
+                name="list_seedbox_files",
+                handler=self._list_seedbox_files,
+                required_args=(),
+                risk=ToolRisk.SAFE,
+            ),
+            "search_seedbox_files": ToolPolicy(
+                name="search_seedbox_files",
+                handler=self._search_seedbox_files,
+                required_args=("query",),
+                risk=ToolRisk.SAFE,
+            ),
+            "pick_random_seedbox_file": ToolPolicy(
+                name="pick_random_seedbox_file",
+                handler=self._pick_random_seedbox_file,
+                required_args=(),
+                risk=ToolRisk.SAFE,
+            ),
         }
 
     def _register_seedbox(self, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -400,6 +426,46 @@ class GatewayState:
             raise
         self.monitor.record_atomic_microtask(subject_id=microtask.prover_id, microtask=microtask.to_evidence())
         return {"verified": True, "microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
+
+    def _index_seedbox_file(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        tags = kwargs.get("tags", ())
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        indexed_file = self.content_index.index_file(
+            file_id=str(kwargs["file_id"]),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            name=str(kwargs["name"]),
+            content_url=str(kwargs["content_url"]),
+            sha256=str(kwargs.get("sha256", "")),
+            size_bytes=int(kwargs.get("size_bytes", 0)),
+            media_type=str(kwargs.get("media_type", "")),
+            tags=tuple(str(tag) for tag in tags),
+        )
+        return {"indexed": True, "file": asdict(indexed_file)}
+
+    def _list_seedbox_files(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        files = [asdict(item) for item in self.content_index.list_files()]
+        return {"count": len(files), "files": files}
+
+    def _search_seedbox_files(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = str(kwargs.get("query", ""))
+        files = [asdict(item) for item in self.content_index.search(query)]
+        return {"query": query, "count": len(files), "files": files}
+
+    def _pick_random_seedbox_file(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = str(kwargs.get("query", ""))
+        indexed_file = self.content_index.random_match(query)
+        file_payload = asdict(indexed_file)
+        return {
+            "query": query,
+            "file": file_payload,
+            "playback_intent": {
+                "action": "play",
+                "url": indexed_file.content_url,
+                "title": indexed_file.name,
+                "media_type": indexed_file.media_type,
+            },
+        }
 
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:

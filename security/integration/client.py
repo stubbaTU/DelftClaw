@@ -135,6 +135,43 @@ class DelftClawClient:
             payload_id=payload_id,
         )
 
+    def index_seedbox_file(
+        self,
+        file_id: str,
+        seedbox_id: str,
+        name: str,
+        content_url: str,
+        *,
+        sha256: str = "",
+        size_bytes: int = 0,
+        media_type: str = "",
+        tags: list[str] | None = None,
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "index_seedbox_file",
+            {
+                "file_id": file_id,
+                "seedbox_id": seedbox_id,
+                "name": name,
+                "content_url": content_url,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "media_type": media_type,
+                "tags": tags or [],
+            },
+            payload_id=payload_id,
+        )
+
+    def list_seedbox_files(self, *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("list_seedbox_files", {}, payload_id=payload_id)
+
+    def search_seedbox_files(self, query: str, *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("search_seedbox_files", {"query": query}, payload_id=payload_id)
+
+    def pick_random_seedbox_file(self, query: str = "", *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("pick_random_seedbox_file", {"query": query}, payload_id=payload_id)
+
     def report_security_event(
         self,
         subject_id: str,

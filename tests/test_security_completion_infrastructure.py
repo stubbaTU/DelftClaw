@@ -73,3 +73,58 @@ def test_gateway_claims_and_verifies_atomic_microtasks(tmp_path: Path) -> None:
     entries = state.log.read_entries()
     assert [entry["action"] for entry in entries].count("atomic_microtask_claimed") == 1
     assert [entry["action"] for entry in entries].count("atomic_microtask_verified") == 1
+
+
+def test_gateway_indexes_and_searches_seedbox_files(tmp_path: Path) -> None:
+    state = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(tmp_path / "gateway.jsonl"),
+        run_id="content-index",
+    )
+
+    state.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "register_seedbox",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "donation_address": "donate-a",
+                "advertised_capacity_gb": 100,
+            },
+        }
+    )
+    indexed = state.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "index_seedbox_file",
+            "tool_kwargs": {
+                "file_id": "cc-audio-2023-001",
+                "seedbox_id": "seedbox-a",
+                "name": "Creative Commons Audio Archive 2023 - Track 1",
+                "content_url": "https://example.invalid/audio/track-1.mp3",
+                "media_type": "audio/mpeg",
+                "tags": ["Creative Commons", "audio"],
+            },
+        }
+    )
+    assert indexed["ok"] is True
+
+    search = state.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "search_seedbox_files",
+            "tool_kwargs": {"query": "Creative Commons"},
+        }
+    )
+    assert search["ok"] is True
+    assert search["result"]["output"]["count"] == 1
+
+    picked = state.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "pick_random_seedbox_file",
+            "tool_kwargs": {"query": "Creative Commons Audio Archive 2023"},
+        }
+    )
+    assert picked["ok"] is True
+    assert picked["result"]["output"]["playback_intent"]["url"] == "https://example.invalid/audio/track-1.mp3"
