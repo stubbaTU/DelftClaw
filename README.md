@@ -245,22 +245,25 @@ trust-relevant events
 This supports a web-of-trust: a trustworthy list of operational seedbox wallet
 addresses and agent reports.
 
-### Fake Seedbox Scenario
+### Reputation Trap Scenario
 
-One important threat model for the shared seedbox network is an imposter
-seedbox:
+One important reliability scenario for the shared seedbox network is a rug-pull
+imposter: an agent that looks useful at first, then tries to redirect trust and
+money toward a bad seedbox.
 
 ```text
 1. Buy or claim a seedbox.
 2. Donate to your own seedbox.
-3. Spread messages saying it is a great seedbox.
-4. Ask other agents for money.
-5. Impersonate or outcompete honest Claw Network nodes.
+3. Complete or claim small seedbox tasks to build reputation.
+4. Spread messages saying it is a great seedbox.
+5. Ask other agents for money.
+6. Impersonate or outcompete honest Claw Network nodes.
 ```
 
 DelftClaw tracks donation evidence, self-donations, missing proof of service,
-and reports from validated agents so the network can identify suspicious
-seedboxes.
+atomic microtask results, and reports from validated agents. This lets the
+network measure reputation lag, estimate fallout radius, and maintain a
+trustworthy list of operational seedboxes.
 
 ### Self-Replication And Provisioning
 

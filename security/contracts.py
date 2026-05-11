@@ -16,6 +16,9 @@ class SecurityAction(StrEnum):
     SEEDBOX_MISSING_PROOF = "seedbox_missing_proof"
     SELF_DONATION = "self_donation"
     WASH_TRADE_DETECTED = "wash_trade_detected"
+    ATOMIC_MICROTASK_CLAIMED = "atomic_microtask_claimed"
+    ATOMIC_MICROTASK_VERIFIED = "atomic_microtask_verified"
+    REPUTATION_TRAP_DETECTED = "reputation_trap_detected"
     LOG_SPOOF_ATTEMPT = "log_spoof_attempt"
     LOG_INTEGRITY_FAILURE = "log_integrity_failure"
     PRIVATE_KEY_ACCESS_ATTEMPT = "private_key_access_attempt"
@@ -82,9 +85,9 @@ class ToolPolicy:
 @dataclass
 class AccountabilityMetrics:
     """
-    Quantitative output for the harm-until-expulsion experiment.
+    Quantitative output for the reputation-lag and fallout-radius experiment.
 
-    unauthorized_executions is the blast-radius count.
+    fallout_radius is the accepted harmful impact before detection or expulsion.
     """
     subject_id: str
     accountability_enabled: bool
@@ -96,13 +99,22 @@ class AccountabilityMetrics:
     expulsion_step: int | None
     integrity_ok: bool
     integrity_errors: list[str]
+    first_malicious_step: int | None = None
+    detection_step: int | None = None
+    reputation_lag: int | None = None
+    accepted_harmful_actions_during_lag: int = 0
     fake_donations: int = 0
     honest_transactions_stolen: int = 0
     wash_trades_detected: int = 0
+    atomic_microtasks_claimed: int = 0
+
+    @property
+    def fallout_radius(self) -> int:
+        return self.unauthorized_executions + self.fake_donations + self.honest_transactions_stolen
 
     @property
     def blast_radius(self) -> int:
-        return self.unauthorized_executions + self.fake_donations + self.honest_transactions_stolen
+        return self.fallout_radius
 
 
 @dataclass
@@ -116,6 +128,17 @@ class SeedboxDonationEvidence:
     self_donation: bool = False
     fake_seedbox: bool = False
     stolen_from_honest_agent: bool = False
+
+
+@dataclass
+class AtomicMicrotaskEvidence:
+    task_id: str
+    seedbox_id: str
+    prover_id: str
+    task_type: str
+    file_hash: str
+    result_hash: str
+    verified: bool = False
 
 
 @dataclass

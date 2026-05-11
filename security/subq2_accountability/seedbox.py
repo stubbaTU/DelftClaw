@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from security.contracts import SeedboxDonationEvidence
+from security.contracts import AtomicMicrotaskEvidence, SeedboxDonationEvidence
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,29 @@ class ServiceProof:
     storage_url: str
     nonce: str
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+@dataclass(frozen=True)
+class AtomicMicrotask:
+    task_id: str
+    seedbox_id: str
+    prover_id: str
+    task_type: str
+    file_hash: str
+    result_hash: str
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    verified: bool = False
+
+    def to_evidence(self) -> AtomicMicrotaskEvidence:
+        return AtomicMicrotaskEvidence(
+            task_id=self.task_id,
+            seedbox_id=self.seedbox_id,
+            prover_id=self.prover_id,
+            task_type=self.task_type,
+            file_hash=self.file_hash,
+            result_hash=self.result_hash,
+            verified=self.verified,
+        )
 
 
 class SeedboxRegistry:
@@ -147,3 +170,35 @@ class ServiceProofLedger:
 
     def proofs_for_seedbox(self, seedbox_id: str) -> list[ServiceProof]:
         return [proof for proof in self.proofs if proof.seedbox_id == seedbox_id]
+
+
+class AtomicMicrotaskLedger:
+    def __init__(self, registry: SeedboxRegistry):
+        self.registry = registry
+        self.microtasks: list[AtomicMicrotask] = []
+
+    def submit_result(
+        self,
+        task_id: str,
+        seedbox_id: str,
+        prover_id: str,
+        task_type: str,
+        file_hash: str,
+        result_hash: str,
+        verified: bool = False,
+    ) -> AtomicMicrotask:
+        self.registry.get(seedbox_id)
+        microtask = AtomicMicrotask(
+            task_id=task_id,
+            seedbox_id=seedbox_id,
+            prover_id=prover_id,
+            task_type=task_type,
+            file_hash=file_hash,
+            result_hash=result_hash,
+            verified=verified,
+        )
+        self.microtasks.append(microtask)
+        return microtask
+
+    def tasks_for_seedbox(self, seedbox_id: str) -> list[AtomicMicrotask]:
+        return [task for task in self.microtasks if task.seedbox_id == seedbox_id]

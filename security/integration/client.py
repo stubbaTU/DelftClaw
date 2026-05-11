@@ -3,11 +3,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-<<<<<<< HEAD
-from urllib.error import HTTPError
-=======
 from urllib.error import HTTPError, URLError
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
 from urllib.request import Request, urlopen
 
 
@@ -101,6 +97,28 @@ class DelftClawClient:
             payload["proof_id"] = proof_id
         return self.tool_call("submit_seedbox_proof", payload, payload_id=payload_id)
 
+    def submit_atomic_microtask(
+        self,
+        task_id: str,
+        seedbox_id: str,
+        file_hash: str,
+        result_hash: str,
+        *,
+        task_type: str = "storage_check",
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "submit_atomic_microtask",
+            {
+                "task_id": task_id,
+                "seedbox_id": seedbox_id,
+                "file_hash": file_hash,
+                "result_hash": result_hash,
+                "task_type": task_type,
+            },
+            payload_id=payload_id,
+        )
+
     def report_security_event(
         self,
         subject_id: str,
@@ -158,8 +176,5 @@ class DelftClawClient:
                 parsed = {"error": error_body}
             parsed.setdefault("status", exc.code)
             return parsed
-<<<<<<< HEAD
-=======
         except (OSError, URLError) as exc:
             return {"ok": False, "error": str(exc)}
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e

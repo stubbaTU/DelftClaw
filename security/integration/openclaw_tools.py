@@ -83,6 +83,26 @@ def delftclaw_submit_seedbox_proof(
     )
 
 
+def delftclaw_submit_atomic_microtask(
+    task_id: str,
+    seedbox_id: str,
+    file_hash: str,
+    result_hash: str,
+    task_type: str = "storage_check",
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Submit one small verifiable seedbox task result for reputation evidence."""
+
+    return _client().submit_atomic_microtask(
+        task_id=task_id,
+        seedbox_id=seedbox_id,
+        file_hash=file_hash,
+        result_hash=result_hash,
+        task_type=task_type,
+        payload_id=payload_id,
+    )
+
+
 def delftclaw_report_security_event(
     subject_id: str,
     action: str,
@@ -147,6 +167,7 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_register_seedbox": delftclaw_register_seedbox,
     "delftclaw_broadcast_seedbox_donation": delftclaw_broadcast_seedbox_donation,
     "delftclaw_submit_seedbox_proof": delftclaw_submit_seedbox_proof,
+    "delftclaw_submit_atomic_microtask": delftclaw_submit_atomic_microtask,
     "delftclaw_report_security_event": delftclaw_report_security_event,
     "delftclaw_audit_seedboxes": delftclaw_audit_seedboxes,
     "delftclaw_get_metrics": delftclaw_get_metrics,
@@ -215,6 +236,22 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "storage_url": {"type": "string"},
                     "nonce": {"type": "string"},
                     "proof_id": {"type": "string"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_submit_atomic_microtask",
+            description="Submit one atomic seedbox task result for trustworthy-estimation evidence.",
+            parameters={
+                "type": "object",
+                "required": ["task_id", "seedbox_id", "file_hash", "result_hash"],
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "seedbox_id": {"type": "string"},
+                    "file_hash": {"type": "string"},
+                    "result_hash": {"type": "string"},
+                    "task_type": {"type": "string", "default": "storage_check"},
                     "payload_id": {"type": "string"},
                 },
             },

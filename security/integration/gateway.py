@@ -16,7 +16,12 @@ from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
-from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry, ServiceProofLedger
+from security.subq2_accountability.seedbox import (
+    AtomicMicrotaskLedger,
+    DonationLedger,
+    SeedboxRegistry,
+    ServiceProofLedger,
+)
 
 
 class GatewayState:
@@ -31,12 +36,9 @@ class GatewayState:
         ban_threshold: int = 30,
         openclaw_bridge: Any | None = None,
         max_tool_risk: ToolRisk | str | int = ToolRisk.SENSITIVE,
-<<<<<<< HEAD
-=======
         run_id: str = "",
         experiment_condition: str = "",
         experiment_root: str = "",
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -45,9 +47,6 @@ class GatewayState:
         self.openclaw_bridge = openclaw_bridge
         self.mode = mode
         self.max_tool_risk = max_tool_risk
-<<<<<<< HEAD
-        self.log = AppendOnlyLog(log_path=log_path)
-=======
         self.run_id = run_id
         self.experiment_condition = experiment_condition or mode
         self.experiment_root = experiment_root
@@ -61,7 +60,6 @@ class GatewayState:
             "experiment_root": experiment_root,
         }
         self.log = AppendOnlyLog(log_path=log_path, run_metadata=self.run_metadata)
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
         self.monitor = AccountabilityMonitor(
             log=self.log,
@@ -71,6 +69,7 @@ class GatewayState:
         self.registry = SeedboxRegistry()
         self.ledger = DonationLedger(self.registry)
         self.proof_ledger = ServiceProofLedger(self.registry)
+        self.microtask_ledger = AtomicMicrotaskLedger(self.registry)
         self.hands = Hands(
             proxy=None,
             allowed_tools=self._allowed_tools(),
@@ -180,12 +179,9 @@ class GatewayState:
             "banned_agents": sorted(self.reputation.banned_agents),
             "openclaw": self.openclaw_status(),
             "max_tool_risk": str(self.max_tool_risk),
-<<<<<<< HEAD
-=======
             "run_id": self.run_id,
             "experiment_condition": self.experiment_condition,
             "experiment_root": self.experiment_root,
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
         }
 
     def audit_seedboxes(self) -> dict[str, Any]:
@@ -322,6 +318,12 @@ class GatewayState:
                 required_args=("seedbox_id", "prover_id", "storage_url", "nonce", "proof_id"),
                 risk=ToolRisk.SENSITIVE,
             ),
+            "submit_atomic_microtask": ToolPolicy(
+                name="submit_atomic_microtask",
+                handler=self._submit_atomic_microtask,
+                required_args=("task_id", "seedbox_id", "prover_id", "task_type", "file_hash", "result_hash"),
+                risk=ToolRisk.SENSITIVE,
+            ),
             "report_security_event": ToolPolicy(
                 name="report_security_event",
                 handler=lambda kwargs: {"reported": True, "details": kwargs},
@@ -361,6 +363,18 @@ class GatewayState:
         )
         return {"proof": asdict(proof)}
 
+    def _submit_atomic_microtask(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        microtask = self.microtask_ledger.submit_result(
+            task_id=str(kwargs["task_id"]),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            prover_id=str(kwargs["prover_id"]),
+            task_type=str(kwargs["task_type"]),
+            file_hash=str(kwargs["file_hash"]),
+            result_hash=str(kwargs["result_hash"]),
+        )
+        self.monitor.record_atomic_microtask(subject_id=str(kwargs["prover_id"]), microtask=microtask.to_evidence())
+        return {"microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
+
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:
         if tool_name == "register_seedbox":
@@ -371,6 +385,9 @@ class GatewayState:
         if tool_name == "submit_seedbox_proof":
             tool_kwargs.setdefault("prover_id", subject_id)
             tool_kwargs.setdefault("proof_id", f"proof-{subject_id}-{int(time.time() * 1000)}")
+        if tool_name == "submit_atomic_microtask":
+            tool_kwargs.setdefault("prover_id", subject_id)
+            tool_kwargs.setdefault("task_type", "storage_check")
         return tool_kwargs
 
     def _reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
@@ -511,12 +528,9 @@ def main() -> None:
     parser.add_argument("--mode", choices=("defended", "baseline"), help="Gateway execution mode.")
     parser.add_argument("--ban-threshold", type=int, help="Reputation score required for expulsion.")
     parser.add_argument("--max-tool-risk", choices=("safe", "sensitive", "dangerous"), help="Highest risk tool Hands may execute.")
-<<<<<<< HEAD
-=======
     parser.add_argument("--run-id", help="Experiment run id written into every append-only log event.")
     parser.add_argument("--experiment-condition", help="Condition label written into every append-only log event.")
     parser.add_argument("--experiment-root", help="Experiment workspace root for evidence and canary files.")
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
     parser.add_argument(
         "--use-openclaw-identity",
         action="store_true",
@@ -566,12 +580,9 @@ def main() -> None:
     log_path = args.log_path or env_or(env_values, "DELFTCLAW_LOG_PATH", f"logs/{agent_id}_append_only.jsonl")
     threshold = args.ban_threshold or int(env_or(env_values, "DELFTCLAW_BAN_THRESHOLD", "30"))
     max_tool_risk = ToolRisk(args.max_tool_risk) if args.max_tool_risk else env_risk(env_values, "DELFTCLAW_MAX_TOOL_RISK")
-<<<<<<< HEAD
-=======
     run_id = args.run_id or env_or(env_values, "DELFTCLAW_RUN_ID", "")
     experiment_condition = args.experiment_condition or env_or(env_values, "DELFTCLAW_EXPERIMENT_CONDITION", mode)
     experiment_root = args.experiment_root or env_or(env_values, "DELFTCLAW_EXPERIMENT_ROOT", "")
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     state = GatewayState(
@@ -581,12 +592,9 @@ def main() -> None:
         ban_threshold=threshold,
         openclaw_bridge=openclaw_bridge,
         max_tool_risk=max_tool_risk,
-<<<<<<< HEAD
-=======
         run_id=run_id,
         experiment_condition=experiment_condition,
         experiment_root=experiment_root,
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
     )
     run_gateway(host=host, port=port, state=state)
 

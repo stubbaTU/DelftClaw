@@ -1,6 +1,11 @@
 from typing import Any
 
-from security.contracts import AccountabilityMetrics, SecurityAction, SeedboxDonationEvidence
+from security.contracts import (
+    AccountabilityMetrics,
+    AtomicMicrotaskEvidence,
+    SecurityAction,
+    SeedboxDonationEvidence,
+)
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
@@ -30,6 +35,9 @@ class AccountabilityMonitor:
         self.fake_donations: dict[str, int] = {}
         self.honest_transactions_stolen: dict[str, int] = {}
         self.wash_trades_detected: dict[str, int] = {}
+        self.atomic_microtasks_claimed: dict[str, int] = {}
+        self.first_malicious_steps: dict[str, int] = {}
+        self.detection_steps: dict[str, int] = {}
         self.current_step = 0
 
     def next_step(self) -> int:
@@ -52,6 +60,7 @@ class AccountabilityMonitor:
     ):
         self.attempted_actions[subject_id] = self.attempted_actions.get(subject_id, 0) + 1
         self.unauthorized_executions[subject_id] = self.unauthorized_executions.get(subject_id, 0) + 1
+        self._record_malicious_step(subject_id)
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
@@ -94,6 +103,7 @@ class AccountabilityMonitor:
     ):
         self.attempted_actions[subject_id] = self.attempted_actions.get(subject_id, 0) + 1
         self.unauthorized_executions[subject_id] = self.unauthorized_executions.get(subject_id, 0) + 1
+        self._record_malicious_step(subject_id)
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
@@ -113,6 +123,7 @@ class AccountabilityMonitor:
         seedbox_id: str,
         evidence: dict[str, Any] | None = None,
     ):
+        self._record_malicious_step(subject_id)
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
@@ -131,8 +142,10 @@ class AccountabilityMonitor:
         self.attempted_actions[subject_id] = self.attempted_actions.get(subject_id, 0) + 1
         if donation.fake_seedbox or donation.self_donation:
             self.fake_donations[subject_id] = self.fake_donations.get(subject_id, 0) + 1
+            self._record_malicious_step(subject_id)
         if stolen_from_honest_agent:
             self.honest_transactions_stolen[subject_id] = self.honest_transactions_stolen.get(subject_id, 0) + 1
+            self._record_malicious_step(subject_id)
 
         self.log.append_event(
             reporter_id=self.reporter_id,
@@ -169,13 +182,47 @@ class AccountabilityMonitor:
                 },
             )
 
+    def record_atomic_microtask(
+        self,
+        subject_id: str,
+        microtask: AtomicMicrotaskEvidence,
+    ):
+        self.atomic_microtasks_claimed[subject_id] = self.atomic_microtasks_claimed.get(subject_id, 0) + 1
+        self.log.append_event(
+            reporter_id=self.reporter_id,
+            subject_id=subject_id,
+            action=SecurityAction.ATOMIC_MICROTASK_CLAIMED.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.ATOMIC_MICROTASK_CLAIMED.value],
+            details={
+                "step": self.current_step,
+                "task_id": microtask.task_id,
+                "seedbox_id": microtask.seedbox_id,
+                "prover_id": microtask.prover_id,
+                "task_type": microtask.task_type,
+                "file_hash": microtask.file_hash,
+                "result_hash": microtask.result_hash,
+                "verified": microtask.verified,
+            },
+        )
+
     def scan(self):
         self.reputation.scan_log()
         for subject_id in self.reputation.banned_agents:
             self.expulsion_steps.setdefault(subject_id, self.current_step)
+            self.detection_steps.setdefault(subject_id, self.current_step)
 
     def get_metrics(self, subject_id: str, accountability_enabled: bool) -> AccountabilityMetrics:
         integrity_ok, integrity_errors = self.log.verify_integrity()
+        first_malicious_step = self.first_malicious_steps.get(subject_id)
+        detection_step = self.detection_steps.get(subject_id) or self.expulsion_steps.get(subject_id)
+        reputation_lag = None
+        if first_malicious_step is not None and detection_step is not None:
+            reputation_lag = max(0, detection_step - first_malicious_step)
+        accepted_harmful_actions = (
+            self.unauthorized_executions.get(subject_id, 0)
+            + self.fake_donations.get(subject_id, 0)
+            + self.honest_transactions_stolen.get(subject_id, 0)
+        )
         return AccountabilityMetrics(
             subject_id=subject_id,
             accountability_enabled=accountability_enabled,
@@ -187,13 +234,21 @@ class AccountabilityMonitor:
             expulsion_step=self.expulsion_steps.get(subject_id),
             integrity_ok=integrity_ok,
             integrity_errors=integrity_errors,
+            first_malicious_step=first_malicious_step,
+            detection_step=detection_step,
+            reputation_lag=reputation_lag,
+            accepted_harmful_actions_during_lag=accepted_harmful_actions,
             fake_donations=self.fake_donations.get(subject_id, 0),
             honest_transactions_stolen=self.honest_transactions_stolen.get(subject_id, 0),
             wash_trades_detected=self.wash_trades_detected.get(subject_id, 0),
+            atomic_microtasks_claimed=self.atomic_microtasks_claimed.get(subject_id, 0),
         )
 
+    def _record_malicious_step(self, subject_id: str):
+        self.first_malicious_steps.setdefault(subject_id, self.current_step)
 
-def run_harm_until_expulsion_experiment(
+
+def run_reputation_trap_experiment(
     accountability_enabled: bool,
     total_malicious_actions: int,
     threshold: int,
@@ -205,9 +260,10 @@ def run_harm_until_expulsion_experiment(
     """
     Compare accountability versus no accountability before real OpenClaw wiring.
 
-    The compromised subject attempts the same number of malicious tool
-    executions in both conditions. Without accountability, nothing blocks it.
-    With accountability, reputation scans can expel it and block later actions.
+    The compromised subject performs rug-pull imposter actions against a
+    claimed seedbox. Reputation lag is the delay between the first malicious
+    action and detection/expulsion. Fallout radius is the accepted damage
+    during that lag.
     """
     log = AppendOnlyLog(log_path=log_path)
     reputation = ReputationEngine(log_path=log.log_path, ban_threshold=threshold)
@@ -251,3 +307,7 @@ def run_harm_until_expulsion_experiment(
         monitor.scan()
 
     return monitor.get_metrics(subject_id, accountability_enabled=accountability_enabled)
+
+
+def run_harm_until_expulsion_experiment(*args, **kwargs) -> AccountabilityMetrics:
+    return run_reputation_trap_experiment(*args, **kwargs)

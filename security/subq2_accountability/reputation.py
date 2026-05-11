@@ -5,7 +5,7 @@ from security.contracts import SecurityAction
 
 class ReputationEngine:
     """
-    Parses the append-only log, calculates trust score, and expels malicious agents.
+    Parses the append-only log, estimates trustworthiness, and expels malicious agents.
     """
     DEFAULT_WEIGHTS = {
         "receive_message": 0,
@@ -21,6 +21,9 @@ class ReputationEngine:
         SecurityAction.SEEDBOX_MISSING_PROOF.value: 10,
         SecurityAction.SELF_DONATION.value: 15,
         SecurityAction.WASH_TRADE_DETECTED.value: 20,
+        SecurityAction.ATOMIC_MICROTASK_CLAIMED.value: 0,
+        SecurityAction.ATOMIC_MICROTASK_VERIFIED.value: 0,
+        SecurityAction.REPUTATION_TRAP_DETECTED.value: 20,
         SecurityAction.LOG_SPOOF_ATTEMPT.value: 15,
         SecurityAction.LOG_INTEGRITY_FAILURE.value: 20,
         SecurityAction.PRIVATE_KEY_ACCESS_ATTEMPT.value: 20,
@@ -33,6 +36,8 @@ class ReputationEngine:
         self.banned_agents = set()
         self.scores = {}
         self.action_counts = {}
+        self.first_malicious_steps = {}
+        self.expulsion_steps = {}
 
     def scan_log(self, udp_endpoint=None):
         """
@@ -45,6 +50,8 @@ class ReputationEngine:
         self.banned_agents = set()
         self.scores = {}
         self.action_counts = {}
+        self.first_malicious_steps = {}
+        self.expulsion_steps = {}
 
         with open(self.log_path, 'r') as f:
             for line in f:
@@ -54,6 +61,7 @@ class ReputationEngine:
                     entry = json.loads(line.strip())
                     subject_id = entry.get("subject_id") or entry.get("agent_id")
                     action = entry.get("action")
+                    details = entry.get("details") or {}
 
                     if not subject_id:
                         continue
@@ -68,11 +76,21 @@ class ReputationEngine:
                         weight = max(int(weight), self.DEFAULT_WEIGHTS.get(action, 0))
 
                     self.scores[subject_id] = self.scores.get(subject_id, 0) + weight
+                    if weight > 0:
+                        step = details.get("step")
+                        if isinstance(step, int):
+                            self.first_malicious_steps.setdefault(subject_id, step)
 
                     if self.scores[subject_id] >= self.ban_threshold:
                         if subject_id not in self.banned_agents and subject_id not in previously_banned:
-                            print(f"[REPUTATION] Score {self.scores[subject_id]} for agent {subject_id}. Expelling!")
+                            print(
+                                f"[TRUSTWORTHY_ESTIMATION] Score {self.scores[subject_id]} "
+                                f"for agent {subject_id}. Expelling!"
+                            )
                         self.banned_agents.add(subject_id)
+                        step = details.get("step")
+                        if isinstance(step, int):
+                            self.expulsion_steps.setdefault(subject_id, step)
                 except json.JSONDecodeError:
                     pass
 
@@ -91,7 +109,18 @@ class ReputationEngine:
             + counts.get(SecurityAction.PRIVATE_KEY_EXFILTRATION.value, 0)
             + counts.get(SecurityAction.SELF_DONATION.value, 0)
             + counts.get(SecurityAction.WASH_TRADE_DETECTED.value, 0)
+            + counts.get(SecurityAction.REPUTATION_TRAP_DETECTED.value, 0)
         )
 
     def get_count(self, agent_id: str, action: str) -> int:
         return self.action_counts.get(agent_id, {}).get(action, 0)
+
+    def get_reputation_lag(self, agent_id: str) -> int | None:
+        first = self.first_malicious_steps.get(agent_id)
+        expelled = self.expulsion_steps.get(agent_id)
+        if first is None or expelled is None:
+            return None
+        return max(0, expelled - first)
+
+
+TrustworthyEstimator = ReputationEngine
