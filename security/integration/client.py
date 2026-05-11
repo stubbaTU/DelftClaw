@@ -119,6 +119,22 @@ class DelftClawClient:
             payload_id=payload_id,
         )
 
+    def verify_atomic_microtask(
+        self,
+        task_id: str,
+        expected_result_hash: str,
+        *,
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "verify_atomic_microtask",
+            {
+                "task_id": task_id,
+                "expected_result_hash": expected_result_hash,
+            },
+            payload_id=payload_id,
+        )
+
     def report_security_event(
         self,
         subject_id: str,

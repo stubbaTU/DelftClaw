@@ -25,6 +25,14 @@ class FakeDelftClawClient:
         self.calls.append(("submit_seedbox_proof", kwargs))
         return {"ok": True, "call": self.calls[-1]}
 
+    def submit_atomic_microtask(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("submit_atomic_microtask", kwargs))
+        return {"ok": True, "call": self.calls[-1]}
+
+    def verify_atomic_microtask(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("verify_atomic_microtask", kwargs))
+        return {"ok": True, "call": self.calls[-1]}
+
     def report_security_event(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("report_security_event", kwargs))
         return {"ok": True, "call": self.calls[-1]}
@@ -71,6 +79,8 @@ def test_openclaw_tool_wrappers_call_client(monkeypatch) -> None:
     assert openclaw_tools.delftclaw_register_seedbox("seedbox-1", "addr", 100)["ok"] is True
     assert openclaw_tools.delftclaw_broadcast_seedbox_donation("seedbox-1", 1000)["ok"] is True
     assert openclaw_tools.delftclaw_submit_seedbox_proof("seedbox-1", "https://proof", "nonce")["ok"] is True
+    assert openclaw_tools.delftclaw_submit_atomic_microtask("task-1", "seedbox-1", "file", "result")["ok"] is True
+    assert openclaw_tools.delftclaw_verify_atomic_microtask("task-1", "result")["ok"] is True
     assert openclaw_tools.delftclaw_report_security_event("agent", "unauthorized_tool_request")["ok"] is True
     assert openclaw_tools.delftclaw_audit_seedboxes()["ok"] is True
     assert openclaw_tools.delftclaw_get_metrics()["ok"] is True
@@ -83,6 +93,8 @@ def test_openclaw_tool_wrappers_call_client(monkeypatch) -> None:
         "register_seedbox",
         "broadcast_seedbox_donation",
         "submit_seedbox_proof",
+        "submit_atomic_microtask",
+        "verify_atomic_microtask",
         "report_security_event",
         "audit_seedboxes",
         "metrics",

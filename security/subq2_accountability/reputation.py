@@ -23,6 +23,7 @@ class ReputationEngine:
         SecurityAction.WASH_TRADE_DETECTED.value: 20,
         SecurityAction.ATOMIC_MICROTASK_CLAIMED.value: 0,
         SecurityAction.ATOMIC_MICROTASK_VERIFIED.value: 0,
+        SecurityAction.ATOMIC_MICROTASK_REJECTED.value: 10,
         SecurityAction.REPUTATION_TRAP_DETECTED.value: 20,
         SecurityAction.LOG_SPOOF_ATTEMPT.value: 15,
         SecurityAction.LOG_INTEGRITY_FAILURE.value: 20,

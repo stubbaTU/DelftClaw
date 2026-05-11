@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from security.contracts import AtomicMicrotaskEvidence, SeedboxDonationEvidence
@@ -202,3 +202,20 @@ class AtomicMicrotaskLedger:
 
     def tasks_for_seedbox(self, seedbox_id: str) -> list[AtomicMicrotask]:
         return [task for task in self.microtasks if task.seedbox_id == seedbox_id]
+
+    def get(self, task_id: str) -> AtomicMicrotask:
+        for microtask in reversed(self.microtasks):
+            if microtask.task_id == task_id:
+                return microtask
+        raise KeyError(task_id)
+
+    def verify_result(self, task_id: str, expected_result_hash: str) -> AtomicMicrotask:
+        microtask = self.get(task_id)
+        if microtask.result_hash != expected_result_hash:
+            raise ValueError(
+                f"microtask {task_id} result_hash mismatch: "
+                f"expected {expected_result_hash}, got {microtask.result_hash}"
+            )
+        verified = replace(microtask, verified=True)
+        self.microtasks.append(verified)
+        return verified

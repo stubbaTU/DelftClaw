@@ -324,6 +324,12 @@ class GatewayState:
                 required_args=("task_id", "seedbox_id", "prover_id", "task_type", "file_hash", "result_hash"),
                 risk=ToolRisk.SENSITIVE,
             ),
+            "verify_atomic_microtask": ToolPolicy(
+                name="verify_atomic_microtask",
+                handler=self._verify_atomic_microtask,
+                required_args=("task_id", "expected_result_hash"),
+                risk=ToolRisk.SENSITIVE,
+            ),
             "report_security_event": ToolPolicy(
                 name="report_security_event",
                 handler=lambda kwargs: {"reported": True, "details": kwargs},
@@ -374,6 +380,26 @@ class GatewayState:
         )
         self.monitor.record_atomic_microtask(subject_id=str(kwargs["prover_id"]), microtask=microtask.to_evidence())
         return {"microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
+
+    def _verify_atomic_microtask(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(kwargs["task_id"])
+        expected_result_hash = str(kwargs["expected_result_hash"])
+        current = self.microtask_ledger.get(task_id)
+        try:
+            microtask = self.microtask_ledger.verify_result(
+                task_id=task_id,
+                expected_result_hash=expected_result_hash,
+            )
+        except ValueError:
+            self.monitor.record_rejected_atomic_microtask(
+                subject_id=current.prover_id,
+                task_id=task_id,
+                expected_result_hash=expected_result_hash,
+                actual_result_hash=current.result_hash,
+            )
+            raise
+        self.monitor.record_atomic_microtask(subject_id=microtask.prover_id, microtask=microtask.to_evidence())
+        return {"verified": True, "microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
 
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:

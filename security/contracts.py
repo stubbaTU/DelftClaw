@@ -18,6 +18,7 @@ class SecurityAction(StrEnum):
     WASH_TRADE_DETECTED = "wash_trade_detected"
     ATOMIC_MICROTASK_CLAIMED = "atomic_microtask_claimed"
     ATOMIC_MICROTASK_VERIFIED = "atomic_microtask_verified"
+    ATOMIC_MICROTASK_REJECTED = "atomic_microtask_rejected"
     REPUTATION_TRAP_DETECTED = "reputation_trap_detected"
     LOG_SPOOF_ATTEMPT = "log_spoof_attempt"
     LOG_INTEGRITY_FAILURE = "log_integrity_failure"

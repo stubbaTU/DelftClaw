@@ -36,6 +36,8 @@ class AccountabilityMonitor:
         self.honest_transactions_stolen: dict[str, int] = {}
         self.wash_trades_detected: dict[str, int] = {}
         self.atomic_microtasks_claimed: dict[str, int] = {}
+        self.atomic_microtasks_verified: dict[str, int] = {}
+        self.atomic_microtasks_rejected: dict[str, int] = {}
         self.first_malicious_steps: dict[str, int] = {}
         self.detection_steps: dict[str, int] = {}
         self.current_step = 0
@@ -188,11 +190,21 @@ class AccountabilityMonitor:
         microtask: AtomicMicrotaskEvidence,
     ):
         self.atomic_microtasks_claimed[subject_id] = self.atomic_microtasks_claimed.get(subject_id, 0) + 1
+        if microtask.verified:
+            self.atomic_microtasks_verified[subject_id] = self.atomic_microtasks_verified.get(subject_id, 0) + 1
         self.log.append_event(
             reporter_id=self.reporter_id,
             subject_id=subject_id,
-            action=SecurityAction.ATOMIC_MICROTASK_CLAIMED.value,
-            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.ATOMIC_MICROTASK_CLAIMED.value],
+            action=(
+                SecurityAction.ATOMIC_MICROTASK_VERIFIED.value
+                if microtask.verified
+                else SecurityAction.ATOMIC_MICROTASK_CLAIMED.value
+            ),
+            severity=(
+                ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.ATOMIC_MICROTASK_VERIFIED.value]
+                if microtask.verified
+                else ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.ATOMIC_MICROTASK_CLAIMED.value]
+            ),
             details={
                 "step": self.current_step,
                 "task_id": microtask.task_id,
@@ -202,6 +214,28 @@ class AccountabilityMonitor:
                 "file_hash": microtask.file_hash,
                 "result_hash": microtask.result_hash,
                 "verified": microtask.verified,
+            },
+        )
+
+    def record_rejected_atomic_microtask(
+        self,
+        subject_id: str,
+        task_id: str,
+        expected_result_hash: str,
+        actual_result_hash: str,
+    ):
+        self.atomic_microtasks_rejected[subject_id] = self.atomic_microtasks_rejected.get(subject_id, 0) + 1
+        self._record_malicious_step(subject_id)
+        self.log.append_event(
+            reporter_id=self.reporter_id,
+            subject_id=subject_id,
+            action=SecurityAction.ATOMIC_MICROTASK_REJECTED.value,
+            severity=ReputationEngine.DEFAULT_WEIGHTS[SecurityAction.ATOMIC_MICROTASK_REJECTED.value],
+            details={
+                "step": self.current_step,
+                "task_id": task_id,
+                "expected_result_hash": expected_result_hash,
+                "actual_result_hash": actual_result_hash,
             },
         )
 

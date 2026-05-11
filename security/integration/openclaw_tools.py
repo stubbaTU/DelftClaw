@@ -103,6 +103,20 @@ def delftclaw_submit_atomic_microtask(
     )
 
 
+def delftclaw_verify_atomic_microtask(
+    task_id: str,
+    expected_result_hash: str,
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify a submitted atomic microtask against the expected result hash."""
+
+    return _client().verify_atomic_microtask(
+        task_id=task_id,
+        expected_result_hash=expected_result_hash,
+        payload_id=payload_id,
+    )
+
+
 def delftclaw_report_security_event(
     subject_id: str,
     action: str,
@@ -168,6 +182,7 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_broadcast_seedbox_donation": delftclaw_broadcast_seedbox_donation,
     "delftclaw_submit_seedbox_proof": delftclaw_submit_seedbox_proof,
     "delftclaw_submit_atomic_microtask": delftclaw_submit_atomic_microtask,
+    "delftclaw_verify_atomic_microtask": delftclaw_verify_atomic_microtask,
     "delftclaw_report_security_event": delftclaw_report_security_event,
     "delftclaw_audit_seedboxes": delftclaw_audit_seedboxes,
     "delftclaw_get_metrics": delftclaw_get_metrics,
@@ -252,6 +267,19 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "file_hash": {"type": "string"},
                     "result_hash": {"type": "string"},
                     "task_type": {"type": "string", "default": "storage_check"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_verify_atomic_microtask",
+            description="Verify an atomic seedbox task result against an expected hash.",
+            parameters={
+                "type": "object",
+                "required": ["task_id", "expected_result_hash"],
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "expected_result_hash": {"type": "string"},
                     "payload_id": {"type": "string"},
                 },
             },
