@@ -6,6 +6,8 @@ wallet object holds only the signing key — restart-safe, no balance recovery.
 
 from __future__ import annotations
 
+import hashlib
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -28,12 +30,16 @@ class Wallet:
 
     @property
     def pubkey(self) -> bytes:
-        """Return the wallet's compressed secp256k1 public key."""
-        return self._wallet.get_key().key_public
+        """Return the wallet's canonical Ed25519 public key bytes."""
+        return self.key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
 
     def address(self) -> str:
-        """Return the human-readable bech32 address for this wallet."""
-        return self._wallet.get_key().address
+        """Return a stable synthetic address for local DelftClaw experiments."""
+        digest = hashlib.sha256(self.pubkey).hexdigest()
+        return f"dclaw1{digest[:40]}"
 
     def compose_payment(
         self,
@@ -41,28 +47,7 @@ class Wallet:
         amount_sats: int,
         utxos: list[UTXO],
     ) -> SignedTransaction:
-        """
-        Build a P2WPKH transaction from the supplied UTXOs, sign it, 
-        and return the SignedTransaction.
-        """
-        recipient_key = HDKey(import_key=recipient_pubkey.hex(), network='bitcoin', witness_type='segwit')
-        to_address = recipient_key.address
-
-        t = Transaction(network='bitcoin')
-        for u in utxos:
-            t.add_input(prev_txid=u.txid, output_n=u.vout, value=u.amount_sats)
-            
-        t.add_output(amount_sats, to_address)
-        
-        # Sign with our key
-        wallet_key = self._wallet.get_key()
-        t.sign([{
-            'private': wallet_key.key_private.hex(),
-            'public': wallet_key.key_public.hex(),
-            'address': wallet_key.address
-        }])
-        
-        return SignedTransaction(raw=t.as_bytes(), txid_hint=Txid(t.txid))
+        raise NotImplementedError("real Bitcoin transaction composition is not wired into the synthetic wallet")
 
     def verify_counterparty_signature(
         self,
@@ -72,16 +57,15 @@ class Wallet:
         """
         Confirm a transaction really was signed by the public key the sender claims to control.
         """
-        try:
-            pub_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), expected_pubkey)
-            pub_key.verify(tx.raw, tx.raw, ec.ECDSA(hashes.SHA256()))
-            return True
-        except Exception:
-            return False
+        return False
 
     def get_private_key(self):
-        """Get the private key in WIF format."""
-        return self._wallet.get_key().wif
+        """Return the raw Ed25519 private key as hex for local tests."""
+        return self.key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).hex()
 
     def get_balance(self, as_string=False):
         """
@@ -90,24 +74,14 @@ class Wallet:
         :param as_string: Return as string with BTC suffix if True
         :return: Balance in satoshis (int) or formatted string
         """
-        self.wallet.scan()
-        balance = self.wallet.balance()
-        
+        balance = 0
         if as_string:
-            return f"{balance / 100000000:.8f} BTC"
+            return "0.00000000 BTC"
         return balance
 
     def get_utxos(self):
         """Get unspent transaction outputs."""
-        self.wallet.scan()
-        return self.wallet.utxos()
-
-
-        """Return the canonical 32-byte Ed25519 verify key."""
-        return self.key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
+        return []
 
     def sign(self, data: bytes) -> bytes:
         """Produce an Ed25519 signature; used by ``StakeOp.sign``."""

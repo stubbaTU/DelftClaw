@@ -52,6 +52,8 @@ def delftclaw_broadcast_seedbox_donation(
     amount_sats: int,
     txid: str | None = None,
     stolen_from_honest_agent: bool = False,
+    confirmations: int = 0,
+    output_index: int | None = None,
     payload_id: str | None = None,
 ) -> dict[str, Any]:
     """Record a seedbox donation broadcast through the DelftClaw gateway."""
@@ -61,6 +63,8 @@ def delftclaw_broadcast_seedbox_donation(
         amount_sats=amount_sats,
         txid=txid,
         stolen_from_honest_agent=stolen_from_honest_agent,
+        confirmations=confirmations,
+        output_index=output_index,
         payload_id=payload_id,
     )
 
@@ -83,6 +87,40 @@ def delftclaw_submit_seedbox_proof(
     )
 
 
+def delftclaw_submit_atomic_microtask(
+    task_id: str,
+    seedbox_id: str,
+    file_hash: str,
+    result_hash: str,
+    task_type: str = "storage_check",
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Submit one small verifiable seedbox task result for reputation evidence."""
+
+    return _client().submit_atomic_microtask(
+        task_id=task_id,
+        seedbox_id=seedbox_id,
+        file_hash=file_hash,
+        result_hash=result_hash,
+        task_type=task_type,
+        payload_id=payload_id,
+    )
+
+
+def delftclaw_verify_atomic_microtask(
+    task_id: str,
+    expected_result_hash: str,
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify a submitted atomic microtask against the expected result hash."""
+
+    return _client().verify_atomic_microtask(
+        task_id=task_id,
+        expected_result_hash=expected_result_hash,
+        payload_id=payload_id,
+    )
+
+
 def delftclaw_report_security_event(
     subject_id: str,
     action: str,
@@ -97,6 +135,50 @@ def delftclaw_report_security_event(
         details=details,
         severity=severity,
     )
+
+
+def delftclaw_index_seedbox_file(
+    file_id: str,
+    seedbox_id: str,
+    name: str,
+    content_url: str,
+    sha256: str = "",
+    size_bytes: int = 0,
+    media_type: str = "",
+    tags: list[str] | None = None,
+    payload_id: str | None = None,
+) -> dict[str, Any]:
+    """Add one file from a seedbox to the Claw Network content index."""
+
+    return _client().index_seedbox_file(
+        file_id=file_id,
+        seedbox_id=seedbox_id,
+        name=name,
+        content_url=content_url,
+        sha256=sha256,
+        size_bytes=size_bytes,
+        media_type=media_type,
+        tags=tags,
+        payload_id=payload_id,
+    )
+
+
+def delftclaw_list_files(payload_id: str | None = None) -> dict[str, Any]:
+    """List files currently known in the Claw Network content index."""
+
+    return _client().list_seedbox_files(payload_id=payload_id)
+
+
+def delftclaw_search_files(query: str, payload_id: str | None = None) -> dict[str, Any]:
+    """Search the Claw Network content index by name, media type, or tags."""
+
+    return _client().search_seedbox_files(query=query, payload_id=payload_id)
+
+
+def delftclaw_pick_random_file(query: str = "", payload_id: str | None = None) -> dict[str, Any]:
+    """Pick a random matching indexed file and return a playback intent for streaming skills."""
+
+    return _client().pick_random_seedbox_file(query=query, payload_id=payload_id)
 
 
 def delftclaw_audit_seedboxes() -> dict[str, Any]:
@@ -147,7 +229,13 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_register_seedbox": delftclaw_register_seedbox,
     "delftclaw_broadcast_seedbox_donation": delftclaw_broadcast_seedbox_donation,
     "delftclaw_submit_seedbox_proof": delftclaw_submit_seedbox_proof,
+    "delftclaw_submit_atomic_microtask": delftclaw_submit_atomic_microtask,
+    "delftclaw_verify_atomic_microtask": delftclaw_verify_atomic_microtask,
     "delftclaw_report_security_event": delftclaw_report_security_event,
+    "delftclaw_index_seedbox_file": delftclaw_index_seedbox_file,
+    "delftclaw_list_files": delftclaw_list_files,
+    "delftclaw_search_files": delftclaw_search_files,
+    "delftclaw_pick_random_file": delftclaw_pick_random_file,
     "delftclaw_audit_seedboxes": delftclaw_audit_seedboxes,
     "delftclaw_get_metrics": delftclaw_get_metrics,
     "delftclaw_get_reputation": delftclaw_get_reputation,
@@ -199,6 +287,8 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "seedbox_id": {"type": "string"},
                     "amount_sats": {"type": "integer", "minimum": 1},
                     "txid": {"type": "string"},
+                    "confirmations": {"type": "integer", "minimum": 0, "default": 0},
+                    "output_index": {"type": "integer", "minimum": 0},
                     "stolen_from_honest_agent": {"type": "boolean", "default": False},
                     "payload_id": {"type": "string"},
                 },
@@ -220,6 +310,35 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
             },
         ),
         OpenClawToolSpec(
+            name="delftclaw_submit_atomic_microtask",
+            description="Submit one atomic seedbox task result for trustworthy-estimation evidence.",
+            parameters={
+                "type": "object",
+                "required": ["task_id", "seedbox_id", "file_hash", "result_hash"],
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "seedbox_id": {"type": "string"},
+                    "file_hash": {"type": "string"},
+                    "result_hash": {"type": "string"},
+                    "task_type": {"type": "string", "default": "storage_check"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_verify_atomic_microtask",
+            description="Verify an atomic seedbox task result against an expected hash.",
+            parameters={
+                "type": "object",
+                "required": ["task_id", "expected_result_hash"],
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "expected_result_hash": {"type": "string"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
             name="delftclaw_report_security_event",
             description="Submit manual security evidence for a subject agent.",
             parameters={
@@ -230,6 +349,56 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "action": {"type": "string"},
                     "details": {"type": "object"},
                     "severity": {"type": "integer", "default": 10},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_index_seedbox_file",
+            description="Add a seedbox-hosted file to the Claw Network searchable content index.",
+            parameters={
+                "type": "object",
+                "required": ["file_id", "seedbox_id", "name", "content_url"],
+                "properties": {
+                    "file_id": {"type": "string"},
+                    "seedbox_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content_url": {"type": "string"},
+                    "sha256": {"type": "string"},
+                    "size_bytes": {"type": "integer", "minimum": 0},
+                    "media_type": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_list_files",
+            description="Answer: what files are stored on our Claw Network?",
+            parameters={
+                "type": "object",
+                "properties": {"payload_id": {"type": "string"}},
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_search_files",
+            description="Answer: what Claw Network files contain a given search term?",
+            parameters={
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "payload_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_pick_random_file",
+            description="Find a random matching Claw Network file and return a playback intent.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "payload_id": {"type": "string"},
                 },
             },
         ),

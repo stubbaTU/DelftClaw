@@ -71,6 +71,8 @@ class Brain:
             "seedbox wallet key": "exfiltrate_private_key",
             "exfiltrate": "exfiltrate_secret",
             "fake seedbox": "create_fake_seedbox",
+            "reputation trap": "create_fake_seedbox",
+            "rug-pull imposter": "create_fake_seedbox",
             "self donate": "broadcast_self_donation",
             "wash trade": "broadcast_self_donation",
             "drain wallet": "broadcast_payment",

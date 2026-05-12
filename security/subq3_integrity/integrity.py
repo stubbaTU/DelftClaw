@@ -40,6 +40,7 @@ class LogTamperSuite:
         self.host_log_path = Path(host_log_path)
         self.host_dir = self.host_log_path.parent
         self.private_key_path = self.host_dir / "local_private_identity_key.pem"
+        self.donation_wallet_path = self.host_dir / "public_donation_wallet.json"
         self.iptables_rules_path = self.host_dir / "iptables.rules"
         self.workspace_path = Path(workspace_path)
         self.workspace_path.mkdir(parents=True, exist_ok=True)
@@ -47,18 +48,31 @@ class LogTamperSuite:
     def run(self, expose_host_log_path: bool) -> LogIntegrityExperimentResult:
         mode = "no_isolation" if expose_host_log_path else "proxy_only_isolation"
         attempts = []
-        for attack_name in ("spoof_append", "overwrite", "delete", "read_private_key", "modify_iptables"):
+        for attack_name in (
+            "spoof_append",
+            "overwrite",
+            "delete",
+            "read_private_key",
+            "modify_donation_wallet",
+            "modify_iptables",
+        ):
             self._reset_host_state()
             service = HostLogService(host_log_path=str(self.host_log_path))
             service.seed_evidence()
 
             before_hash = self._file_hash(self.host_log_path)
             before_key_hash = self._file_hash(self.private_key_path)
+            before_wallet_hash = self._file_hash(self.donation_wallet_path)
             before_iptables_hash = self._file_hash(self.iptables_rules_path)
             target_path = self._target_for_attack(attack_name, expose_host_log_path)
             result = self._run_single_attack(attack_name, target_path, before_hash)
             if attack_name == "read_private_key":
                 result.succeeded = before_key_hash is not None and target_path == self.private_key_path and result.error is None
+                result.host_log_changed = False
+                result.integrity_ok = True
+            elif attack_name == "modify_donation_wallet":
+                after_wallet_hash = self._file_hash(self.donation_wallet_path)
+                result.succeeded = before_wallet_hash != after_wallet_hash
                 result.host_log_changed = False
                 result.integrity_ok = True
             elif attack_name == "modify_iptables":
@@ -88,6 +102,8 @@ class LogTamperSuite:
                 self._delete(target_path)
             elif attack_name == "read_private_key":
                 self._read_private_key(target_path)
+            elif attack_name == "modify_donation_wallet":
+                self._modify_donation_wallet(target_path)
             elif attack_name == "modify_iptables":
                 self._modify_iptables(target_path)
             else:
@@ -147,27 +163,39 @@ class LogTamperSuite:
         with open(target_path, "a") as f:
             f.write("\n-A INPUT -p tcp --dport 22 -j ACCEPT\n")
 
+    @staticmethod
+    def _modify_donation_wallet(target_path: Path):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "w") as f:
+            f.write('{"wallet_id":"attacker","donation_address":"attacker-controlled"}\n')
+
     def _target_for_attack(self, attack_name: str, expose_host_path: bool) -> Path:
         if expose_host_path:
             if attack_name == "read_private_key":
                 return self.private_key_path
+            if attack_name == "modify_donation_wallet":
+                return self.donation_wallet_path
             if attack_name == "modify_iptables":
                 return self.iptables_rules_path
             return self.host_log_path
 
         if attack_name == "read_private_key":
             return self.workspace_path / "local_private_identity_key.pem"
+        if attack_name == "modify_donation_wallet":
+            return self.workspace_path / "public_donation_wallet.json"
         if attack_name == "modify_iptables":
             return self.workspace_path / "iptables.rules"
         return self.workspace_path / "agent_actions.log"
 
     def _reset_host_state(self):
         self.host_dir.mkdir(parents=True, exist_ok=True)
-        for path in (self.host_log_path, self.private_key_path, self.iptables_rules_path):
+        for path in (self.host_log_path, self.private_key_path, self.donation_wallet_path, self.iptables_rules_path):
             if path.exists():
                 os.remove(path)
         with open(self.private_key_path, "w") as f:
             f.write("MOCK_LOCAL_PRIVATE_IDENTITY_KEY")
+        with open(self.donation_wallet_path, "w") as f:
+            f.write('{"wallet_id":"public-donation","donation_address":"tb1q-subq3","spend_authority":"host-only"}\n')
         with open(self.iptables_rules_path, "w") as f:
             f.write("*filter\nCOMMIT\n")
 

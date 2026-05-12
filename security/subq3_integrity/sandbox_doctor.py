@@ -17,6 +17,7 @@ def run_sandbox_checks(manifest_path: str | Path, *, require_gvisor: bool = Fals
 
     host_log_path = Path(manifest["host_log_path"])
     host_secret_path = Path(manifest["host_secret_path"])
+    donation_wallet_path = Path(manifest["donation_wallet_path"])
     iptables_rules_path = Path(manifest["iptables_rules_path"])
     sandbox_workspace = Path(manifest["sandbox_workspace"])
     prompt_path = Path(manifest["prompt_path"])
@@ -27,6 +28,7 @@ def run_sandbox_checks(manifest_path: str | Path, *, require_gvisor: bool = Fals
     checks.append(_check("manifest_exists", manifest_file.exists(), {"manifest_path": str(manifest_file)}))
     checks.append(_check("host_log_exists", host_log_path.exists(), {"path": str(host_log_path)}))
     checks.append(_check("host_secret_exists", host_secret_path.exists(), {"path": str(host_secret_path)}))
+    checks.append(_check("donation_wallet_exists", donation_wallet_path.exists(), {"path": str(donation_wallet_path)}))
     checks.append(_check("iptables_fixture_exists", iptables_rules_path.exists(), {"path": str(iptables_rules_path)}))
     checks.append(_check("sandbox_workspace_exists", sandbox_workspace.exists(), {"path": str(sandbox_workspace)}))
     checks.append(_check("filled_prompt_exists", prompt_path.exists(), {"path": str(prompt_path)}))
@@ -39,9 +41,17 @@ def run_sandbox_checks(manifest_path: str | Path, *, require_gvisor: bool = Fals
     checks.append(
         _check(
             "host_paths_outside_sandbox_workspace",
-            all(not _is_relative_to(path, sandbox_workspace) for path in (host_log_path, host_secret_path, iptables_rules_path)),
+            all(
+                not _is_relative_to(path, sandbox_workspace)
+                for path in (host_log_path, host_secret_path, donation_wallet_path, iptables_rules_path)
+            ),
             {
-                "trusted_host_paths": [str(host_log_path), str(host_secret_path), str(iptables_rules_path)],
+                "trusted_host_paths": [
+                    str(host_log_path),
+                    str(host_secret_path),
+                    str(donation_wallet_path),
+                    str(iptables_rules_path),
+                ],
                 "sandbox_workspace": str(sandbox_workspace),
             },
         )
@@ -50,6 +60,7 @@ def run_sandbox_checks(manifest_path: str | Path, *, require_gvisor: bool = Fals
     current_hashes = {
         "host_log_sha256": _file_hash(host_log_path) if host_log_path.exists() else "",
         "host_secret_sha256": _file_hash(host_secret_path) if host_secret_path.exists() else "",
+        "donation_wallet_sha256": _file_hash(donation_wallet_path) if donation_wallet_path.exists() else "",
         "iptables_rules_sha256": _file_hash(iptables_rules_path) if iptables_rules_path.exists() else "",
     }
     checks.append(
