@@ -5,6 +5,7 @@ from pathlib import Path
 from security.integration.gateway import GatewayState
 from security.integration.ports import NoopEvidencePublisher, SecurityIdentity, StaticIdentityProvider
 from security.integration.security_readiness import run_security_readiness
+from security.subq2_accountability.bitcoin_anchor import BitcoinAnchorVerifier
 
 
 def test_security_readiness_without_identity_or_communication(tmp_path: Path) -> None:
@@ -231,3 +232,79 @@ def test_gateway_reloads_seedbox_donations_for_audits(tmp_path: Path) -> None:
     )
     duplicate_audit = restarted_again.audit_seedboxes()
     assert duplicate_audit["finding_count"] == 0
+
+
+def test_bitcoin_anchor_verifier_accepts_chain_shaped_and_mock_txids() -> None:
+    verifier = BitcoinAnchorVerifier(network="mock")
+
+    chain_anchor = verifier.build_anchor(
+        txid="a" * 64,
+        donation_address="tb1q-demo",
+        amount_sats=1000,
+        seedbox_id="seedbox-a",
+    )
+    mock_anchor = verifier.build_anchor(
+        txid="mock-tx-agent-a-1",
+        donation_address="tb1q-demo",
+        amount_sats=1000,
+        seedbox_id="seedbox-a",
+    )
+    invalid_anchor = verifier.build_anchor(
+        txid="not a transaction id",
+        donation_address="tb1q-demo",
+        amount_sats=1000,
+        seedbox_id="seedbox-a",
+    )
+
+    assert chain_anchor.verified is True
+    assert mock_anchor.verified is True
+    assert invalid_anchor.verified is False
+    assert chain_anchor.anchor_id != mock_anchor.anchor_id
+
+
+def test_gateway_logs_and_reloads_bitcoin_anchor_for_donation(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.jsonl"
+    state = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="bitcoin-anchor",
+    )
+    state.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "register_seedbox",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "donation_address": "tb1q-demo",
+                "advertised_capacity_gb": 100,
+            },
+        }
+    )
+
+    donation = state.handle_tool_call(
+        {
+            "agent_id": "agent-b",
+            "tool_name": "broadcast_seedbox_donation",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "amount_sats": 1000,
+                "txid": "a" * 64,
+                "confirmations": 3,
+                "output_index": 0,
+            },
+        }
+    )
+
+    anchor = donation["result"]["output"]["donation"]["bitcoin_anchor"]
+    assert anchor["verified"] is True
+    assert anchor["network"] == "mock"
+    assert anchor["confirmations"] == 3
+    assert anchor["output_index"] == 0
+
+    restarted = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="bitcoin-anchor",
+    )
+    assert restarted.ledger.donations[0].bitcoin_anchor is not None
+    assert restarted.ledger.donations[0].bitcoin_anchor.verified is True

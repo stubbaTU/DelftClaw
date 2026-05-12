@@ -14,6 +14,7 @@ from security.contracts import SecurityAction
 from security.datasets.payloads import load_payloads
 from security.integration.gateway import GatewayState
 from security.integration.openclaw_tools import TOOL_REGISTRY, tool_manifest
+from security.subq2_accountability.bitcoin_anchor import BitcoinAnchorVerifier
 from security.subq1_preventative.testing_privilege import run_suite
 from security.subq1_preventative.privilege import attack_success_rate
 from security.subq2_accountability.game_theory import sweep_reputation_policies
@@ -62,6 +63,19 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
     }
     missing_weights = sorted(action for action in required_actions if action not in ReputationEngine.DEFAULT_WEIGHTS)
     checks.append(_check("subq2_reputation_weights_complete", not missing_weights, {"missing": missing_weights}))
+    anchor = BitcoinAnchorVerifier(network="mock").build_anchor(
+        txid="a" * 64,
+        donation_address="tb1q-readiness",
+        amount_sats=1000,
+        seedbox_id="seedbox-readiness",
+    )
+    checks.append(
+        _check(
+            "subq2_bitcoin_anchor_verifier_runs",
+            anchor.verified and bool(anchor.anchor_id),
+            anchor.to_dict(),
+        )
+    )
     checks.extend(_subq1_smoke_checks(malicious[:3]))
     checks.extend(_subq2_smoke_checks())
     checks.extend(_subq3_smoke_checks())

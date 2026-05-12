@@ -275,9 +275,12 @@ money toward a bad seedbox.
 ```
 
 DelftClaw tracks donation evidence, self-donations, missing proof of service,
-atomic microtask results, and reports from validated agents. This lets the
-network measure reputation lag, estimate fallout radius, and maintain a
-trustworthy list of operational seedboxes.
+Bitcoin-shaped donation anchors, atomic microtask results, and reports from
+validated agents. This lets the network measure reputation lag, estimate
+fallout radius, and maintain a trustworthy list of operational seedboxes.
+For local experiments, `DELFTCLAW_BITCOIN_NETWORK=mock` accepts mock/regtest
+transaction ids; 64-hex transaction ids are recorded as chain-shaped anchors
+without requiring a live Bitcoin node.
 
 ### Self-Replication And Provisioning
 

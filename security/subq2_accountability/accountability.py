@@ -162,6 +162,7 @@ class AccountabilityMonitor:
                 "recipient_id": donation.recipient_id,
                 "amount_sats": donation.amount_sats,
                 "txid": donation.txid,
+                "bitcoin_anchor": dict(donation.bitcoin_anchor or {}),
                 "self_donation": donation.self_donation,
                 "fake_seedbox": donation.fake_seedbox,
                 "stolen_from_honest_agent": stolen_from_honest_agent,

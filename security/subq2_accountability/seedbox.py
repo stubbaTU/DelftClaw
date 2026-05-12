@@ -3,6 +3,7 @@ from datetime import datetime
 from random import choice
 
 from security.contracts import AtomicMicrotaskEvidence, SeedboxDonationEvidence
+from security.subq2_accountability.bitcoin_anchor import BitcoinAnchor
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Donation:
     self_donation: bool = False
     fake_seedbox: bool = False
     stolen_from_honest_agent: bool = False
+    bitcoin_anchor: BitcoinAnchor | None = None
 
     def to_evidence(self) -> SeedboxDonationEvidence:
         return SeedboxDonationEvidence(
@@ -36,6 +38,7 @@ class Donation:
             recipient_id=self.recipient_id,
             amount_sats=self.amount_sats,
             txid=self.txid,
+            bitcoin_anchor=self.bitcoin_anchor.to_dict() if self.bitcoin_anchor else {},
             self_donation=self.self_donation,
             fake_seedbox=self.fake_seedbox,
             stolen_from_honest_agent=self.stolen_from_honest_agent,
@@ -127,6 +130,7 @@ class DonationLedger:
         amount_sats: int,
         txid: str,
         stolen_from_honest_agent: bool = False,
+        bitcoin_anchor: BitcoinAnchor | None = None,
     ) -> Donation:
         seedbox = self.registry.get(seedbox_id)
         donation = Donation(
@@ -139,6 +143,7 @@ class DonationLedger:
             self_donation=donor_id == seedbox.owner_id,
             fake_seedbox=seedbox.fake,
             stolen_from_honest_agent=stolen_from_honest_agent,
+            bitcoin_anchor=bitcoin_anchor,
         )
         self.donations.append(donation)
         return donation

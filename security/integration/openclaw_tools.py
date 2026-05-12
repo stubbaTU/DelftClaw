@@ -52,6 +52,8 @@ def delftclaw_broadcast_seedbox_donation(
     amount_sats: int,
     txid: str | None = None,
     stolen_from_honest_agent: bool = False,
+    confirmations: int = 0,
+    output_index: int | None = None,
     payload_id: str | None = None,
 ) -> dict[str, Any]:
     """Record a seedbox donation broadcast through the DelftClaw gateway."""
@@ -61,6 +63,8 @@ def delftclaw_broadcast_seedbox_donation(
         amount_sats=amount_sats,
         txid=txid,
         stolen_from_honest_agent=stolen_from_honest_agent,
+        confirmations=confirmations,
+        output_index=output_index,
         payload_id=payload_id,
     )
 
@@ -283,6 +287,8 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "seedbox_id": {"type": "string"},
                     "amount_sats": {"type": "integer", "minimum": 1},
                     "txid": {"type": "string"},
+                    "confirmations": {"type": "integer", "minimum": 0, "default": 0},
+                    "output_index": {"type": "integer", "minimum": 0},
                     "stolen_from_honest_agent": {"type": "boolean", "default": False},
                     "payload_id": {"type": "string"},
                 },

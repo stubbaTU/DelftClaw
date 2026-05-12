@@ -15,6 +15,7 @@ from security.contracts import ExecutionResult, SecurityAction, ToolDecision, To
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.bitcoin_anchor import BitcoinAnchor, BitcoinAnchorVerifier
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import (
     AtomicMicrotask,
@@ -45,6 +46,8 @@ class GatewayState:
         run_id: str = "",
         experiment_condition: str = "",
         experiment_root: str = "",
+        bitcoin_network: str = "mock",
+        bitcoin_min_confirmations: int = 0,
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -56,6 +59,11 @@ class GatewayState:
         self.run_id = run_id
         self.experiment_condition = experiment_condition or mode
         self.experiment_root = experiment_root
+        self.bitcoin_network = bitcoin_network
+        self.bitcoin_anchor_verifier = BitcoinAnchorVerifier(
+            network=bitcoin_network,
+            min_confirmations=bitcoin_min_confirmations,
+        )
         self.run_metadata = {
             "run_id": run_id,
             "experiment_condition": self.experiment_condition,
@@ -64,6 +72,8 @@ class GatewayState:
             "ban_threshold": ban_threshold,
             "max_tool_risk": str(max_tool_risk),
             "experiment_root": experiment_root,
+            "bitcoin_network": bitcoin_network,
+            "bitcoin_min_confirmations": bitcoin_min_confirmations,
         }
         self.log = AppendOnlyLog(log_path=log_path, run_metadata=self.run_metadata)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
@@ -191,6 +201,7 @@ class GatewayState:
             "run_id": self.run_id,
             "experiment_condition": self.experiment_condition,
             "experiment_root": self.experiment_root,
+            "bitcoin_network": self.bitcoin_network,
             "loaded_seedbox_count": len(self.registry.seedboxes),
             "loaded_seedbox_file_count": len(self.content_index.files),
             "state_reload_ok": not self.state_reload_errors,
@@ -386,13 +397,25 @@ class GatewayState:
         return asdict(seedbox)
 
     def _broadcast_seedbox_donation(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        seedbox = self.registry.get(str(kwargs["seedbox_id"]))
+        confirmations = int(kwargs.get("confirmations", 0))
+        output_index = kwargs.get("output_index")
+        anchor = self.bitcoin_anchor_verifier.build_anchor(
+            txid=str(kwargs["txid"]),
+            donation_address=seedbox.donation_address,
+            amount_sats=int(kwargs["amount_sats"]),
+            seedbox_id=seedbox.seedbox_id,
+            confirmations=confirmations,
+            output_index=int(output_index) if output_index is not None else None,
+        )
         donation = self.ledger.broadcast_donation(
             donation_id=str(kwargs.get("donation_id") or f"donation-{int(time.time() * 1000)}"),
-            seedbox_id=str(kwargs["seedbox_id"]),
+            seedbox_id=seedbox.seedbox_id,
             donor_id=str(kwargs["donor_id"]),
             amount_sats=int(kwargs["amount_sats"]),
             txid=str(kwargs["txid"]),
             stolen_from_honest_agent=bool(kwargs.get("stolen_from_honest_agent", False)),
+            bitcoin_anchor=anchor,
         )
         return {"donation": asdict(donation), "donation_evidence": donation.to_evidence()}
 
@@ -558,11 +581,33 @@ class GatewayState:
             self_donation=bool(value.get("self_donation", False)),
             fake_seedbox=bool(value.get("fake_seedbox", False)),
             stolen_from_honest_agent=bool(value.get("stolen_from_honest_agent", False)),
+            bitcoin_anchor=self._restore_bitcoin_anchor(value.get("bitcoin_anchor")),
         )
         self.ledger.donations = [
             item for item in self.ledger.donations if item.donation_id != donation.donation_id
         ]
         self.ledger.donations.append(donation)
+
+    @staticmethod
+    def _restore_bitcoin_anchor(value: Any) -> BitcoinAnchor | None:
+        if not isinstance(value, dict) or not value:
+            return None
+        return BitcoinAnchor(
+            txid=str(value["txid"]),
+            donation_address=str(value["donation_address"]),
+            amount_sats=int(value["amount_sats"]),
+            seedbox_id=str(value["seedbox_id"]),
+            network=str(value.get("network", "mock")),
+            confirmations=int(value.get("confirmations", 0)),
+            output_index=(
+                int(value["output_index"])
+                if value.get("output_index") is not None
+                else None
+            ),
+            verified=bool(value.get("verified", False)),
+            verification_reason=str(value.get("verification_reason", "")),
+            anchor_id=str(value.get("anchor_id", "")),
+        )
 
     def _restore_service_proof(self, value: Any) -> None:
         if not isinstance(value, dict):
@@ -782,6 +827,8 @@ def main() -> None:
     parser.add_argument("--run-id", help="Experiment run id written into every append-only log event.")
     parser.add_argument("--experiment-condition", help="Condition label written into every append-only log event.")
     parser.add_argument("--experiment-root", help="Experiment workspace root for evidence and canary files.")
+    parser.add_argument("--bitcoin-network", help="Bitcoin network label for donation anchors.")
+    parser.add_argument("--bitcoin-min-confirmations", type=int, help="Minimum confirmations required for verified anchors.")
     parser.add_argument(
         "--use-openclaw-identity",
         action="store_true",
@@ -834,6 +881,12 @@ def main() -> None:
     run_id = args.run_id or env_or(env_values, "DELFTCLAW_RUN_ID", "")
     experiment_condition = args.experiment_condition or env_or(env_values, "DELFTCLAW_EXPERIMENT_CONDITION", mode)
     experiment_root = args.experiment_root or env_or(env_values, "DELFTCLAW_EXPERIMENT_ROOT", "")
+    bitcoin_network = args.bitcoin_network or env_or(env_values, "DELFTCLAW_BITCOIN_NETWORK", "mock")
+    bitcoin_min_confirmations = (
+        args.bitcoin_min_confirmations
+        if args.bitcoin_min_confirmations is not None
+        else int(env_or(env_values, "DELFTCLAW_BITCOIN_MIN_CONFIRMATIONS", "0"))
+    )
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     state = GatewayState(
@@ -846,6 +899,8 @@ def main() -> None:
         run_id=run_id,
         experiment_condition=experiment_condition,
         experiment_root=experiment_root,
+        bitcoin_network=bitcoin_network,
+        bitcoin_min_confirmations=bitcoin_min_confirmations,
     )
     run_gateway(host=host, port=port, state=state)
 

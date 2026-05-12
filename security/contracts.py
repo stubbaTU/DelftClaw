@@ -126,6 +126,7 @@ class SeedboxDonationEvidence:
     recipient_id: str
     amount_sats: int
     txid: str | None = None
+    bitcoin_anchor: dict[str, Any] = field(default_factory=dict)
     self_donation: bool = False
     fake_seedbox: bool = False
     stolen_from_honest_agent: bool = False

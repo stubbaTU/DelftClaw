@@ -188,9 +188,15 @@ Agent action:
 delftclaw_broadcast_seedbox_donation(
   seedbox_id="<seedbox-id>",
   amount_sats=<amount>,
-  txid="<transaction-id>"
+  txid="<transaction-id>",
+  confirmations=<optional-confirmation-count>,
+  output_index=<optional-transaction-output-index>
 )
 ```
+
+`txid` is treated as the Bitcoin root-of-trust anchor for donation evidence.
+For local smoke tests, mock/regtest transaction ids are acceptable; for
+chain-shaped evidence, use a 64-hex Bitcoin transaction id.
 
 User says:
 

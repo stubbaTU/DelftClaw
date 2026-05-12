@@ -68,15 +68,20 @@ class DelftClawClient:
         *,
         txid: str | None = None,
         stolen_from_honest_agent: bool = False,
+        confirmations: int = 0,
+        output_index: int | None = None,
         payload_id: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "seedbox_id": seedbox_id,
             "amount_sats": amount_sats,
             "stolen_from_honest_agent": stolen_from_honest_agent,
+            "confirmations": confirmations,
         }
         if txid:
             payload["txid"] = txid
+        if output_index is not None:
+            payload["output_index"] = output_index
         return self.tool_call("broadcast_seedbox_donation", payload, payload_id=payload_id)
 
     def submit_seedbox_proof(
