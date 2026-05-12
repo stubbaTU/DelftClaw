@@ -39,6 +39,10 @@ should not be asked to run command-line scripts for normal operation.
 
 ## User Intents
 
+The user may speak in ordinary Telegram language. The agent must translate that
+language into DelftClaw tools. If required fields are missing, ask a short
+follow-up question instead of inventing values.
+
 ### List Claw Network Files
 
 User says:
@@ -109,7 +113,13 @@ skill is available, return the selected title and URL to the user.
 
 ### Register Seedbox Content
 
-When a seedbox file listing is available, the agent should index each file:
+User says:
+
+```text
+add file file_id=cc-001 seedbox_id=demo-seedbox-1 name="Creative Commons Audio" url=https://example.invalid/audio.mp3 tags="Creative Commons,audio"
+```
+
+Agent action:
 
 ```text
 delftclaw_index_seedbox_file(
@@ -124,6 +134,9 @@ delftclaw_index_seedbox_file(
 )
 ```
 
+If any of `file_id`, `seedbox_id`, `name`, or `content_url` is missing, ask the
+user for those values.
+
 The `file_id` should be stable across runs when possible. A good default is:
 
 ```text
@@ -132,7 +145,13 @@ SHA256(seedbox_id | content_url)
 
 ### Register A Seedbox
 
-When a new seedbox joins:
+User says:
+
+```text
+create seedbox seedbox_id=demo-seedbox-1 donation_address=tb1q-demo capacity=100
+```
+
+Agent action:
 
 ```text
 delftclaw_register_seedbox(
@@ -141,6 +160,9 @@ delftclaw_register_seedbox(
   advertised_capacity_gb=<capacity>
 )
 ```
+
+If any of `seedbox_id`, `donation_address`, or capacity in GB is missing, ask
+the user for those values.
 
 Then submit service evidence:
 
@@ -154,7 +176,13 @@ delftclaw_submit_seedbox_proof(
 
 ### Report Donation Or Trust Evidence
 
-When a donation is observed:
+User says:
+
+```text
+record donation seedbox_id=demo-seedbox-1 amount_sats=1000 txid=tx-demo-001
+```
+
+Agent action:
 
 ```text
 delftclaw_broadcast_seedbox_donation(
@@ -164,7 +192,13 @@ delftclaw_broadcast_seedbox_donation(
 )
 ```
 
-When a small verifiable task is completed:
+User says:
+
+```text
+submit microtask task_id=task-001 seedbox_id=demo-seedbox-1 file_hash=file-sha result_hash=result-sha
+```
+
+Agent action:
 
 ```text
 delftclaw_submit_atomic_microtask(
@@ -176,13 +210,83 @@ delftclaw_submit_atomic_microtask(
 )
 ```
 
-Another agent or verifier can confirm it:
+User says:
+
+```text
+verify microtask task_id=task-001 expected_result_hash=result-sha
+```
+
+Agent action:
 
 ```text
 delftclaw_verify_atomic_microtask(
   task_id="<task-id>",
   expected_result_hash="<result-hash>"
 )
+```
+
+### Audit, Reputation, And Messages
+
+User says:
+
+```text
+audit seedboxes
+```
+
+Agent action:
+
+```text
+delftclaw_audit_seedboxes()
+```
+
+User says:
+
+```text
+show reputation for agent-a
+```
+
+Agent action:
+
+```text
+delftclaw_get_reputation(agent_id="agent-a")
+```
+
+User says:
+
+```text
+send message to agent-b: hello from DelftClaw
+```
+
+Agent action:
+
+```text
+delftclaw_send_message(recipient="agent-b", message="hello from DelftClaw")
+```
+
+### Spawn Or Provision Agent
+
+User says:
+
+```text
+spawn agent agent_id=child-a provider=sporestack region=ams flavor=small ssh_key=<public-key>
+```
+
+Current behavior:
+
+The deterministic adapter returns a guarded provisioning plan and missing-field
+checklist. It must not silently perform live cloud provisioning from Telegram
+until DelftClaw exposes a guarded provisioning gateway tool with explicit
+confirmation, budget, and key-safety checks.
+
+Required follow-up fields are:
+
+```text
+agent_id
+provider
+region
+flavor
+ssh_key
+budget or days
 ```
 
 ## Safety Rules
