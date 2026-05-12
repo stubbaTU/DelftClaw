@@ -80,7 +80,15 @@ class IdentityToolServer:
         """Verify txid against latest challenge and return VerificationResult."""
         if self._last_challenge is None:
             return {"error": "no active challenge"}
-        return asdict(self._last_challenge.verify(txid, self.identity, self.identity.network))
+        result = self._last_challenge.verify(txid, self.identity, self.identity.network)
+        return {
+            "verified": result.verified,
+            "txid": result.txid,
+            "agent_id": result.agent_id,
+            "timestamp": result.timestamp,
+            "confirmations": result.confirmations,
+            "error": result.error,
+        }
 
     def check_verification_status(self, agent_id: str) -> dict:
         """Check whether a given agent has a successful verification record."""
