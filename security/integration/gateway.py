@@ -17,10 +17,15 @@ from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import (
+    AtomicMicrotask,
     AtomicMicrotaskLedger,
+    Donation,
     DonationLedger,
+    IndexedFile,
     SeedboxContentIndex,
+    Seedbox,
     SeedboxRegistry,
+    ServiceProof,
     ServiceProofLedger,
 )
 
@@ -86,6 +91,8 @@ class GatewayState:
         self.blocked_count = 0
         self.executed_count = 0
         self.missing_proof_audits: set[str] = set()
+        self.state_reload_errors: list[str] = []
+        self._reload_runtime_state_from_log()
 
     def handle_tool_call(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.tool_call_count += 1
@@ -184,6 +191,10 @@ class GatewayState:
             "run_id": self.run_id,
             "experiment_condition": self.experiment_condition,
             "experiment_root": self.experiment_root,
+            "loaded_seedbox_count": len(self.registry.seedboxes),
+            "loaded_seedbox_file_count": len(self.content_index.files),
+            "state_reload_ok": not self.state_reload_errors,
+            "state_reload_errors": list(self.state_reload_errors),
         }
 
     def audit_seedboxes(self) -> dict[str, Any]:
@@ -466,6 +477,154 @@ class GatewayState:
                 "media_type": indexed_file.media_type,
             },
         }
+
+    def _reload_runtime_state_from_log(self) -> None:
+        integrity_ok, integrity_errors = self.log.verify_integrity()
+        if not integrity_ok:
+            self.state_reload_errors.extend(integrity_errors)
+            return
+
+        for entry in self.log.read_entries():
+            details = entry.get("details")
+            if isinstance(details, dict):
+                step = details.get("step")
+                if isinstance(step, int) and not isinstance(step, bool):
+                    self.monitor.current_step = max(self.monitor.current_step, step)
+            try:
+                self._replay_log_entry(entry)
+            except Exception as exc:
+                action = entry.get("action", "<unknown>")
+                entry_hash = str(entry.get("entry_hash", ""))[:12]
+                self.state_reload_errors.append(f"could not replay {action} entry {entry_hash}: {exc}")
+
+    def _replay_log_entry(self, entry: dict[str, Any]) -> None:
+        action = entry.get("action")
+        details = entry.get("details")
+        if not isinstance(details, dict):
+            return
+
+        if action == SecurityAction.SEEDBOX_MISSING_PROOF.value:
+            seedbox_id = details.get("seedbox_id")
+            if seedbox_id:
+                self.missing_proof_audits.add(str(seedbox_id))
+            return
+
+        if action != SecurityAction.TOOL_EXECUTION_SUCCESS.value:
+            return
+
+        tool = details.get("tool")
+        output = details.get("output")
+        if not isinstance(output, dict):
+            return
+
+        if tool == "register_seedbox":
+            self._restore_seedbox(output)
+        elif tool == "broadcast_seedbox_donation":
+            self._restore_donation(output.get("donation"))
+        elif tool == "submit_seedbox_proof":
+            self._restore_service_proof(output.get("proof"))
+        elif tool in {"submit_atomic_microtask", "verify_atomic_microtask"}:
+            self._restore_atomic_microtask(output.get("microtask"))
+        elif tool == "index_seedbox_file":
+            self._restore_indexed_file(output.get("file"))
+
+    def _restore_seedbox(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox = Seedbox(
+            seedbox_id=str(value["seedbox_id"]),
+            owner_id=str(value["owner_id"]),
+            donation_address=str(value["donation_address"]),
+            advertised_capacity_gb=int(value["advertised_capacity_gb"]),
+            created_at=str(value.get("created_at", "")),
+            fake=bool(value.get("fake", False)),
+        )
+        self.registry.seedboxes[seedbox.seedbox_id] = seedbox
+
+    def _restore_donation(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        donation = Donation(
+            donation_id=str(value["donation_id"]),
+            seedbox_id=seedbox_id,
+            donor_id=str(value["donor_id"]),
+            recipient_id=str(value["recipient_id"]),
+            amount_sats=int(value["amount_sats"]),
+            txid=str(value["txid"]),
+            timestamp=str(value.get("timestamp", "")),
+            self_donation=bool(value.get("self_donation", False)),
+            fake_seedbox=bool(value.get("fake_seedbox", False)),
+            stolen_from_honest_agent=bool(value.get("stolen_from_honest_agent", False)),
+        )
+        self.ledger.donations = [
+            item for item in self.ledger.donations if item.donation_id != donation.donation_id
+        ]
+        self.ledger.donations.append(donation)
+
+    def _restore_service_proof(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        proof = ServiceProof(
+            proof_id=str(value["proof_id"]),
+            seedbox_id=seedbox_id,
+            prover_id=str(value["prover_id"]),
+            storage_url=str(value["storage_url"]),
+            nonce=str(value["nonce"]),
+            timestamp=str(value.get("timestamp", "")),
+        )
+        self.proof_ledger.proofs = [
+            item for item in self.proof_ledger.proofs if item.proof_id != proof.proof_id
+        ]
+        self.proof_ledger.proofs.append(proof)
+
+    def _restore_atomic_microtask(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        microtask = AtomicMicrotask(
+            task_id=str(value["task_id"]),
+            seedbox_id=seedbox_id,
+            prover_id=str(value["prover_id"]),
+            task_type=str(value["task_type"]),
+            file_hash=str(value["file_hash"]),
+            result_hash=str(value["result_hash"]),
+            timestamp=str(value.get("timestamp", "")),
+            verified=bool(value.get("verified", False)),
+        )
+        self.microtask_ledger.microtasks.append(microtask)
+
+    def _restore_indexed_file(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        tags = value.get("tags", ())
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        indexed_file = IndexedFile(
+            file_id=str(value["file_id"]),
+            seedbox_id=seedbox_id,
+            name=str(value["name"]),
+            content_url=str(value["content_url"]),
+            sha256=str(value.get("sha256", "")),
+            size_bytes=int(value.get("size_bytes", 0)),
+            media_type=str(value.get("media_type", "")),
+            tags=tuple(str(tag) for tag in tags),
+            indexed_at=str(value.get("indexed_at", "")),
+        )
+        self.content_index.files = [
+            item for item in self.content_index.files if item.file_id != indexed_file.file_id
+        ]
+        self.content_index.files.append(indexed_file)
 
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:

@@ -202,8 +202,11 @@ delftclaw_get_metrics
 delftclaw_get_reputation
 ```
 
-The file-search layer is now represented by a lightweight in-memory content
-index behind the DelftClaw gateway. The intended behavior is:
+The file-search layer is represented by a lightweight content index behind the
+DelftClaw gateway. Seedbox registrations, donations, proofs, microtasks, and
+indexed files are reloaded from the append-only security log when the gateway
+starts, so a systemd restart keeps demo seedbox/file state as long as
+`DELFTCLAW_LOG_PATH` points at the same log file. The intended behavior is:
 
 ```text
 OpenClaw: what files are stored on our Claw Network?

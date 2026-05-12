@@ -128,3 +128,106 @@ def test_gateway_indexes_and_searches_seedbox_files(tmp_path: Path) -> None:
     )
     assert picked["ok"] is True
     assert picked["result"]["output"]["playback_intent"]["url"] == "https://example.invalid/audio/track-1.mp3"
+
+
+def test_gateway_reloads_seedboxes_and_indexed_files_from_append_only_log(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.jsonl"
+    first = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="content-index-reload",
+    )
+
+    first.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "register_seedbox",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "donation_address": "donate-a",
+                "advertised_capacity_gb": 100,
+            },
+        }
+    )
+    first.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "index_seedbox_file",
+            "tool_kwargs": {
+                "file_id": "cc-audio-2023-001",
+                "seedbox_id": "seedbox-a",
+                "name": "Creative Commons Audio Archive 2023 - Track 1",
+                "content_url": "https://example.invalid/audio/track-1.mp3",
+                "media_type": "audio/mpeg",
+                "tags": ["Creative Commons", "audio"],
+            },
+        }
+    )
+
+    restarted = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="content-index-reload",
+    )
+    assert restarted.state_reload_errors == []
+
+    search = restarted.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "search_seedbox_files",
+            "tool_kwargs": {"query": "audio"},
+        }
+    )
+    assert search["ok"] is True
+    assert search["result"]["output"]["count"] == 1
+    assert search["result"]["output"]["files"][0]["seedbox_id"] == "seedbox-a"
+
+
+def test_gateway_reloads_seedbox_donations_for_audits(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.jsonl"
+    first = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="seedbox-audit-reload",
+    )
+
+    first.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "register_seedbox",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "donation_address": "donate-a",
+                "advertised_capacity_gb": 100,
+            },
+        }
+    )
+    first.handle_tool_call(
+        {
+            "agent_id": "agent-a",
+            "tool_name": "broadcast_seedbox_donation",
+            "tool_kwargs": {
+                "seedbox_id": "seedbox-a",
+                "amount_sats": 1000,
+                "txid": "tx-a",
+            },
+        }
+    )
+
+    restarted = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="seedbox-audit-reload",
+    )
+
+    audit = restarted.audit_seedboxes()
+    assert audit["finding_count"] == 1
+    assert audit["findings"][0]["seedbox_id"] == "seedbox-a"
+
+    restarted_again = GatewayState(
+        local_agent_id="agent-a",
+        log_path=str(log_path),
+        run_id="seedbox-audit-reload",
+    )
+    duplicate_audit = restarted_again.audit_seedboxes()
+    assert duplicate_audit["finding_count"] == 0
