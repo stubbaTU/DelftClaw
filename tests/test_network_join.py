@@ -193,3 +193,78 @@ async def test_network_join_no_genesis_peers_reachable(two_agents_with_publishab
     assert result["error"] == "no_genesis_peers_reachable"
     # And critically — no wallet send happened.
     assert sends == []
+
+
+# ---------------------------------------------------------------------------
+# agent_inject_manifest + cached-manifest network_join
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_inject_manifest_caches_for_later(two_agents_with_publishable_overlay):
+    alice, bob, _ = two_agents_with_publishable_overlay
+    manifest_md = _build_manifest(
+        alice_address=alice.wallet.address(),
+        alice_pubkey_hex=alice.pubkey_hex,
+        alice_host="127.0.0.1",
+        alice_port=alice.address[1],
+        default_overlay_hash=CONTENT_HASH.hex(),
+    )
+
+    b_tools = build_tools(bob)
+    inject = await b_tools.dispatch(
+        "agent_inject_manifest",
+        {"md_text": manifest_md},
+    )
+    assert "error" not in inject
+    assert inject["name"] == "test_network"
+    assert inject["genesis_peers"] == 1
+    assert bob.network_manifest is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_inject_manifest_bad_returns_error(two_agents_with_publishable_overlay):
+    _alice, bob, _ = two_agents_with_publishable_overlay
+    b_tools = build_tools(bob)
+    result = await b_tools.dispatch(
+        "agent_inject_manifest",
+        {"md_text": "# Identity\nbroken"},
+    )
+    assert "error" in result
+    assert "manifest_parse_failed" in result["error"]
+    assert bob.network_manifest is None
+
+
+@pytest.mark.asyncio
+async def test_network_join_uses_cached_manifest_when_no_arg(
+    two_agents_with_publishable_overlay,
+):
+    """Inject manifest first, then call network_join() with NO args."""
+    alice, bob, sends = two_agents_with_publishable_overlay
+    manifest_md = _build_manifest(
+        alice_address=alice.wallet.address(),
+        alice_pubkey_hex=alice.pubkey_hex,
+        alice_host="127.0.0.1",
+        alice_port=alice.address[1],
+        default_overlay_hash=CONTENT_HASH.hex(),
+    )
+
+    b_tools = build_tools(bob)
+    await b_tools.dispatch("agent_inject_manifest", {"md_text": manifest_md})
+
+    result = await b_tools.dispatch("network_join", {})
+    assert "error" not in result, f"unexpected error: {result}"
+    assert result["accepted"] is True
+    assert CONTENT_HASH.hex() in result["overlays_loaded"]
+    assert sends == [(alice.wallet.address(), 10000)]
+
+
+@pytest.mark.asyncio
+async def test_network_join_with_no_args_and_no_cached_manifest_errors(
+    two_agents_with_publishable_overlay,
+):
+    _alice, bob, sends = two_agents_with_publishable_overlay
+    b_tools = build_tools(bob)
+    result = await b_tools.dispatch("network_join", {})
+    assert "error" in result
+    assert result["error"] == "no_manifest_loaded"
+    assert sends == []

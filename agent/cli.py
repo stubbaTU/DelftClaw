@@ -259,6 +259,18 @@ async def _run(args: argparse.Namespace) -> int:
     # peers immediately see the descriptor in our published map when they ask.
     published = _publish_overlays(agent, args.publish_overlay or [])
 
+    # Network manifest: either consume one (--manifest) or publish one (--genesis).
+    manifest_loaded: Optional[str] = None
+    if args.manifest:
+        md_text = Path(args.manifest).read_text(encoding="utf-8")
+        manifest = agent.load_manifest(md_text)
+        manifest_loaded = f"consumed {manifest.identity.get('name', '?')} ({manifest.network_id.hex()[:8]})"
+    elif args.genesis:
+        md_text = Path(args.genesis).read_text(encoding="utf-8")
+        manifest = agent.load_manifest(md_text)
+        agent.seedbox.publish_manifest(md_text)
+        manifest_loaded = f"published {manifest.identity.get('name', '?')} ({manifest.network_id.hex()[:8]})"
+
     # Pre-introduce peers (skip walker / DispersyBootstrap entirely).
     introduced: list[tuple[str, int, str]] = []
     for spec in args.peer or []:
@@ -275,6 +287,8 @@ async def _run(args: argparse.Namespace) -> int:
     if published:
         for name, md_hash_hex in published:
             print(f"[agent] published overlay: {name}  md_hash={md_hash_hex}", flush=True)
+    if manifest_loaded:
+        print(f"[agent] manifest: {manifest_loaded}", flush=True)
     if introduced:
         for host, port, mid_hex in introduced:
             print(f"[agent] introduced peer: {host}:{port}  mid={mid_hex[:16]}", flush=True)
@@ -357,6 +371,15 @@ def main() -> int:
                         help="repeatable; pre-introduce a peer at boot (skip walker)")
     parser.add_argument("--system-prompt", metavar="PATH",
                         help="path to a markdown file overriding the LLM persona")
+    # Mutually exclusive: an agent either CONSUMES a manifest (--manifest)
+    # or PUBLISHES one as genesis (--genesis). --genesis is wired in Step 9.
+    manifest_group = parser.add_mutually_exclusive_group()
+    manifest_group.add_argument("--manifest", metavar="PATH",
+                                help="path to a network manifest .md to load + cache at boot "
+                                     "(consumer side: pre-introduces genesis peers)")
+    manifest_group.add_argument("--genesis", metavar="PATH",
+                                help="path to a network manifest .md to PUBLISH (genesis side: "
+                                     "agent advertises this network and serves its default overlays)")
 
     # LLM endpoint.
     parser.add_argument("--llm-base-url", default="http://localhost:8000/v1")

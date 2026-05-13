@@ -211,29 +211,51 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
     # ---- Network manifest -----------------------------------------------
 
-    async def network_join(manifest_md_text: str) -> dict[str, Any]:
-        """Parse a manifest, pre-introduce its peers, fetch its default
-        overlays, donate the required satoshis, send a JOIN_REQUEST,
-        and wait for the gatekeeper's decision.
+    async def agent_inject_manifest(md_text: str) -> dict[str, Any]:
+        """Parse + cache a network manifest into this agent's runtime.
 
-        The composition is wrapped in a single tool because joining a
-        network is a single semantic act: parse-peer-fetch-donate-join
-        is the only sensible order. The lower-level tools
-        (``agent_inject_manifest``, ``overlay_fetch_and_load``,
-        ``wallet_send``, ``seedbox_donate_and_join``) remain available
-        for the LLM that wants explicit decomposition.
-
-        Returns a dict whose ``error`` key surfaces the first failed
-        stage, if any; ``overlays_loaded`` records which default
-        overlays were successfully compiled + registered; ``txid`` and
-        ``accepted`` summarise the admission round-trip.
+        Pre-introduces every genesis peer (skipping self). Idempotent on
+        ``network_id``. Used by ``scenario_boot`` to hand a freshly-
+        generated manifest to a joining agent, and by the LLM after a
+        MANIFEST_DELIVERY round-trip.
         """
-        from protocol.manifest import ManifestParseError, parse_manifest
+        from protocol.manifest import ManifestParseError
 
         try:
-            manifest = agent.load_manifest(manifest_md_text)
+            manifest = agent.load_manifest(md_text)
         except ManifestParseError as exc:
             return {"error": f"manifest_parse_failed: {exc}"}
+        return {
+            "network_id_hex": manifest.network_id.hex(),
+            "name": manifest.identity.get("name", ""),
+            "genesis_peers": len(manifest.genesis_peers),
+            "default_overlays": list(manifest.default_overlays),
+        }
+
+    async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
+        """Join the network end-to-end. Uses the cached manifest when no
+        ``manifest_md_text`` is given; otherwise loads the provided one first.
+
+        Inside the tool: pre-introduce genesis peers, fetch + compile
+        every default overlay, donate the required satoshis, send a
+        JOIN_REQUEST, and await the gatekeeper's decision.
+
+        Composition is wrapped in a single tool because joining a
+        network is a single semantic act: parse-peer-fetch-donate-join
+        is the only sensible order. The lower-level tools remain
+        available for the LLM that wants explicit decomposition.
+        """
+        from protocol.manifest import ManifestParseError
+
+        if manifest_md_text is not None:
+            try:
+                manifest = agent.load_manifest(manifest_md_text)
+            except ManifestParseError as exc:
+                return {"error": f"manifest_parse_failed: {exc}"}
+        else:
+            manifest = agent.network_manifest
+            if manifest is None:
+                return {"error": "no_manifest_loaded"}
 
         # Pick the first reachable genesis peer (the one IPv8 has accepted
         # after load_manifest's add_peer() round). All admission + overlay
@@ -429,15 +451,22 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "additionalProperties": False},
              overlay_publish),
 
+        Tool("agent_inject_manifest",
+             "Parse + cache a network manifest markdown into this agent. "
+             "Pre-introduces every genesis peer. Returns network_id and "
+             "summary; idempotent on network_id.",
+             {"type": "object",
+              "properties": {"md_text": {"type": "string"}},
+              "required": ["md_text"],
+              "additionalProperties": False},
+             agent_inject_manifest),
+
         Tool("network_join",
-             "Join a DelftClaw network end-to-end: parse the given manifest "
-             "markdown, pre-introduce its genesis peers, fetch its default "
-             "overlays, donate the required satoshis to the gatekeeper, and "
-             "send JOIN_REQUEST. Returns network_id, accepted, overlays_loaded, "
-             "txid (and an error key if any stage failed).",
+             "Join the network end-to-end: pre-introduce genesis peers, "
+             "fetch default overlays, donate, and send JOIN_REQUEST. Uses "
+             "the cached manifest unless 'manifest_md_text' is given.",
              {"type": "object",
               "properties": {"manifest_md_text": {"type": "string"}},
-              "required": ["manifest_md_text"],
               "additionalProperties": False},
              network_join),
 
