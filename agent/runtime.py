@@ -25,6 +25,7 @@ from identity.agent_identity import AgentIdentity
 from identity.wallet import Wallet
 from protocol import OverlayRegistry
 from protocol.llm import LLMClient
+from protocol.manifest import NetworkManifest, parse_manifest
 from replication.verification.donation_verifier import DonationVerifier
 
 
@@ -67,6 +68,11 @@ class OpenClawAgent:
         self._seedbox: Optional[SeedboxCommunity] = None
         self._registry: Optional[OverlayRegistry] = None
         self._key_file: Optional[Path] = None
+
+        # Network manifest (None until --manifest, --genesis, network_join,
+        # or agent_inject_manifest loads one).
+        self._manifest: Optional[NetworkManifest] = None
+        self._manifest_md: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -187,5 +193,48 @@ class OpenClawAgent:
         # Compile + register so we also speak the protocol locally.
         self.registry.load(md_text)
         return md_hash
+
+    # ------------------------------------------------------------------
+    # Network manifest
+    # ------------------------------------------------------------------
+
+    @property
+    def network_manifest(self) -> Optional[NetworkManifest]:
+        """The currently-loaded network manifest, or None."""
+        return self._manifest
+
+    @property
+    def network_manifest_md(self) -> Optional[str]:
+        """The raw markdown text of the currently-loaded manifest, or None."""
+        return self._manifest_md
+
+    def load_manifest(self, md_text: str) -> NetworkManifest:
+        """Parse + cache a network manifest and pre-introduce every genesis peer.
+
+        Idempotent: loading the same manifest twice is a no-op after the
+        first parse. Loading a *different* manifest replaces the cached
+        one (the agent runs one network at a time). Genesis peers whose
+        pubkey matches this agent's own ipv8 pubkey are skipped to avoid
+        the runtime adding itself as a peer.
+        """
+        manifest = parse_manifest(md_text)
+        if self._manifest is not None and self._manifest.network_id == manifest.network_id:
+            return self._manifest  # idempotent: same network already loaded
+
+        own_pubkey_hex = self.pubkey_hex.lower()
+        for gp in manifest.genesis_peers:
+            if gp.pubkey_hex.lower() == own_pubkey_hex:
+                continue  # don't add self
+            try:
+                self.add_peer(gp.host, gp.port, gp.pubkey_hex)
+            except Exception:
+                # Bad pubkey hex is a parser-time concern; an add-peer failure
+                # at runtime (e.g. unreachable host) is non-fatal — IPv8 will
+                # surface it when traffic is actually sent.
+                pass
+
+        self._manifest = manifest
+        self._manifest_md = md_text
+        return manifest
 
 

@@ -31,10 +31,34 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
             "ipv8_address": list(agent.address),
             "wallet_address": agent.wallet.address(),
         },
+        "network": _network_snapshot(agent),
         "wallet": _wallet_snapshot(agent),
         "peers": _peers_snapshot(agent),
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
+    }
+
+
+def _network_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
+    """Manifest summary for the LLM, or ``None`` when no manifest is loaded."""
+    manifest = agent.network_manifest
+    if manifest is None:
+        return None
+    return {
+        "network_id_hex": manifest.network_id.hex(),
+        "name": manifest.identity.get("name", ""),
+        "version": manifest.identity.get("version", ""),
+        "description": manifest.identity.get("description", ""),
+        "admission": {
+            "gatekeeper_address": manifest.admission.gatekeeper_address,
+            "min_sats": manifest.admission.min_sats,
+            "min_confirmations": manifest.admission.min_confirmations,
+        },
+        "genesis_peers": [
+            {"host": gp.host, "port": gp.port, "pubkey_hex": gp.pubkey_hex}
+            for gp in manifest.genesis_peers
+        ],
+        "default_overlays": list(manifest.default_overlays),
     }
 
 
@@ -49,13 +73,23 @@ def _wallet_snapshot(agent: "OpenClawAgent") -> dict[str, Any]:
 
 
 def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
+    """Per-peer view including the live ``PEER_INTRO`` metadata when available."""
     out: list[dict[str, Any]] = []
+    # PeerMeta entries are keyed by peer.mid; the bootstrap community owns them.
+    peer_meta = agent.seedbox.peer_meta if agent.seedbox else {}
     for peer in agent.known_peers():
         addr = list(peer.addresses.values())[0] if peer.addresses else None
-        out.append({
+        entry: dict[str, Any] = {
             "mid_hex": peer.mid.hex(),
             "address": list(addr) if addr is not None else None,
-        })
+            "wallet_address": None,
+            "known_overlays": [],
+        }
+        meta = peer_meta.get(peer.mid)
+        if meta is not None:
+            entry["wallet_address"] = meta.wallet_address
+            entry["known_overlays"] = [h.hex() for h in meta.known_overlays]
+        out.append(entry)
     return out
 
 
