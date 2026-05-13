@@ -45,7 +45,7 @@ from ipv8_service import IPv8
 from communication.community import SeedboxCommunity
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from replication.verification.donation_verifier import (
+from admission.donation_verifier import (
     DonationVerification,
     DonationVerifier,
 )

@@ -29,7 +29,7 @@ from communication.community import (
     PeerMeta,
     SeedboxCommunity,
 )
-from replication.verification.donation_verifier import DonationVerification
+from admission.donation_verifier import DonationVerification
 
 
 class AlwaysAcceptVerifier:

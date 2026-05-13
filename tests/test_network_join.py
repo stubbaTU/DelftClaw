@@ -27,7 +27,7 @@ from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
 from protocol import StubLLMClient, community_id_from_md
 from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
-from replication.verification.donation_verifier import DonationVerification
+from admission.donation_verifier import DonationVerification
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

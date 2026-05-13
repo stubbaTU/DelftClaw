@@ -26,7 +26,7 @@ from identity.wallet import Wallet
 from protocol import OverlayRegistry
 from protocol.llm import LLMClient
 from protocol.manifest import NetworkManifest, parse_manifest
-from replication.verification.donation_verifier import DonationVerifier
+from admission.donation_verifier import DonationVerifier
 
 
 @dataclass

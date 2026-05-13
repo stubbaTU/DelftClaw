@@ -50,7 +50,7 @@ from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
 
-from replication.verification.donation_verifier import DonationVerifier
+from admission.donation_verifier import DonationVerifier
 
 
 @dataclass(frozen=True)
