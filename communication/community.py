@@ -10,6 +10,7 @@ Wire protocol:
     ManifestOfferPayload(md_hash: 20 bytes)          peer -> peer
     ManifestRequestPayload(md_hash: 20 bytes)        peer -> peer
     ManifestDeliveryPayload(md_hash, md_text)        peer -> peer
+    PeerIntroPayload(wallet_address, known_overlays) peer -> peer (post-admission)
 
 Joiner-side helpers:
 
@@ -39,8 +40,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import dataclass
 from typing import Callable, Optional
 
+import msgpack
 from ipv8.community import Community, CommunitySettings
 from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
@@ -48,6 +51,14 @@ from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
 
 from replication.verification.donation_verifier import DonationVerifier
+
+
+@dataclass(frozen=True)
+class PeerMeta:
+    """Live metadata a peer publishes about itself in its PEER_INTRO."""
+
+    wallet_address: str
+    known_overlays: tuple[bytes, ...]   # each entry is a 20-byte overlay/manifest id
 
 
 # Cap on a single OVERLAY_DELIVERY payload — protects against a peer
@@ -133,10 +144,24 @@ class ManifestDeliveryPayload(VariablePayload):
     names = ["md_hash", "md_text"]
 
 
+@vp_compile
+class PeerIntroPayload(VariablePayload):
+    """Live introduction sent after admission so peers learn each other's
+    wallet address (for future BTC ops) and overlay catalogue (so they
+    know which protocols this peer already serves)."""
+
+    msg_id = 9
+    # wallet_address: utf-8 bech32 string carried as raw bytes;
+    # known_overlays: msgpack-encoded list of 20-byte overlay ids.
+    format_list = ["varlenH", "varlenH"]
+    names = ["wallet_address", "known_overlays"]
+
+
 # Optional callback signatures: invoked when this node receives an OFFER
 # for a hash it doesn't already know about.
 OverlayOfferCallback = Callable[[Peer, bytes], None]
 ManifestOfferCallback = Callable[[Peer, bytes], None]
+PeerIntroCallback = Callable[[Peer, PeerMeta], None]
 
 
 class SeedboxCommunity(Community, PeerObserver):
@@ -163,6 +188,11 @@ class SeedboxCommunity(Community, PeerObserver):
         self._pending_manifest_fetches: dict[bytes, asyncio.Future[bytes]] = {}
         self._manifest_offer_callback: Optional[ManifestOfferCallback] = None
 
+        # PEER_INTRO bookkeeping — populated on admission round-trip.
+        self._wallet_address: Optional[str] = None        # set by configure()
+        self._peer_meta: dict[bytes, PeerMeta] = {}        # peer.mid -> PeerMeta
+        self._peer_intro_callback: Optional[PeerIntroCallback] = None
+
         self.add_message_handler(JoinRequestPayload, self.on_join_request)
         self.add_message_handler(JoinResponsePayload, self.on_join_response)
         self.add_message_handler(OverlayOfferPayload, self.on_overlay_offer)
@@ -171,6 +201,7 @@ class SeedboxCommunity(Community, PeerObserver):
         self.add_message_handler(ManifestOfferPayload, self.on_manifest_offer)
         self.add_message_handler(ManifestRequestPayload, self.on_manifest_request)
         self.add_message_handler(ManifestDeliveryPayload, self.on_manifest_delivery)
+        self.add_message_handler(PeerIntroPayload, self.on_peer_intro)
 
     # ------------------------------------------------------------------
     # Configuration / wiring
@@ -182,6 +213,8 @@ class SeedboxCommunity(Community, PeerObserver):
         verifier: Optional[DonationVerifier] = None,
         offer_callback: Optional[OverlayOfferCallback] = None,
         manifest_offer_callback: Optional[ManifestOfferCallback] = None,
+        wallet_address: Optional[str] = None,
+        peer_intro_callback: Optional[PeerIntroCallback] = None,
     ) -> None:
         """Wire optional collaborators after construction."""
         if verifier is not None:
@@ -190,6 +223,10 @@ class SeedboxCommunity(Community, PeerObserver):
             self._offer_callback = offer_callback
         if manifest_offer_callback is not None:
             self._manifest_offer_callback = manifest_offer_callback
+        if wallet_address is not None:
+            self._wallet_address = wallet_address
+        if peer_intro_callback is not None:
+            self._peer_intro_callback = peer_intro_callback
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
@@ -221,12 +258,16 @@ class SeedboxCommunity(Community, PeerObserver):
         if result.accepted:
             self.network.add_verified_peer(peer)
         self.ez_send(peer, JoinResponsePayload(result.accepted))
+        if result.accepted:
+            self._send_peer_intro(peer)
 
     @lazy_wrapper(JoinResponsePayload)
     def on_join_response(self, peer: Peer, payload: JoinResponsePayload) -> None:
         future = self._pending_joins.pop(peer.mid, None)
         if future is not None and not future.done():
             future.set_result(payload.accepted)
+        if payload.accepted:
+            self._send_peer_intro(peer)
 
     # ------------------------------------------------------------------
     # OVERLAY descriptor exchange
@@ -347,6 +388,52 @@ class SeedboxCommunity(Community, PeerObserver):
             future.set_result(payload.md_text)
 
     # ------------------------------------------------------------------
+    # PEER_INTRO — live wallet + overlay catalogue exchange post-admission
+    # ------------------------------------------------------------------
+
+    def _send_peer_intro(self, peer: Peer) -> None:
+        """Send our wallet address + the overlay ids we serve to ``peer``.
+
+        Called automatically on both sides of the admission round-trip
+        once accept=True. A node that hasn't been configured with a
+        wallet_address silently skips the send (the receiving side
+        simply won't get an entry for us in ``_peer_meta``).
+        """
+        if self._wallet_address is None:
+            return
+        overlays = sorted(self._published.keys())
+        body = msgpack.packb(overlays, use_bin_type=True)
+        self.ez_send(
+            peer,
+            PeerIntroPayload(
+                wallet_address=self._wallet_address.encode("utf-8"),
+                known_overlays=body,
+            ),
+        )
+
+    @lazy_wrapper(PeerIntroPayload)
+    def on_peer_intro(self, peer: Peer, payload: PeerIntroPayload) -> None:
+        try:
+            addr = payload.wallet_address.decode("utf-8")
+        except UnicodeDecodeError:
+            return  # malformed; drop
+        try:
+            raw = msgpack.unpackb(payload.known_overlays, raw=False)
+        except Exception:
+            return  # malformed; drop
+        if not isinstance(raw, list):
+            return
+        overlays: list[bytes] = []
+        for h in raw:
+            if isinstance(h, (bytes, bytearray)) and len(h) == 20:
+                overlays.append(bytes(h))
+        meta = PeerMeta(wallet_address=addr, known_overlays=tuple(overlays))
+        self._peer_meta[peer.mid] = meta
+        cb = self._peer_intro_callback
+        if cb is not None:
+            cb(peer, meta)
+
+    # ------------------------------------------------------------------
     # Read-only state accessors (handy for tests / debugging)
     # ------------------------------------------------------------------
 
@@ -365,3 +452,13 @@ class SeedboxCommunity(Community, PeerObserver):
     @property
     def known_manifest_offers(self) -> dict[bytes, set[bytes]]:
         return {h: set(mids) for h, mids in self._known_manifest_offers.items()}
+
+    @property
+    def peer_meta(self) -> dict[bytes, PeerMeta]:
+        """``peer.mid`` -> ``PeerMeta`` for every peer that has introduced itself."""
+        return dict(self._peer_meta)
+
+    @property
+    def wallet_address(self) -> Optional[str]:
+        """The wallet address this node advertises in its PEER_INTROs (None if unconfigured)."""
+        return self._wallet_address

@@ -105,7 +105,10 @@ class OpenClawAgent:
             min_confirmations=self.config.seedbox_min_confirmations,
             network=self.config.btc_network,
         )
-        self._seedbox.configure(verifier=verifier)
+        self._seedbox.configure(
+            verifier=verifier,
+            wallet_address=self.wallet.address(),
+        )
         self._registry = OverlayRegistry(self._ipv8, self.llm)
 
     async def stop(self) -> None:
