@@ -3,11 +3,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-<<<<<<< HEAD
-from urllib.error import HTTPError
-=======
 from urllib.error import HTTPError, URLError
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e
 from urllib.request import Request, urlopen
 
 
@@ -72,15 +68,20 @@ class DelftClawClient:
         *,
         txid: str | None = None,
         stolen_from_honest_agent: bool = False,
+        confirmations: int = 0,
+        output_index: int | None = None,
         payload_id: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "seedbox_id": seedbox_id,
             "amount_sats": amount_sats,
             "stolen_from_honest_agent": stolen_from_honest_agent,
+            "confirmations": confirmations,
         }
         if txid:
             payload["txid"] = txid
+        if output_index is not None:
+            payload["output_index"] = output_index
         return self.tool_call("broadcast_seedbox_donation", payload, payload_id=payload_id)
 
     def submit_seedbox_proof(
@@ -100,6 +101,81 @@ class DelftClawClient:
         if proof_id:
             payload["proof_id"] = proof_id
         return self.tool_call("submit_seedbox_proof", payload, payload_id=payload_id)
+
+    def submit_atomic_microtask(
+        self,
+        task_id: str,
+        seedbox_id: str,
+        file_hash: str,
+        result_hash: str,
+        *,
+        task_type: str = "storage_check",
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "submit_atomic_microtask",
+            {
+                "task_id": task_id,
+                "seedbox_id": seedbox_id,
+                "file_hash": file_hash,
+                "result_hash": result_hash,
+                "task_type": task_type,
+            },
+            payload_id=payload_id,
+        )
+
+    def verify_atomic_microtask(
+        self,
+        task_id: str,
+        expected_result_hash: str,
+        *,
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "verify_atomic_microtask",
+            {
+                "task_id": task_id,
+                "expected_result_hash": expected_result_hash,
+            },
+            payload_id=payload_id,
+        )
+
+    def index_seedbox_file(
+        self,
+        file_id: str,
+        seedbox_id: str,
+        name: str,
+        content_url: str,
+        *,
+        sha256: str = "",
+        size_bytes: int = 0,
+        media_type: str = "",
+        tags: list[str] | None = None,
+        payload_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.tool_call(
+            "index_seedbox_file",
+            {
+                "file_id": file_id,
+                "seedbox_id": seedbox_id,
+                "name": name,
+                "content_url": content_url,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "media_type": media_type,
+                "tags": tags or [],
+            },
+            payload_id=payload_id,
+        )
+
+    def list_seedbox_files(self, *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("list_seedbox_files", {}, payload_id=payload_id)
+
+    def search_seedbox_files(self, query: str, *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("search_seedbox_files", {"query": query}, payload_id=payload_id)
+
+    def pick_random_seedbox_file(self, query: str = "", *, payload_id: str | None = None) -> dict[str, Any]:
+        return self.tool_call("pick_random_seedbox_file", {"query": query}, payload_id=payload_id)
 
     def report_security_event(
         self,
@@ -158,8 +234,5 @@ class DelftClawClient:
                 parsed = {"error": error_body}
             parsed.setdefault("status", exc.code)
             return parsed
-<<<<<<< HEAD
-=======
         except (OSError, URLError) as exc:
             return {"ok": False, "error": str(exc)}
->>>>>>> 416143f531278f686ac407d9f2a4c0dc8cb8417e

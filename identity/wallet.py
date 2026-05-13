@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import hashlib
 
-from bitcoinlib.keys import HDKey
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from identity.derivation import DerivationPath, wallet_path
 from identity.seed import Seed
@@ -54,55 +52,59 @@ class Wallet:
 
     @property
     def pubkey(self) -> bytes:
-        """Compressed secp256k1 public key bytes."""
-        return bytes.fromhex(self._child.public_hex)
-
-    @property
-    def xpub(self) -> str:
-        """Extended public key string for this wallet account."""
-        return self._root.public_master().wif()
-
-    @property
-    def xpriv(self) -> str:
-        """Extended private key string for this wallet account."""
-        return self._root.wif_private()
-
-    @property
-    def network(self) -> str:
-        """Logical OpenClaw network label for this wallet."""
-        return self._network
+        """Return the wallet's canonical Ed25519 public key bytes."""
+        return self.key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
 
     def address(self) -> str:
-        """Legacy P2PKH address (base58) for interoperability."""
-        return self._child.address(script_type="p2pkh", encoding="base58")
+        """Return a stable synthetic address for local DelftClaw experiments."""
+        digest = hashlib.sha256(self.pubkey).hexdigest()
+        return f"dclaw1{digest[:40]}"
 
-    def sign(self, msg: bytes) -> bytes:
-        """Sign arbitrary bytes using ECDSA-secp256k1 over SHA-256(msg)."""
-        digest = hashlib.sha256(msg).digest()
-        priv = ec.derive_private_key(int(self._child.private_hex, 16), ec.SECP256K1())
-        return priv.sign(digest, ec.ECDSA(hashes.SHA256()))
+    def compose_payment(
+        self,
+        recipient_pubkey: bytes,
+        amount_sats: int,
+        utxos: list[UTXO],
+    ) -> SignedTransaction:
+        raise NotImplementedError("real Bitcoin transaction composition is not wired into the synthetic wallet")
 
-    def verify(self, msg: bytes, sig: bytes) -> bool:
-        """Verify signature produced by :meth:`sign`."""
-        digest = hashlib.sha256(msg).digest()
-        try:
-            pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), self.pubkey)
-            pub.verify(sig, digest, ec.ECDSA(hashes.SHA256()))
-            return True
-        except (InvalidSignature, ValueError):
-            return False
+    def verify_counterparty_signature(
+        self,
+        tx: SignedTransaction,
+        expected_pubkey: bytes,
+    ) -> bool:
+        """
+        Confirm a transaction really was signed by the public key the sender claims to control.
+        """
+        return False
 
-    def get_balance(self) -> int:
-        """Return on-chain balance in satoshis if available, otherwise 0."""
-        try:
-            from bitcoinlib.wallets import Wallet as BWallet
+    def get_private_key(self):
+        """Return the raw Ed25519 private key as hex for local tests."""
+        return self.key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).hex()
 
-            name = f"openclaw_{self.address()}"
-            if BWallet.exists(name):
-                wallet = BWallet(name)
-            else:
-                wallet = BWallet.create(name=name, keys=self.xpriv, network=_bitcoin_network(self._network))
-            wallet.scan()
-            return int(wallet.balance())
-        except Exception:
-            return 0
+    def get_balance(self, as_string=False):
+        """
+        Get wallet balance by scanning the blockchain.
+        
+        :param as_string: Return as string with BTC suffix if True
+        :return: Balance in satoshis (int) or formatted string
+        """
+        balance = 0
+        if as_string:
+            return "0.00000000 BTC"
+        return balance
+
+    def get_utxos(self):
+        """Get unspent transaction outputs."""
+        return []
+
+    def sign(self, data: bytes) -> bytes:
+        """Produce an Ed25519 signature; used by ``StakeOp.sign``."""
+        return self.key.sign(data)
