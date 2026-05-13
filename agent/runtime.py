@@ -35,7 +35,7 @@ class AgentConfig:
 
     port: int = 0
     address: str = "127.0.0.1"
-    btc_network: str = "testnet"
+    btc_network: str = "mock"           # synthetic; flip to "testnet" for real bitcoinlib
     save_dir: Path = Path("./downloads")
     seedbox_min_sats: int = 10_000      # gatekeeper-side: minimum donation to admit
     seedbox_min_confirmations: int = 0  # 0 = accept zero-conf for demos

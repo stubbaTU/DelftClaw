@@ -104,7 +104,19 @@ def _check_required_sections(sections: dict[str, str]) -> None:
 
 _KV_RE = re.compile(r"^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$")
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-_BECH32_RE = re.compile(r"^(tb1|bc1)[02-9ac-hj-np-z]+$")
+# ``tb1``/``bc1`` are real bech32 (testnet / mainnet segwit); body uses
+# the bech32 charset (no 1/b/i/o look-alikes).
+# ``dclaw1`` is the synthetic-wallet prefix produced by
+# ``identity.wallet.Wallet.address()`` in mock mode; the body is the
+# hex digest of the wallet pubkey, so it can legitimately contain ``1``
+# and other characters bech32 forbids.
+_BECH32_RE = re.compile(
+    r"^("
+    r"(tb1|bc1)[02-9ac-hj-np-z]+"      # real segwit bech32
+    r"|"
+    r"dclaw1[0-9a-f]+"                  # synthetic mock-mode address
+    r")$"
+)
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _SHA1_LINE_RE = re.compile(r"^\s*-\s*sha1\s*:\s*([0-9a-f]{40})\b")
@@ -144,7 +156,7 @@ def _parse_admission(body: str) -> AdmissionPolicy:
     addr = kv["gatekeeper_address"]
     if not _BECH32_RE.match(addr):
         raise ManifestParseError(
-            f"# Admission gatekeeper_address must be bech32 (tb1.../bc1...); got {addr!r}"
+            f"# Admission gatekeeper_address must be bech32 (tb1.../bc1.../dclaw1...); got {addr!r}"
         )
     try:
         min_sats = int(kv["min_sats"])

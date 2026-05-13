@@ -2,8 +2,6 @@
 
 from typing import Any
 
-from security.integration.client import DelftClawClient
-
 _OPENCLAW_TOOL_EXPORTS = {
     "EXPERIMENT_ONLY_TOOL_REGISTRY",
     "TOOL_REGISTRY",
@@ -22,13 +20,19 @@ _OPENCLAW_TOOL_EXPORTS = {
 
 
 def __getattr__(name: str) -> Any:
+    if name == "DelftClawClient":
+        from security.integration.client import DelftClawClient
+
+        return DelftClawClient
+
     if name in _OPENCLAW_TOOL_EXPORTS:
         from security.integration import openclaw_tools
 
         return getattr(openclaw_tools, name)
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 __all__ = [
-    "DelftClawClient",
     *_OPENCLAW_TOOL_EXPORTS,
 ]

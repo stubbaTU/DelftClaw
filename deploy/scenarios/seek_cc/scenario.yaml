@@ -24,10 +24,10 @@ watchdog:
   # fallback. Round-trips with a ~3KB tool-spec prompt typically want
   # 30-90s per turn (first turn longer for GPU cold-load), so we give the
   # watchdog 180s of headroom per tick.
-  interval_s: 180
-  max_iterations_per_turn: 8
+  interval_s: 600
+  max_iterations_per_turn: 12
   max_total_turns: 20
-  max_wall_clock_s: 3600
+  max_wall_clock_s: 7200
 
 observability:
   log_dir: /var/log/delftclaw/scenarios/seek_cc

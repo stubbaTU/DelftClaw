@@ -15,8 +15,20 @@ from security.contracts import ExecutionResult, SecurityAction, ToolDecision, To
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
 from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.bitcoin_anchor import BitcoinAnchor, BitcoinAnchorVerifier
 from security.subq2_accountability.reputation import ReputationEngine
-from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry, ServiceProofLedger
+from security.subq2_accountability.seedbox import (
+    AtomicMicrotask,
+    AtomicMicrotaskLedger,
+    Donation,
+    DonationLedger,
+    IndexedFile,
+    SeedboxContentIndex,
+    Seedbox,
+    SeedboxRegistry,
+    ServiceProof,
+    ServiceProofLedger,
+)
 
 
 class GatewayState:
@@ -34,6 +46,8 @@ class GatewayState:
         run_id: str = "",
         experiment_condition: str = "",
         experiment_root: str = "",
+        bitcoin_network: str = "mock",
+        bitcoin_min_confirmations: int = 0,
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -45,6 +59,11 @@ class GatewayState:
         self.run_id = run_id
         self.experiment_condition = experiment_condition or mode
         self.experiment_root = experiment_root
+        self.bitcoin_network = bitcoin_network
+        self.bitcoin_anchor_verifier = BitcoinAnchorVerifier(
+            network=bitcoin_network,
+            min_confirmations=bitcoin_min_confirmations,
+        )
         self.run_metadata = {
             "run_id": run_id,
             "experiment_condition": self.experiment_condition,
@@ -53,6 +72,8 @@ class GatewayState:
             "ban_threshold": ban_threshold,
             "max_tool_risk": str(max_tool_risk),
             "experiment_root": experiment_root,
+            "bitcoin_network": bitcoin_network,
+            "bitcoin_min_confirmations": bitcoin_min_confirmations,
         }
         self.log = AppendOnlyLog(log_path=log_path, run_metadata=self.run_metadata)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
@@ -64,6 +85,8 @@ class GatewayState:
         self.registry = SeedboxRegistry()
         self.ledger = DonationLedger(self.registry)
         self.proof_ledger = ServiceProofLedger(self.registry)
+        self.microtask_ledger = AtomicMicrotaskLedger(self.registry)
+        self.content_index = SeedboxContentIndex(self.registry)
         self.hands = Hands(
             proxy=None,
             allowed_tools=self._allowed_tools(),
@@ -78,6 +101,8 @@ class GatewayState:
         self.blocked_count = 0
         self.executed_count = 0
         self.missing_proof_audits: set[str] = set()
+        self.state_reload_errors: list[str] = []
+        self._reload_runtime_state_from_log()
 
     def handle_tool_call(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.tool_call_count += 1
@@ -176,6 +201,11 @@ class GatewayState:
             "run_id": self.run_id,
             "experiment_condition": self.experiment_condition,
             "experiment_root": self.experiment_root,
+            "bitcoin_network": self.bitcoin_network,
+            "loaded_seedbox_count": len(self.registry.seedboxes),
+            "loaded_seedbox_file_count": len(self.content_index.files),
+            "state_reload_ok": not self.state_reload_errors,
+            "state_reload_errors": list(self.state_reload_errors),
         }
 
     def audit_seedboxes(self) -> dict[str, Any]:
@@ -312,11 +342,47 @@ class GatewayState:
                 required_args=("seedbox_id", "prover_id", "storage_url", "nonce", "proof_id"),
                 risk=ToolRisk.SENSITIVE,
             ),
+            "submit_atomic_microtask": ToolPolicy(
+                name="submit_atomic_microtask",
+                handler=self._submit_atomic_microtask,
+                required_args=("task_id", "seedbox_id", "prover_id", "task_type", "file_hash", "result_hash"),
+                risk=ToolRisk.SENSITIVE,
+            ),
+            "verify_atomic_microtask": ToolPolicy(
+                name="verify_atomic_microtask",
+                handler=self._verify_atomic_microtask,
+                required_args=("task_id", "expected_result_hash"),
+                risk=ToolRisk.SENSITIVE,
+            ),
             "report_security_event": ToolPolicy(
                 name="report_security_event",
                 handler=lambda kwargs: {"reported": True, "details": kwargs},
                 required_args=("subject_id", "action"),
                 risk=ToolRisk.SENSITIVE,
+            ),
+            "index_seedbox_file": ToolPolicy(
+                name="index_seedbox_file",
+                handler=self._index_seedbox_file,
+                required_args=("file_id", "seedbox_id", "name", "content_url"),
+                risk=ToolRisk.SENSITIVE,
+            ),
+            "list_seedbox_files": ToolPolicy(
+                name="list_seedbox_files",
+                handler=self._list_seedbox_files,
+                required_args=(),
+                risk=ToolRisk.SAFE,
+            ),
+            "search_seedbox_files": ToolPolicy(
+                name="search_seedbox_files",
+                handler=self._search_seedbox_files,
+                required_args=("query",),
+                risk=ToolRisk.SAFE,
+            ),
+            "pick_random_seedbox_file": ToolPolicy(
+                name="pick_random_seedbox_file",
+                handler=self._pick_random_seedbox_file,
+                required_args=(),
+                risk=ToolRisk.SAFE,
             ),
         }
 
@@ -331,13 +397,25 @@ class GatewayState:
         return asdict(seedbox)
 
     def _broadcast_seedbox_donation(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        seedbox = self.registry.get(str(kwargs["seedbox_id"]))
+        confirmations = int(kwargs.get("confirmations", 0))
+        output_index = kwargs.get("output_index")
+        anchor = self.bitcoin_anchor_verifier.build_anchor(
+            txid=str(kwargs["txid"]),
+            donation_address=seedbox.donation_address,
+            amount_sats=int(kwargs["amount_sats"]),
+            seedbox_id=seedbox.seedbox_id,
+            confirmations=confirmations,
+            output_index=int(output_index) if output_index is not None else None,
+        )
         donation = self.ledger.broadcast_donation(
             donation_id=str(kwargs.get("donation_id") or f"donation-{int(time.time() * 1000)}"),
-            seedbox_id=str(kwargs["seedbox_id"]),
+            seedbox_id=seedbox.seedbox_id,
             donor_id=str(kwargs["donor_id"]),
             amount_sats=int(kwargs["amount_sats"]),
             txid=str(kwargs["txid"]),
             stolen_from_honest_agent=bool(kwargs.get("stolen_from_honest_agent", False)),
+            bitcoin_anchor=anchor,
         )
         return {"donation": asdict(donation), "donation_evidence": donation.to_evidence()}
 
@@ -351,6 +429,248 @@ class GatewayState:
         )
         return {"proof": asdict(proof)}
 
+    def _submit_atomic_microtask(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        microtask = self.microtask_ledger.submit_result(
+            task_id=str(kwargs["task_id"]),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            prover_id=str(kwargs["prover_id"]),
+            task_type=str(kwargs["task_type"]),
+            file_hash=str(kwargs["file_hash"]),
+            result_hash=str(kwargs["result_hash"]),
+        )
+        self.monitor.record_atomic_microtask(subject_id=str(kwargs["prover_id"]), microtask=microtask.to_evidence())
+        return {"microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
+
+    def _verify_atomic_microtask(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(kwargs["task_id"])
+        expected_result_hash = str(kwargs["expected_result_hash"])
+        current = self.microtask_ledger.get(task_id)
+        try:
+            microtask = self.microtask_ledger.verify_result(
+                task_id=task_id,
+                expected_result_hash=expected_result_hash,
+            )
+        except ValueError:
+            self.monitor.record_rejected_atomic_microtask(
+                subject_id=current.prover_id,
+                task_id=task_id,
+                expected_result_hash=expected_result_hash,
+                actual_result_hash=current.result_hash,
+            )
+            raise
+        self.monitor.record_atomic_microtask(subject_id=microtask.prover_id, microtask=microtask.to_evidence())
+        return {"verified": True, "microtask": asdict(microtask), "microtask_evidence": microtask.to_evidence()}
+
+    def _index_seedbox_file(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        tags = kwargs.get("tags", ())
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        indexed_file = self.content_index.index_file(
+            file_id=str(kwargs["file_id"]),
+            seedbox_id=str(kwargs["seedbox_id"]),
+            name=str(kwargs["name"]),
+            content_url=str(kwargs["content_url"]),
+            sha256=str(kwargs.get("sha256", "")),
+            size_bytes=int(kwargs.get("size_bytes", 0)),
+            media_type=str(kwargs.get("media_type", "")),
+            tags=tuple(str(tag) for tag in tags),
+        )
+        return {"indexed": True, "file": asdict(indexed_file)}
+
+    def _list_seedbox_files(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        files = [asdict(item) for item in self.content_index.list_files()]
+        return {"count": len(files), "files": files}
+
+    def _search_seedbox_files(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = str(kwargs.get("query", ""))
+        files = [asdict(item) for item in self.content_index.search(query)]
+        return {"query": query, "count": len(files), "files": files}
+
+    def _pick_random_seedbox_file(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        query = str(kwargs.get("query", ""))
+        indexed_file = self.content_index.random_match(query)
+        file_payload = asdict(indexed_file)
+        return {
+            "query": query,
+            "file": file_payload,
+            "playback_intent": {
+                "action": "play",
+                "url": indexed_file.content_url,
+                "title": indexed_file.name,
+                "media_type": indexed_file.media_type,
+            },
+        }
+
+    def _reload_runtime_state_from_log(self) -> None:
+        integrity_ok, integrity_errors = self.log.verify_integrity()
+        if not integrity_ok:
+            self.state_reload_errors.extend(integrity_errors)
+            return
+
+        for entry in self.log.read_entries():
+            details = entry.get("details")
+            if isinstance(details, dict):
+                step = details.get("step")
+                if isinstance(step, int) and not isinstance(step, bool):
+                    self.monitor.current_step = max(self.monitor.current_step, step)
+            try:
+                self._replay_log_entry(entry)
+            except Exception as exc:
+                action = entry.get("action", "<unknown>")
+                entry_hash = str(entry.get("entry_hash", ""))[:12]
+                self.state_reload_errors.append(f"could not replay {action} entry {entry_hash}: {exc}")
+
+    def _replay_log_entry(self, entry: dict[str, Any]) -> None:
+        action = entry.get("action")
+        details = entry.get("details")
+        if not isinstance(details, dict):
+            return
+
+        if action == SecurityAction.SEEDBOX_MISSING_PROOF.value:
+            seedbox_id = details.get("seedbox_id")
+            if seedbox_id:
+                self.missing_proof_audits.add(str(seedbox_id))
+            return
+
+        if action != SecurityAction.TOOL_EXECUTION_SUCCESS.value:
+            return
+
+        tool = details.get("tool")
+        output = details.get("output")
+        if not isinstance(output, dict):
+            return
+
+        if tool == "register_seedbox":
+            self._restore_seedbox(output)
+        elif tool == "broadcast_seedbox_donation":
+            self._restore_donation(output.get("donation"))
+        elif tool == "submit_seedbox_proof":
+            self._restore_service_proof(output.get("proof"))
+        elif tool in {"submit_atomic_microtask", "verify_atomic_microtask"}:
+            self._restore_atomic_microtask(output.get("microtask"))
+        elif tool == "index_seedbox_file":
+            self._restore_indexed_file(output.get("file"))
+
+    def _restore_seedbox(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox = Seedbox(
+            seedbox_id=str(value["seedbox_id"]),
+            owner_id=str(value["owner_id"]),
+            donation_address=str(value["donation_address"]),
+            advertised_capacity_gb=int(value["advertised_capacity_gb"]),
+            created_at=str(value.get("created_at", "")),
+            fake=bool(value.get("fake", False)),
+        )
+        self.registry.seedboxes[seedbox.seedbox_id] = seedbox
+
+    def _restore_donation(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        donation = Donation(
+            donation_id=str(value["donation_id"]),
+            seedbox_id=seedbox_id,
+            donor_id=str(value["donor_id"]),
+            recipient_id=str(value["recipient_id"]),
+            amount_sats=int(value["amount_sats"]),
+            txid=str(value["txid"]),
+            timestamp=str(value.get("timestamp", "")),
+            self_donation=bool(value.get("self_donation", False)),
+            fake_seedbox=bool(value.get("fake_seedbox", False)),
+            stolen_from_honest_agent=bool(value.get("stolen_from_honest_agent", False)),
+            bitcoin_anchor=self._restore_bitcoin_anchor(value.get("bitcoin_anchor")),
+        )
+        self.ledger.donations = [
+            item for item in self.ledger.donations if item.donation_id != donation.donation_id
+        ]
+        self.ledger.donations.append(donation)
+
+    @staticmethod
+    def _restore_bitcoin_anchor(value: Any) -> BitcoinAnchor | None:
+        if not isinstance(value, dict) or not value:
+            return None
+        return BitcoinAnchor(
+            txid=str(value["txid"]),
+            donation_address=str(value["donation_address"]),
+            amount_sats=int(value["amount_sats"]),
+            seedbox_id=str(value["seedbox_id"]),
+            network=str(value.get("network", "mock")),
+            confirmations=int(value.get("confirmations", 0)),
+            output_index=(
+                int(value["output_index"])
+                if value.get("output_index") is not None
+                else None
+            ),
+            verified=bool(value.get("verified", False)),
+            verification_reason=str(value.get("verification_reason", "")),
+            anchor_id=str(value.get("anchor_id", "")),
+        )
+
+    def _restore_service_proof(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        proof = ServiceProof(
+            proof_id=str(value["proof_id"]),
+            seedbox_id=seedbox_id,
+            prover_id=str(value["prover_id"]),
+            storage_url=str(value["storage_url"]),
+            nonce=str(value["nonce"]),
+            timestamp=str(value.get("timestamp", "")),
+        )
+        self.proof_ledger.proofs = [
+            item for item in self.proof_ledger.proofs if item.proof_id != proof.proof_id
+        ]
+        self.proof_ledger.proofs.append(proof)
+
+    def _restore_atomic_microtask(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        microtask = AtomicMicrotask(
+            task_id=str(value["task_id"]),
+            seedbox_id=seedbox_id,
+            prover_id=str(value["prover_id"]),
+            task_type=str(value["task_type"]),
+            file_hash=str(value["file_hash"]),
+            result_hash=str(value["result_hash"]),
+            timestamp=str(value.get("timestamp", "")),
+            verified=bool(value.get("verified", False)),
+        )
+        self.microtask_ledger.microtasks.append(microtask)
+
+    def _restore_indexed_file(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        seedbox_id = str(value["seedbox_id"])
+        if seedbox_id not in self.registry.seedboxes:
+            raise KeyError(f"unknown seedbox {seedbox_id}")
+        tags = value.get("tags", ())
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        indexed_file = IndexedFile(
+            file_id=str(value["file_id"]),
+            seedbox_id=seedbox_id,
+            name=str(value["name"]),
+            content_url=str(value["content_url"]),
+            sha256=str(value.get("sha256", "")),
+            size_bytes=int(value.get("size_bytes", 0)),
+            media_type=str(value.get("media_type", "")),
+            tags=tuple(str(tag) for tag in tags),
+            indexed_at=str(value.get("indexed_at", "")),
+        )
+        self.content_index.files = [
+            item for item in self.content_index.files if item.file_id != indexed_file.file_id
+        ]
+        self.content_index.files.append(indexed_file)
+
     @staticmethod
     def _normalize_tool_kwargs(subject_id: str, tool_name: str, tool_kwargs: dict[str, Any]) -> dict[str, Any]:
         if tool_name == "register_seedbox":
@@ -361,6 +681,9 @@ class GatewayState:
         if tool_name == "submit_seedbox_proof":
             tool_kwargs.setdefault("prover_id", subject_id)
             tool_kwargs.setdefault("proof_id", f"proof-{subject_id}-{int(time.time() * 1000)}")
+        if tool_name == "submit_atomic_microtask":
+            tool_kwargs.setdefault("prover_id", subject_id)
+            tool_kwargs.setdefault("task_type", "storage_check")
         return tool_kwargs
 
     def _reputation_snapshot(self, agent_id: str) -> dict[str, Any]:
@@ -504,6 +827,8 @@ def main() -> None:
     parser.add_argument("--run-id", help="Experiment run id written into every append-only log event.")
     parser.add_argument("--experiment-condition", help="Condition label written into every append-only log event.")
     parser.add_argument("--experiment-root", help="Experiment workspace root for evidence and canary files.")
+    parser.add_argument("--bitcoin-network", help="Bitcoin network label for donation anchors.")
+    parser.add_argument("--bitcoin-min-confirmations", type=int, help="Minimum confirmations required for verified anchors.")
     parser.add_argument(
         "--use-openclaw-identity",
         action="store_true",
@@ -556,6 +881,12 @@ def main() -> None:
     run_id = args.run_id or env_or(env_values, "DELFTCLAW_RUN_ID", "")
     experiment_condition = args.experiment_condition or env_or(env_values, "DELFTCLAW_EXPERIMENT_CONDITION", mode)
     experiment_root = args.experiment_root or env_or(env_values, "DELFTCLAW_EXPERIMENT_ROOT", "")
+    bitcoin_network = args.bitcoin_network or env_or(env_values, "DELFTCLAW_BITCOIN_NETWORK", "mock")
+    bitcoin_min_confirmations = (
+        args.bitcoin_min_confirmations
+        if args.bitcoin_min_confirmations is not None
+        else int(env_or(env_values, "DELFTCLAW_BITCOIN_MIN_CONFIRMATIONS", "0"))
+    )
 
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     state = GatewayState(
@@ -568,6 +899,8 @@ def main() -> None:
         run_id=run_id,
         experiment_condition=experiment_condition,
         experiment_root=experiment_root,
+        bitcoin_network=bitcoin_network,
+        bitcoin_min_confirmations=bitcoin_min_confirmations,
     )
     run_gateway(host=host, port=port, state=state)
 
