@@ -37,19 +37,25 @@ Per-agent zero-shot configuration:
 
 Example two-agent flow::
 
-    # Terminal 1 — Alice publishes the content overlay:
+    # Terminal 1 — Alice publishes the content overlay + acts as genesis:
     python -m agent --mnemonic 'army van defense ...' --port 8090 \\
         --publish-overlay protocol/examples/content_community.md \\
-        --llm-base-url http://gpu-host:8000/v1 --llm-model my-llm \\
+        --genesis path/to/delftclaw_network.md \\
+        --llm-base-url http://100.73.168.12:11434/v1 --llm-model qwen3.6:27b \\
         info
 
-    # Copy Alice's --peer line from her info output, then:
-
-    # Terminal 2 — Bob queries Alice:
+    # Terminal 2 — Bob joins via the manifest (no --peer flag needed,
+    # the manifest's genesis peer list pre-introduces Alice):
     python -m agent --mnemonic 'abandon abandon abandon ...' --port 8091 \\
-        --peer 127.0.0.1:8090:<alice-pubkey-hex> \\
-        --llm-base-url http://gpu-host:8000/v1 --llm-model my-llm \\
+        --manifest path/to/delftclaw_network.md \\
+        --llm-base-url http://100.73.168.12:11434/v1 --llm-model qwen3.6:27b \\
         run --query "what files are stored on our claw network?"
+
+The ``--llm-base-url`` defaults to ``http://127.0.0.1:11434/v1`` (local
+Ollama, the dev/CI fallback). In production deployments under
+``deploy/scenario_boot.py`` the endpoint is the supervisor's external
+GPU host reached over Tailscale (``QWEN_BASE_URL=http://100.73.168.12:11434/v1``
+by default); see ``deploy/README.md``.
 """
 
 from __future__ import annotations
@@ -381,9 +387,13 @@ def main() -> int:
                                 help="path to a network manifest .md to PUBLISH (genesis side: "
                                      "agent advertises this network and serves its default overlays)")
 
-    # LLM endpoint.
-    parser.add_argument("--llm-base-url", default="http://localhost:8000/v1")
-    parser.add_argument("--llm-model", default="local-model")
+    # LLM endpoint. The defaults point at a local Ollama (matches
+    # ``deploy/watchdog.py``'s fallback). In production, scenario_boot
+    # writes ``QWEN_BASE_URL`` + ``QWEN_MODEL`` into each agent's env file
+    # and the systemd unit passes them on the CLI explicitly — so these
+    # defaults are only hit when invoking ``python -m agent`` by hand.
+    parser.add_argument("--llm-base-url", default="http://127.0.0.1:11434/v1")
+    parser.add_argument("--llm-model", default="qwen2.5-coder:7b")
     parser.add_argument("--llm-api-key", default="")
     parser.add_argument("--llm-stub-script",
                         help="JSON file of chat-completions message dicts (offline mode for the tool loop)")
