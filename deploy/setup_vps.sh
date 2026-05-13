@@ -7,8 +7,12 @@
 #
 # What this does, in order:
 #   1.  apt: python, libsodium, build tools, ufw, curl, jq, git
-#   2.  install Ollama (CPU build) if not present
-#   3.  pull the Qwen model (qwen2.5-coder:7b by default)
+#   2.  install Ollama (CPU build) if not present  — DEV/CI fallback only.
+#       v5.1 production points the compiler-LLM at an external GPU host via
+#       QWEN_BASE_URL (an OpenAI-compatible endpoint); the local Ollama
+#       install is purely a fallback for air-gapped development and CI.
+#   3.  pull the Qwen model (qwen2.5-coder:7b by default) into the local
+#       Ollama — used only when QWEN_BASE_URL is unset.
 #   4.  create the `delftclaw` system user + state dirs
 #   5.  build the project venv + pip install requirements.txt
 #   6.  generate the BIP-39 seed file at /var/lib/delftclaw/seed.txt
@@ -16,7 +20,7 @@
 #   7.  install + enable the systemd unit
 #   8.  open ufw rules for ssh, ipv8 udp, mcp tcp (does not enable ufw)
 #   9.  smoke-test:
-#         - curl Ollama /v1/models
+#         - curl Ollama /v1/models  (only meaningful if no external endpoint)
 #         - curl the MCP server /mcp tools/list
 #       prints both results at the end
 #

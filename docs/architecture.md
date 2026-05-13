@@ -1,8 +1,12 @@
 # DelftClaw — Architecture (As-Built)
 
-**Status:** authoritative as of 2026-05-12.
-**Supersedes:** `PROJECT_DESIGN.md` (frozen historical record of the
-pre-pivot trustroom/stake/credential design — now removed in code).
+**Status:** authoritative as of 2026-05-13. *(v5.1 — network manifests
++ zero-shot mission descriptors. See ``PROJECT_DESIGN.md §22`` for the
+delta from v5.0.)*
+
+**Supersedes:** `PROJECT_DESIGN.md` v5.0 (the canonical reference doc;
+this file is a developer-facing distillation. Where they disagree,
+`PROJECT_DESIGN.md` wins.)
 
 ## 1. Context — what changed
 
@@ -669,7 +673,7 @@ protocol/                  # the .md overlay system
     content_community.md        # the SEARCH overlay
     content_community_stub.py
 
-replication/verification/
+admission/                # v5.1: was replication/verification/
   donation_verifier.py     # bitcoinlib-backed txid → DonationVerification
 
 agent/                     # the per-node process
@@ -757,15 +761,15 @@ Strict schema, validated at parse time by `deploy/scenario.py`:
 | `watchdog.max_wall_clock_s` | Scenario-wide hard timeout |
 | `agents.<name>.ipv8_port` / `mcp_port` | UDP / TCP ports allocated to this agent |
 | `agents.<name>.publish_overlays` | `.md` descriptors served at boot via the bootstrap community |
-| `agents.<name>.persona_file` / `goal_file` | Markdown the watchdog feeds the LLM each turn |
+| `agents.<name>.mission_file` *(v5.1)* | Single `mission.md` the watchdog feeds the LLM each turn. Replaces v5.0's `persona_file` + `goal_file` split; legacy keys raise a migration error. |
 | `agents.<name>.stop_predicate` | Named predicate from `deploy/stop_predicates.py` |
 | `agents.<name>.peers` | Other agents this one is cross-introduced to at scenario boot |
 | `agents.<name>.seed_content` | Optional list of `{magnet, name, size, mime, tags}` pre-loaded into the agent's `content_community.local_index` |
 
 The parser rejects: missing keys, unknown predicate names, peer
 references to unknown agents, self-peering, port collisions, ports
-outside `[1024, 65535]`, missing overlay paths, missing persona/goal
-files.
+outside `[1024, 65535]`, missing overlay paths, missing mission file,
+mission whose `# Intent` smuggles in a recipe.
 
 ### Stop predicates (`deploy/stop_predicates.py`)
 
@@ -791,7 +795,7 @@ Each tick:
 2. predicate(snapshot)  → exit 0 if True
 3. turn_n >= max_total_turns  → exit 1
 4. elapsed >= max_wall_clock_s → exit 2
-5. prompt = persona + goal + json(snapshot) + history_tail(3)
+5. prompt = mission_text + json(snapshot) + history_tail(3)   # v5.1
 6. subprocess: openclaw agent --agent <instance> --message <prompt> --json
 7. log JSONL line {turn_n, prompt, response, snapshot, stop_value}
 8. sleep tick_remaining
@@ -804,7 +808,7 @@ the reason; `Restart=no` so they aren't silently re-launched.
 ### Strict guarantees
 
 1. Every turn's prompt is built deterministically from
-   {persona.md, goal.md, snapshot, history tail}. No hidden human input.
+   {mission.md, snapshot, history tail}. No hidden human input. *(v5.1)*
 2. Three caps are enforced before the prompt is built. The LLM cannot
    make the scenario run forever.
 3. Stop conditions are named predicates in code; manifests reference

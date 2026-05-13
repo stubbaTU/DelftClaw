@@ -3,8 +3,12 @@
 **Author:** Nikola Emilov
 **Project:** CSE3000 Research Project, TU Delft, Q4 2026
 **Sub-project:** Communication (integrated channel for autonomous LLM agents)
-**Document version:** 5.0 — markdown-overlay protocol + autonomous scenarios
+**Document version:** 5.1 — network manifests + zero-shot mission descriptors
 **Last updated:** 2026-05-13
+
+> v5.1 delta from v5.0 is summarised in §22 at the bottom of this
+> document. Sections marked `v5.1:` inline call out where the
+> implementation moved.
 
 ---
 
@@ -34,7 +38,7 @@ component-level detail from §4 onward.
 5. `identity/` — seed, BIP-32 derivation, wallets
 6. `communication/` — bootstrap layer + BitTorrent
 7. `protocol/` — markdown overlays + compiler
-8. `replication/verification/` — donation verifier
+8. `admission/` — donation verifier *(v5.1: was `replication/verification/`)*
 9. `agent/` — agent runtime, tool surface, MCP server
 10. `deploy/` — autonomous multi-tenant scenarios on a VPS
 11. End-to-end flows
@@ -91,9 +95,11 @@ reference further down.
 | Decision | What | §  |
 |---|---|---|
 | **Admission** | Bitcoin donation to the community's seedbox wallet address; existing member verifies the on-chain TX | 6.1, 8 |
+| **Network manifest** *(v5.1)* | Content-hashed `.md` document describing one network's admission policy + genesis peers + default overlays; gossipped via SeedboxCommunity | 6.1, 22 |
+| **Mission descriptor** *(v5.1)* | One `mission.md` per agent (Identity / Intent / Budget / Stop); strict parser refuses recipes (no tool names, no ≥3-step lists) | 10.3, 22 |
 | **Protocols** | Markdown descriptors compiled at runtime by an LLM into IPv8 `Community` classes; sha1-derived `community_id` | 7 |
 | **Sandbox** | AST whitelist + namespaced `exec` (demo-grade; trust gradient is small because peers are admission-gated) | 7.3 |
-| **Compiler LLM** | Pluggable `LLMClient` Protocol; production target is Qwen2.5-Coder 7B on local Ollama on the same VPS | 7.2 |
+| **Compiler LLM** | Pluggable `LLMClient` Protocol; **production** is an external GPU-host OpenAI-compatible endpoint via `QWEN_BASE_URL`; local Ollama is the dev/CI fallback | 7.2 |
 | **Reasoning LLM** | OpenClaw's chat session (whatever model the chat host runs); driven externally over MCP | 9.4 |
 | **Per-node identity** | One BIP-39 seed → three BIP-32 derived keys (IPv8 transport, app-layer signing, Bitcoin HD) | 5 |
 | **Bitcoin network** | Testnet (faucet-fundable); switch to mainnet by env var | 5.3 |
@@ -188,7 +194,7 @@ A ninth deployment milestone (2026-05-12 → present):
 │      ▼                                                                   │
 │ ┌────────────────────────────────────────────────────────────────────┐   │
 │ │  delftclaw-mcp@<scenario>-<agent>.service  (one per agent on VPS)  │   │
-│ │   FastMCP streamable-HTTP server exposing 13 tools                 │   │
+│ │   FastMCP streamable-HTTP server exposing 16 tools (v5.1)                 │   │
 │ │   ──────────────────────────────────────────────────────────────   │   │
 │ │   OpenClawAgent runtime                                            │   │
 │ │     ├─ AgentIdentity        (BIP-32: ipv8 / app / wallet)          │   │
@@ -297,8 +303,8 @@ The **only** statically-loaded IPv8 community. Two responsibilities:
 2. **Overlay distribution**: ship `.md` protocol descriptors over the
    wire so new overlays can be loaded at runtime by other nodes.
 
-Five wire messages, defined as `@vp_compile`-decorated `VariablePayload`
-subclasses:
+Nine wire messages *(v5.1: was five)*, defined as `@vp_compile`-decorated
+`VariablePayload` subclasses:
 
 | msg_id | Name | Fields | Direction |
 |---|---|---|---|
@@ -307,10 +313,20 @@ subclasses:
 | 3 | `OverlayOfferPayload` | `md_hash: 20s` | peer → peer |
 | 4 | `OverlayRequestPayload` | `md_hash: 20s` | peer → peer |
 | 5 | `OverlayDeliveryPayload` | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
+| 6 | `ManifestOfferPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
+| 7 | `ManifestRequestPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
+| 8 | `ManifestDeliveryPayload` *(v5.1)* | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
+| 9 | `PeerIntroPayload` *(v5.1)* | `wallet_address: varlenH-utf8`, `known_overlays: varlenH-msgpack` | peer → peer (auto-sent on admission accept) |
 
 The community_id literal `b"openclaw_seedbox_v1\x00"` is the network-wide
 hand-picked rendezvous string (the only protocol whose id is hand-picked;
 every other overlay's id is content-derived).
+
+The manifest trio mirrors the overlay trio bit-for-bit; the separate
+ids let a receiver dispatch on intent without parsing the body. The
+PEER_INTRO message is auto-sent by both sides of a successful JOIN
+round-trip and provides the live wallet address + overlay catalogue
+that the state snapshot then surfaces to the LLM.
 
 Joiner-side helpers return `asyncio.Future` for clean async wait:
 
@@ -577,9 +593,13 @@ everything else.
 
 ---
 
-## 8. `replication/verification/` — donation verifier
+## 8. `admission/` — donation verifier
 
-`DonationVerifier` (in `replication/verification/donation_verifier.py`)
+*(v5.1: file moved from `replication/verification/donation_verifier.py`
+to `admission/donation_verifier.py`. The `replication/` package retains
+other unrelated subproject code.)*
+
+`DonationVerifier` (in `admission/donation_verifier.py`)
 is the gatekeeper-side check. Given a txid claimed by a joiner:
 
 ```python
@@ -627,7 +647,7 @@ Runtime methods used by both tests and the MCP server:
 
 ### 9.2 Tool surface (`agent/tools.py`)
 
-A `ToolRegistry` of 13 tools the LLM can call. `build_tools(agent)`
+A `ToolRegistry` of 16 tools the LLM can call *(v5.1: was 13)*. `build_tools(agent)`
 constructs the registry bound to one agent.
 
 | Tool | Effect |
@@ -638,10 +658,13 @@ constructs the registry bound to one agent.
 | `wallet_balance` | balance in sats (refreshes from network) |
 | `wallet_send` | sign + broadcast a payment, return txid |
 | `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
-| `overlays_list` | compiled overlays loaded locally |
+| `overlays_list` | compiled overlays loaded locally — **v5.1**: now returns full per-message field schemas + handler text + errors + dependencies |
+| `overlay_describe` *(v5.1)* | return the canonical markdown of a loaded overlay (32 KiB cap) |
 | `overlay_fetch_and_load` | OVERLAY_REQUEST from a peer → compile → register |
 | `overlay_publish` | serve a `.md` over OVERLAY_REQUEST |
 | `overlay_invoke` | generic dispatcher: send a message on any compiled overlay |
+| `agent_inject_manifest` *(v5.1)* | parse + cache a network manifest; pre-introduces its genesis peers |
+| `network_join` *(v5.1)* | end-to-end admission: parse → peer_add → fetch default overlays → donate → JOIN_REQUEST; uses cached manifest if no arg |
 | `torrent_seed` | begin seeding a local file, return magnet |
 | `torrent_fetch` | download a magnet URI, return saved path |
 | `torrent_stats` | snapshot of all downloads + seeds |
@@ -663,7 +686,7 @@ Not used in production. Production goes through the MCP server (§9.4).
 ### 9.4 MCP server (`agent/mcp_server.py`)
 
 The **production** path. A FastMCP streamable-HTTP server wrapping the
-`OpenClawAgent` and exposing the 13 tools. OpenClaw's chat session
+`OpenClawAgent` and exposing the 16 tools. OpenClaw's chat session
 connects to this server over HTTP. The OpenClaw chat host's LLM (the
 reasoning brain) calls our tools; the local Qwen on the VPS only does
 overlay compilation when triggered.
@@ -683,7 +706,7 @@ turn talks to the MCP server. Two LLMs in the picture, no overlap:
 | Subcommand | Use |
 |---|---|
 | `info` | print this agent's identity/address/pubkey/wallet, exit |
-| `mcp` | **production** — serve the 13-tool surface over FastMCP streamable-HTTP |
+| `mcp` | **production** — serve the 16-tool surface over FastMCP streamable-HTTP |
 | `run` | offline-test — execute one query via the internal LLM loop |
 | `serve` | offline-test — long-running stdin/stdout via the internal loop |
 
@@ -754,8 +777,7 @@ agents:
     mcp_port: 18765
     publish_overlays:
       - protocol/examples/content_community.md
-    persona_file: alice/persona.md
-    goal_file: alice/goal.md
+    mission_file: alice/mission.md       # v5.1: was persona_file + goal_file
     stop_predicate: never
     seed_content:
       - magnet: "magnet:?xt=urn:btih:...&dn=cc_audio_2023.mp3"
@@ -768,8 +790,7 @@ agents:
     ipv8_port: 8191
     mcp_port: 18766
     publish_overlays: []
-    persona_file: bob/persona.md
-    goal_file: bob/goal.md
+    mission_file: bob/mission.md         # v5.1: was persona_file + goal_file
     stop_predicate: torrent_progress_gte_1
     peers:
       - alice
@@ -778,7 +799,10 @@ agents:
 The parser rejects: missing required keys, unknown stop predicate
 names, peer references to unknown or self-agents, port collisions,
 ports outside `[1024, 65535]`, missing overlay paths, missing
-persona/goal files. Tested in `tests/test_scenario_manifest.py`.
+mission files. v5.1 also rejects legacy `persona_file` / `goal_file`
+keys with a clear migration error, and re-parses each mission via
+``deploy.mission.parse_mission`` (which refuses recipes — see §22).
+Tested in `tests/test_scenario_manifest.py`.
 
 ### 10.4 Watchdog turn protocol (`deploy/watchdog.py`)
 
@@ -1321,13 +1345,17 @@ In rough priority order:
 | **Agent** | An LLM-driven peer on the network. One `OpenClawAgent` per Python process; one Python process per VPS-scenario tenant. |
 | **Bootstrap community** | The fixed-id IPv8 community (`SeedboxCommunity`) that every node runs to do admission + overlay distribution. |
 | **`community_id`** | The 20-byte IPv8 wire prefix that identifies a protocol overlay. For markdown overlays, derived as `sha1(canonical(md))[:20]`. |
-| **Compiler LLM** | The local Ollama-hosted model that turns `.md` descriptors into Python `Community` classes. Distinct from the reasoning LLM. |
+| **Compiler LLM** | The OpenAI-compatible model that turns `.md` descriptors into Python `Community` classes. **v5.1 production target**: external GPU-host endpoint via `QWEN_BASE_URL`; **dev/CI fallback**: local Ollama. Distinct from the reasoning LLM. |
 | **Donation** | A Bitcoin (testnet) transaction paying the seedbox's wallet address; the proof of admission. |
+| **Genesis agent** *(v5.1)* | The agent started with `--genesis <manifest>`: declares a new network by publishing its manifest into `SeedboxCommunity` and serving it via `MANIFEST_REQUEST`. Acts as the admission gatekeeper. |
+| **Mission descriptor** *(v5.1)* | One `mission.md` per agent: Identity / Intent / Budget / Stop. The single operator-supplied prose the LLM sees each turn; strict parser refuses recipes. Replaces v5.0's persona + goal pair. |
+| **Network manifest** *(v5.1)* | A content-hashed `.md` document describing one network — admission policy (gatekeeper address + min_sats + min_confirmations), genesis peers, default overlays. `network_id = sha1(canonical(md))[:20]`. |
 | **Overlay** | An IPv8 community type — historically a Python class, now a markdown document compiled at runtime. |
 | **OpenClaw** | The chat host the operator types into. Owns the reasoning LLM. Talks to our MCP server. |
 | **MCP** | Model Context Protocol. The streamable-HTTP wire format OpenClaw uses to call our tools. |
+| **PEER_INTRO** *(v5.1)* | A SeedboxCommunity wire message auto-sent by both sides of a successful JOIN: carries the sender's wallet address + the set of overlay ids it serves. Receiver stores it in `_peer_meta`. |
 | **Reasoning LLM** | The LLM inside OpenClaw's chat host. Picks which tool to call. |
-| **Scenario** | A YAML manifest + persona/goal markdown files describing how a set of agents should run autonomously. |
+| **Scenario** | A YAML manifest + per-agent `mission.md` files describing how a set of agents should run autonomously. *(v5.1: was persona + goal pair.)* |
 | **Seedbox** | A node that publishes one or more overlays and accepts donation-gated admission. |
 | **Stop predicate** | A pure function of the state snapshot that the watchdog evaluates before each tick. |
 | **Watchdog** | The per-agent polling loop that drives `openclaw agent` subprocesses in a scenario. |
@@ -1351,3 +1379,57 @@ In rough priority order:
 The conceptual centre of gravity moved from *"build the right abstractions
 in Python"* to *"describe protocols in text the network can carry, and let
 agents compile them on arrival."* That is the contribution.
+
+---
+
+## 22. v5.1 delta from v5.0
+
+v5.0 shipped the markdown-as-protocol pivot but kept three properties
+the brief actually demanded out of reach:
+
+1. **The agent could not reason zero-shot from its world.** `goal.md` smuggled
+   in a seven-step recipe for the seek_cc demo. Bob was following written
+   instructions, not deciding.
+2. **"The network" was not a first-class artefact.** Every node ran its own
+   `SeedboxCommunity` with itself as gatekeeper; joiners learned about peers
+   only via operator-driven `peer_add` calls baked into `scenario.yaml`.
+3. **The reasoning LLM saw only message *names* per overlay** — no field
+   encodings, no handler text. A newly-arrived overlay was opaque, so the
+   operator had to pre-bake `overlay_invoke` shapes into the goal.
+
+v5.1 addresses all three. The headline changes:
+
+| Layer | v5.0 | v5.1 |
+|---|---|---|
+| Network identity | Every agent its own seedbox; no shared artefact | **Network manifest** (`.md`) — content-hashed, gossipped over `MANIFEST_*` wire messages, declared by a genesis agent and consumed by joiners |
+| Mission spec | `persona.md` + `goal.md` (operator-encoded recipe) | One `mission.md` per agent: Identity / Intent / Budget / Stop — strict parser rejects backtick-quoted tool names and ≥3-step lists |
+| Peer metadata | `peer.mid + address` only | `peer.mid + address + wallet_address + known_overlays`, populated by the auto-`PEER_INTRO` exchange post-admission |
+| LLM-visible overlays | `messages: [name…]` | Full per-message field schemas + handler text + errors + dependencies; new `overlay_describe` returns canonical markdown |
+| Tools | 13 (peers, wallet, overlays, torrents) | 16 (+ `overlay_describe`, `agent_inject_manifest`, `network_join`) |
+| Admission flow | LLM calls `wallet_send` → `seedbox.request_join` manually | `network_join` does parse → peer_add → fetch default overlays → donate → JOIN_REQUEST in one tool call |
+| Package layout | `replication/verification/donation_verifier.py` | `admission/donation_verifier.py` |
+| Compiler-LLM placement | "Local Ollama on the VPS" (canonical) | **External GPU host via `QWEN_BASE_URL`** (canonical); Ollama is the dev/CI fallback |
+
+What did *not* change: the overlay schema, the AST sandbox, the
+`community_id = sha1(canonical(md))[:20]` rule, the BIP-32 identity
+layer, the autonomous-scenario harness (`scenario.yaml` + watchdog +
+stop predicates + JSONL trace), the BitTorrent service.
+
+**End-to-end consequence for the demo**: Bob's `mission.md` is now
+six lines of intent — `# Identity`, `# Intent` ("Acquire a Creative
+Commons audio file from the DelftClaw network."), `# Budget`, `# Stop`.
+The state snapshot carries Alice's wallet address and overlay
+catalogue; the network snapshot carries the admission policy. Bob's
+LLM calls `network_join` once (or composes the lower-level tools
+itself) and proceeds.
+
+Determinism evidence: `tests/test_compiler_cross_llm.py` compiles
+`content_community.md` against two stylistically-divergent stub LLM
+outputs (reordered classes, while-loop vs for-loop, renamed locals)
+and asserts both yield byte-identical wire format via the compiler's
+mandatory test vectors. This is the cheapest empirical check on the
+Agora "zero-shot without any ambiguity" claim the project rests on.
+
+Out of scope for v5.1 (deferred): DHT/walker bootstrap, signed manifests,
+WASM/seccomp sandbox upgrade, multi-VPS scenarios, mainnet Bitcoin,
+cross-stack (TS/Rust) compiler proof-of-concept.

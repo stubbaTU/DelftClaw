@@ -18,9 +18,12 @@ description: Bob finds and downloads a Creative Commons file from Alice's seedbo
 
 watchdog:
   # interval_s is also passed to ``openclaw agent --timeout`` and is the
-  # subprocess soft cap. Qwen3.6:27b over Tailscale with a ~3KB tool-spec
-  # prompt typically wants 30–90s per turn (first turn longer for GPU
-  # cold-load), so we give the watchdog 180s of headroom per tick.
+  # subprocess soft cap. The v5.1 canonical compiler-LLM target is an
+  # external GPU-host OpenAI-compatible endpoint reached via QWEN_BASE_URL
+  # (a 27B-class model is typical there); local Ollama is the dev/CI
+  # fallback. Round-trips with a ~3KB tool-spec prompt typically want
+  # 30-90s per turn (first turn longer for GPU cold-load), so we give the
+  # watchdog 180s of headroom per tick.
   interval_s: 180
   max_iterations_per_turn: 8
   max_total_turns: 20
