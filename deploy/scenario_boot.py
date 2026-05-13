@@ -88,6 +88,11 @@ def _scenario_dir_on_vps(scenario: Scenario, agent: AgentSpec) -> Path:
     return ETC_SCENARIOS / scenario.instance_id(agent.name)
 
 
+def _manifest_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
+    """Where scenario_boot writes the synthesised manifest the watchdog reads."""
+    return _scenario_dir_on_vps(scenario, agent) / "network_manifest.md"
+
+
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
@@ -106,6 +111,11 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"MCP_HOST=0.0.0.0",
         f"MCP_PORT={agent.mcp_port}",
         f"PUBLISH_OVERLAY={overlay}",
+        # The watchdog reads this file at boot and calls load_manifest on its
+        # snapshot agent. Without it, state.network would be null in every
+        # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
+        # process's agent, not the watchdog's separate snapshot collector.
+        f"MANIFEST_FILE={_manifest_file_path(scenario, agent)}",
         f"QWEN_BASE_URL={QWEN_BASE_URL}",
         f"QWEN_MODEL={QWEN_MODEL}",
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
@@ -276,7 +286,19 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # (1) Patch the agent's openclaw.json so the Ollama provider is registered
     # before any model lookup happens. Without this, ``openclaw agent --local
     # --model ollama/qwen2.5-coder:7b`` can't resolve the model.
+    #
+    # ``agents.defaults.timeoutSeconds`` is the *inner* LLM call timeout (the
+    # subprocess-level timeout we pass via --timeout is unrelated). qwen3.6:27b
+    # cold-starts ~30s on the GPU host; the OpenClaw default of 30s would
+    # always fire on turn 1. Set this generously below the watchdog tick
+    # ``interval_s`` so timeouts surface as turn errors rather than truncated
+    # responses mid-call.
     provider_patch = json.dumps({
+        "agents": {
+            "defaults": {
+                "timeoutSeconds": 150,
+            },
+        },
         "models": {
             "mode": "merge",
             "providers": {
@@ -521,6 +543,12 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     # coords and inject it into every agent. Without this, state.network is
     # null in the snapshot and the LLMs have no admission target — the most
     # common cause of "scenario is up but nothing happens."
+    #
+    # We do both: (a) push the manifest via MCP into each agent's MCP-process
+    # runtime, and (b) write the manifest to disk under the staged scenario
+    # dir so the watchdog (a SEPARATE in-process snapshot agent on
+    # ``ipv8_port + 1000``) can load it at boot via the MANIFEST_FILE env var.
+    # Skipping (b) leaves state.network null in every snapshot.
     genesis_name = _pick_genesis(scenario)
     if genesis_name is None:
         c_warn("manifest: no agents declared; skipping injection")
@@ -536,6 +564,21 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
                f"gatekeeper={coords[genesis_name]['wallet_address']}, "
                f"overlays={len(default_hashes)}")
         for agent in scenario.agents.values():
+            # (b) Write to disk first so a watchdog restart re-finds it
+            # without re-running scenario_boot. The staged scenario dir is
+            # owned by root:delftclaw 0750 (cp -aT preserves that).
+            manifest_path = _manifest_file_path(scenario, agent)
+            proc = subprocess.run(
+                ["sudo", "tee", str(manifest_path)],
+                input=manifest_md, capture_output=True, text=True, check=True,
+            )
+            _sudo(["chmod", "0640", str(manifest_path)])
+            _sudo(["chown", f"root:{SERVICE_USER}", str(manifest_path)])
+            c_ok(f"{agent.name}: manifest written to {manifest_path}")
+
+            # (a) Inject into the MCP-process agent so OpenClaw-driven tool
+            # calls (network_join, agent_inject_manifest, etc.) see it
+            # immediately without waiting for the watchdog's first tick.
             url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
             c_info(f"{agent.name}.agent_inject_manifest(...)")
             try:
@@ -548,7 +591,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             if isinstance(result, dict) and "error" in result:
                 c_fail(f"agent_inject_manifest {agent.name}: {result['error']}")
                 return 1
-            c_ok(f"{agent.name}: manifest cached: {result}")
+            c_ok(f"{agent.name}: manifest cached in MCP agent: {result}")
 
     # Phase 5: start watchdogs.
     for agent in scenario.agents.values():

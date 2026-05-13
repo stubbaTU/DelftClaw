@@ -110,6 +110,37 @@ class JsonlSink:
 # OpenClaw subprocess
 # ---------------------------------------------------------------------------
 
+def _reset_openclaw_session(instance: str) -> None:
+    """Wipe the per-instance OpenClaw session dir so the next ``openclaw
+    agent`` call starts a fresh conversation.
+
+    OpenClaw maintains session state across invocations under
+    ``$HOME/.openclaw/agents/<instance>/sessions/``. Without resetting,
+    every watchdog tick appends to the same session — within ~10 turns
+    that overruns the model's context window (qwen3.6:27b is 32K) and
+    every subsequent turn fails with "Context overflow: prompt too large".
+
+    Removing the sessions directory is robust against openclaw CLI flag
+    changes; openclaw recreates the dir on the next invocation.
+    """
+    home = os.environ.get("HOME")
+    if not home:
+        return
+    sessions_dir = Path(home) / ".openclaw" / "agents" / instance / "sessions"
+    if not sessions_dir.exists():
+        return
+    try:
+        for child in sessions_dir.iterdir():
+            if child.is_file():
+                child.unlink(missing_ok=True)
+            elif child.is_dir():
+                import shutil
+                shutil.rmtree(child, ignore_errors=True)
+    except Exception as exc:
+        _log.warning("failed to wipe %s: %s (context may overflow eventually)",
+                     sessions_dir, exc)
+
+
 def _invoke_openclaw_agent(
     *,
     instance: str,
@@ -127,6 +158,12 @@ def _invoke_openclaw_agent(
     Returns ``(ok, stdout, stderr)``. ``ok`` is True iff the subprocess
     exited 0 within timeout.
     """
+    # Reset the session BEFORE every call so context doesn't accumulate
+    # across watchdog ticks. The agent re-reads the full state snapshot
+    # each turn anyway — there's nothing in session history a fresh start
+    # actually loses for our use case.
+    _reset_openclaw_session(instance)
+
     # ``--thinking off`` is required for non-reasoning Ollama models like
     # qwen2.5-coder:7b (they reject any other level). If/when this watchdog
     # drives a reasoning model, expose ``thinking`` via the env file.
@@ -194,6 +231,25 @@ async def _run_loop(args: argparse.Namespace) -> int:
         bt_service=build_default_service(save_dir=save_dir),
     )
     await agent.start()
+
+    # Load the network manifest scenario_boot wrote to disk so this
+    # snapshot agent reports state.network alongside the MCP-process
+    # agent that was injected over the wire at boot. Missing/unreadable
+    # MANIFEST_FILE is non-fatal — state.network stays null and the LLM
+    # has to discover the network via OVERLAY_OFFER (Agora-style fallback).
+    manifest_file = os.environ.get("MANIFEST_FILE")
+    if manifest_file:
+        try:
+            manifest_text = Path(manifest_file).read_text(encoding="utf-8")
+            agent.load_manifest(manifest_text)
+            _log.info("loaded manifest from %s (network=%s)",
+                      manifest_file, agent.network_manifest.identity.get("name"))
+        except FileNotFoundError:
+            _log.warning("MANIFEST_FILE=%s does not exist; state.network will be null",
+                         manifest_file)
+        except Exception as exc:
+            _log.warning("failed to load MANIFEST_FILE=%s: %s; state.network will be null",
+                         manifest_file, exc)
 
     try:
         return await _drive(
