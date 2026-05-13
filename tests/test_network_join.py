@@ -268,3 +268,31 @@ async def test_network_join_with_no_args_and_no_cached_manifest_errors(
     assert "error" in result
     assert result["error"] == "no_manifest_loaded"
     assert sends == []
+
+
+# ---------------------------------------------------------------------------
+# --genesis publishing path (the genesis agent serves the manifest)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_genesis_publishes_manifest_into_seedbox(two_agents_with_publishable_overlay):
+    """Verify the wire surface a real ``--genesis`` flag exercises: the
+    manifest hash is in published_manifests, so a peer requesting it
+    via MANIFEST_REQUEST would get a delivery."""
+    alice, _bob, _ = two_agents_with_publishable_overlay
+    manifest_md = _build_manifest(
+        alice_address=alice.wallet.address(),
+        alice_pubkey_hex=alice.pubkey_hex,
+        alice_host="127.0.0.1",
+        alice_port=alice.address[1],
+        default_overlay_hash=CONTENT_HASH.hex(),
+    )
+
+    # Simulate what `python -m agent ... --genesis manifest.md` does:
+    alice.load_manifest(manifest_md)
+    md_hash = alice.seedbox.publish_manifest(manifest_md)
+
+    assert md_hash in alice.seedbox.published_manifests
+    assert alice.seedbox.published_manifests[md_hash] == manifest_md
+    assert alice.network_manifest is not None
+    assert alice.network_manifest.identity["name"] == "test_network"

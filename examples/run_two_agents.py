@@ -1,30 +1,33 @@
 """Run two real ``python -m agent`` processes that talk to each other.
 
-This is the answer to "how do I drive real OpenClaw agents on the network?":
+Demonstrates the v5.1 genesis/consumer split via ``--genesis`` /
+``--manifest``:
 
-  1. Process A (Alice, the seedbox) is started with
-     ``--publish-overlay content_community.md`` so she serves the search
-     overlay's descriptor over OVERLAY_REQUEST/OVERLAY_DELIVERY. We boot her
-     in long-running ``serve`` mode.
+  1. We generate a network manifest from Alice's actual identity
+     (her IPv8 pubkey + wallet address). The manifest names her as
+     the only genesis peer + admission gatekeeper and lists
+     ``content_community.md`` as a default overlay.
 
-  2. We invoke ``python -m agent ... info`` once with Alice's mnemonic to
-     discover the deterministic ``pubkey_hex`` we need for Bob's
-     ``--peer`` flag. (Address comes from the ``--port`` we picked.)
+  2. Alice boots with ``--genesis <manifest>`` and
+     ``--publish-overlay content_community.md`` so she advertises the
+     manifest AND serves the search overlay's descriptor.
 
-  3. Process B (Bob) is started with
-     ``--peer 127.0.0.1:<alice-port>:<alice-pubkey-hex>`` so he knows about
-     Alice without going through bootstrap, and ``--compiler-stub`` so he
-     compiles overlay descriptors locally without needing a live LLM. He
-     uses ``--llm-stub-script`` to run a scripted tool-call sequence
-     (peers_list -> overlay_fetch_and_load -> overlay_invoke SEARCH).
+  3. Bob boots with ``--manifest <manifest>`` — his ``load_manifest``
+     call pre-introduces Alice from the genesis peer list, no
+     ``--peer`` flag needed.
 
-  4. Bob's ``run`` exits when the loop produces final text; we tear Alice
-     down. The whole thing exits in <10s.
+  4. Bob's scripted tool loop runs ``overlay_fetch_and_load`` +
+     ``overlay_invoke`` on the content community. The full
+     ``network_join`` (including the donation broadcast) is exercised
+     by ``tests/test_network_join.py`` against a mocked verifier;
+     this demo skips that step because Bob's wallet is unfunded.
+
+  5. Bob's ``run`` exits when the loop produces final text; we tear
+     Alice down. The whole thing exits in <10s.
 
 To run with a real LLM endpoint, drop ``--compiler-stub`` and
 ``--llm-stub-script`` on Bob and add ``--llm-base-url``/``--llm-model``
-on both. Alice's ``serve`` doesn't need an LLM at all (no queries land
-on her stdin in this script — she's purely a wire-protocol responder).
+on both.
 
 Usage:
 
@@ -145,15 +148,40 @@ def _build_bob_script(alice_mid_hex: str, content_md_hash_hex: str) -> Path:
     return Path(f.name)
 
 
+def _build_manifest(*, alice_address: str, alice_pubkey_hex: str,
+                    alice_port: int, content_hash_hex: str) -> str:
+    return (
+        "# Identity\n"
+        "- name: delftclaw_demo\n"
+        "- version: 1.0.0\n"
+        "- description: Two-agent demo network for run_two_agents.\n"
+        "\n"
+        "# Admission\n"
+        f"- gatekeeper_address: {alice_address}\n"
+        "- min_sats: 10000\n"
+        "- min_confirmations: 0\n"
+        "\n"
+        "# Genesis Peers\n"
+        "| host | port | pubkey_hex |\n"
+        "|------|------|------------|\n"
+        f"| 127.0.0.1 | {alice_port} | {alice_pubkey_hex} |\n"
+        "\n"
+        "# Default Overlays\n"
+        f"- sha1: {content_hash_hex}  (content_community v1)\n"
+    )
+
+
 def main() -> int:
-    # 1. Discover Alice's IPv8 pubkey deterministically (info mode).
+    # 1. Discover Alice's IPv8 pubkey + wallet address deterministically.
     info = _info(ALICE_MNEMONIC, ALICE_PORT)
     alice_pubkey_hex = info["ipv8_pubkey_hex"]
+    alice_wallet = info["wallet_address"]
     print(f"[demo] Alice pubkey_hex = {alice_pubkey_hex[:24]}...")
+    print(f"[demo] Alice wallet     = {alice_wallet}")
 
-    # 2. We can also get her mid_hex (sha1(pubkey)[:20]) — needed in Bob's
-    #    scripted tool calls. The agent_runtime tests show Peer.mid is the
-    #    sha1 of the serialized pubkey.
+    # 2. Compute mid_hex (Peer.mid = sha1(serialized pubkey)[:20]) and
+    #    content_community hash so Bob's scripted tool calls can refer
+    #    to them by id.
     import hashlib
     alice_mid_hex = hashlib.sha1(bytes.fromhex(alice_pubkey_hex)).digest()[:20].hex()
     content_md_text = CONTENT_MD.read_text(encoding="utf-8")
@@ -161,12 +189,31 @@ def main() -> int:
     content_md_hash_hex = community_id_from_md(content_md_text).hex()
     print(f"[demo] content_community md_hash = {content_md_hash_hex}")
 
-    # 3. Start Alice in serve mode, publishing content_community.md.
-    print("[demo] starting Alice (publisher, long-running)...")
+    # 3. Generate the network manifest from Alice's actual identity and
+    #    write it to a temp file both processes will read.
+    manifest_text = _build_manifest(
+        alice_address=alice_wallet,
+        alice_pubkey_hex=alice_pubkey_hex,
+        alice_port=ALICE_PORT,
+        content_hash_hex=content_md_hash_hex,
+    )
+    mf = tempfile.NamedTemporaryFile(
+        prefix="delftclaw_demo_manifest_", suffix=".md",
+        delete=False, mode="w", encoding="utf-8",
+    )
+    mf.write(manifest_text)
+    mf.close()
+    manifest_path = Path(mf.name)
+    print(f"[demo] manifest written to {manifest_path}")
+
+    # 4. Start Alice with --genesis (publishes the manifest + serves the
+    #    content overlay descriptor).
+    print("[demo] starting Alice (genesis, long-running)...")
     alice = subprocess.Popen(
         [sys.executable, "-m", "agent",
          "--mnemonic", ALICE_MNEMONIC,
          "--port", str(ALICE_PORT),
+         "--genesis", str(manifest_path),
          "--publish-overlay", str(CONTENT_MD),
          "--compiler-stub",
          "serve"],
@@ -189,14 +236,16 @@ def main() -> int:
             time.sleep(0.1)
         print("[demo] Alice is up.")
 
-        # 4. Run Bob once with a scripted tool-loop LLM.
+        # 5. Run Bob with --manifest (load_manifest pre-introduces Alice
+        #    from the genesis peer list — no --peer flag needed). His
+        #    scripted tool loop skips the donation step (covered by
+        #    tests/test_network_join.py against a mocked verifier).
         bob_script = _build_bob_script(alice_mid_hex, content_md_hash_hex)
-        peer_spec = f"127.0.0.1:{ALICE_PORT}:{alice_pubkey_hex}"
         print(f"[demo] starting Bob (consumer)...")
         bob = _run(
             "--mnemonic", BOB_MNEMONIC,
             "--port", str(BOB_PORT),
-            "--peer", peer_spec,
+            "--manifest", str(manifest_path),
             "--compiler-stub",
             "--publish-overlay", str(CONTENT_MD),
             "--llm-stub-script", str(bob_script),
@@ -212,6 +261,7 @@ def main() -> int:
         print(bob.stdout)
         return 0
     finally:
+        manifest_path.unlink(missing_ok=True)
         if alice.poll() is None:
             alice.terminate()
             try:
