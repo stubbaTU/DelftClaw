@@ -14,6 +14,9 @@ set +a
 IDENTITY_PATH="${DELFTCLAW_OPENCLAW_KEY_PATH:-$REPO_DIR/identity/agent_identity.json}"
 IDENTITY_PORT="${IDENTITY_MCP_PORT:-7701}"
 SECURITY_MCP_PORT="${DELFTCLAW_SECURITY_MCP_PORT:-7702}"
+GATEWAY_HOST="${DELFTCLAW_GATEWAY_HOST:-127.0.0.1}"
+GATEWAY_PORT="${DELFTCLAW_GATEWAY_PORT:-8765}"
+export DELFTCLAW_GATEWAY_URL="${DELFTCLAW_GATEWAY_URL:-http://$GATEWAY_HOST:$GATEWAY_PORT}"
 NETWORK_LOWER="$(printf '%s' "${DELFTCLAW_OPENCLAW_NETWORK:-REGTEST}" | tr '[:upper:]' '[:lower:]')"
 
 mkdir -p "$REPO_DIR/logs"
@@ -46,7 +49,7 @@ SECURITY_MCP_PID=$!
 echo
 echo "Stack started."
 echo "Identity MCP: http://127.0.0.1:$IDENTITY_PORT/mcp"
-echo "Gateway:      ${DELFTCLAW_GATEWAY_URL:-http://127.0.0.1:8765}"
+echo "Gateway:      $DELFTCLAW_GATEWAY_URL"
 echo "Security MCP: http://127.0.0.1:$SECURITY_MCP_PORT/mcp"
 echo
 echo "Logs:"

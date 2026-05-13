@@ -52,6 +52,37 @@ get_url "http://127.0.0.1:$SECURITY_MCP_PORT/health"
 echo "[4/8] Identity tool: get_identity"
 post_json "http://127.0.0.1:$IDENTITY_PORT/mcp/tool/get_identity" '{"args":{}}'
 
+echo "[4b/8] Identity and security local agent id must match"
+python - "$IDENTITY_PORT" "$SECURITY_MCP_PORT" <<'PY'
+import json
+import sys
+from urllib.request import Request, urlopen
+
+identity_port, security_port = sys.argv[1], sys.argv[2]
+
+def post(url: str, body: dict) -> dict:
+    req = Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+identity = post(f"http://127.0.0.1:{identity_port}/mcp/tool/get_identity", {"args": {}})
+metrics = post(f"http://127.0.0.1:{security_port}/mcp/tool/delftclaw_get_metrics", {"args": {}})
+identity_agent_id = identity.get("agent_id")
+security_agent_id = metrics.get("local_agent_id")
+print(json.dumps({
+    "identity_agent_id": identity_agent_id,
+    "security_local_agent_id": security_agent_id,
+    "match": identity_agent_id == security_agent_id,
+}, sort_keys=True))
+if identity_agent_id != security_agent_id:
+    raise SystemExit("identity MCP agent_id does not match security local_agent_id")
+PY
+
 echo "[5/8] Security tool: register seedbox"
 post_json "http://127.0.0.1:$SECURITY_MCP_PORT/mcp/tool/delftclaw_register_seedbox" \
   '{"args":{"seedbox_id":"demo-seedbox-1","donation_address":"tb1q-demo","advertised_capacity_gb":100}}'
