@@ -46,3 +46,7 @@ pnpm-lock.yaml
 
 # Local per-agent DelftClaw/OpenClaw configs
 configs/*.local.env
+
+# pull_sync_demo writes signed logs + per-source peer caches here for
+# inspection; regenerated on every run
+examples/pull_sync_artifacts/
