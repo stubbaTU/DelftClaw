@@ -1,20 +1,32 @@
-"""Tests for ``protocol.manifest.parse_manifest``.
+"""Tests for ``protocol.manifest`` + the manifest wire messages on SeedboxCommunity.
 
-Covers schema-failure paths (missing sections, malformed hashes, bad
-ports, bad name formats), canonicalization stability (same content
-under different whitespace produces the same network_id), and a
-positive parse of the bundled example.
+Covers:
 
-Step 2's publish/offer/fetch round-trip lives in
-``test_peer_intro.py`` to keep this file focused on the parser.
+  * Schema-failure paths (missing sections, malformed hashes, bad
+    ports, bad name formats).
+  * Canonicalization stability (same content under different whitespace
+    produces the same network_id).
+  * Positive parse of the bundled example.
+  * SeedboxCommunity publish/offer/fetch round-trip + defensive re-hash
+    on delivery (mirroring the OVERLAY_* tests in test_overlay_registry.py).
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from ipv8.configuration import ConfigBuilder
+from ipv8.peer import Peer
+from ipv8_service import IPv8
 
+from communication.community import (
+    MAX_OVERLAY_BYTES,
+    SeedboxCommunity,
+    manifest_id,
+)
 from protocol.manifest import (
     AdmissionPolicy,
     GenesisPeer,
@@ -273,3 +285,118 @@ def test_network_id_from_manifest_matches_parse():
 def test_non_str_input_rejected():
     with pytest.raises(ManifestParseError, match="must be str"):
         parse_manifest(b"# Identity")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# SeedboxCommunity manifest publish / offer / fetch round-trip
+# ---------------------------------------------------------------------------
+
+def _build_node(port: int, key_path: Path) -> IPv8:
+    builder = ConfigBuilder().clear_keys().clear_overlays()
+    builder.set_port(port)
+    builder.set_address("127.0.0.1")
+    builder.add_key("anchor", "curve25519", str(key_path))
+    builder.add_overlay("SeedboxCommunity", "anchor", [], [], {}, [("started",)])
+    return IPv8(
+        builder.finalize(),
+        extra_communities={"SeedboxCommunity": SeedboxCommunity},
+    )
+
+
+@pytest_asyncio.fixture
+async def two_seedboxes(tmp_path):
+    """Two IPv8 nodes running only SeedboxCommunity, pre-introduced to each other."""
+    from ipv8.keyvault.crypto import default_eccrypto
+
+    key_a = tmp_path / "a.key"
+    key_b = tmp_path / "b.key"
+    key_a.write_bytes(default_eccrypto.generate_key("curve25519").key_to_bin())
+    key_b.write_bytes(default_eccrypto.generate_key("curve25519").key_to_bin())
+
+    svc_a = _build_node(port=0, key_path=key_a)
+    svc_b = _build_node(port=0, key_path=key_b)
+    await svc_a.start()
+    await svc_b.start()
+
+    sb_a = next(o for o in svc_a.overlays if isinstance(o, SeedboxCommunity))
+    sb_b = next(o for o in svc_b.overlays if isinstance(o, SeedboxCommunity))
+
+    addr_a = sb_a.endpoint.get_address()
+    addr_b = sb_b.endpoint.get_address()
+    peer_b_for_a = Peer(sb_b.my_peer.public_key, address=addr_b)
+    peer_a_for_b = Peer(sb_a.my_peer.public_key, address=addr_a)
+    sb_a.network.add_verified_peer(peer_b_for_a)
+    sb_b.network.add_verified_peer(peer_a_for_b)
+
+    yield sb_a, sb_b, peer_a_for_b, peer_b_for_a
+
+    await svc_a.stop()
+    await svc_b.stop()
+
+
+def test_manifest_id_matches_parse_manifest():
+    """The bytes the community uses on the wire match the parser's derivation."""
+    parsed = parse_manifest(GOOD_MANIFEST)
+    assert manifest_id(GOOD_MANIFEST) == parsed.network_id
+
+
+@pytest.mark.asyncio
+async def test_manifest_publish_and_fetch_round_trip(two_seedboxes):
+    sb_a, sb_b, peer_a_for_b, _ = two_seedboxes
+    md_hash = sb_a.publish_manifest(GOOD_MANIFEST)
+    assert md_hash in sb_a.published_manifests
+
+    fut = sb_b.fetch_manifest(peer_a_for_b, md_hash)
+    md_bytes = await asyncio.wait_for(fut, timeout=2.0)
+    assert md_bytes.decode("utf-8") == GOOD_MANIFEST
+
+
+@pytest.mark.asyncio
+async def test_manifest_offer_callback_fires(two_seedboxes):
+    sb_a, sb_b, _, peer_b_for_a = two_seedboxes
+    seen: list[bytes] = []
+    sb_b.configure(manifest_offer_callback=lambda peer, h: seen.append(h))
+    md_hash = manifest_id(GOOD_MANIFEST)
+    sb_a.offer_manifest(peer_b_for_a, md_hash)
+    for _ in range(40):
+        if seen:
+            break
+        await asyncio.sleep(0.05)
+    assert seen == [md_hash]
+
+
+@pytest.mark.asyncio
+async def test_manifest_fetch_unknown_hash_times_out(two_seedboxes):
+    sb_a, sb_b, peer_a_for_b, _ = two_seedboxes
+    fut = sb_b.fetch_manifest(peer_a_for_b, b"\x00" * 20)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(fut, timeout=0.4)
+
+
+@pytest.mark.asyncio
+async def test_manifest_delivery_with_wrong_hash_dropped(two_seedboxes):
+    """If a peer's body doesn't re-hash to the claimed id, the future stays pending."""
+    sb_a, sb_b, peer_a_for_b, _ = two_seedboxes
+
+    # Publish manifest A; have B request a different hash; manually push a
+    # delivery payload through with a body that does NOT match the requested hash.
+    fake_hash = b"\xde" * 20
+    fut = sb_b.fetch_manifest(peer_a_for_b, fake_hash)
+
+    from communication.community import ManifestDeliveryPayload
+    real_text = GOOD_MANIFEST  # canonical id is network_id_from_manifest(GOOD_MANIFEST), not fake_hash
+    sb_a.ez_send(
+        Peer(sb_b.my_peer.public_key, address=sb_b.endpoint.get_address()),
+        ManifestDeliveryPayload(fake_hash, real_text.encode("utf-8")),
+    )
+
+    await asyncio.sleep(0.2)
+    assert not fut.done(), "delivery whose body does not match claimed hash must be dropped"
+    fut.cancel()
+
+
+def test_manifest_publish_returns_canonical_id():
+    """Two whitespace variants of the same manifest produce the same id."""
+    md1 = GOOD_MANIFEST
+    md2 = GOOD_MANIFEST + "\n\n\n"
+    assert manifest_id(md1) == manifest_id(md2)
