@@ -39,6 +39,24 @@ class StaticIdentityProvider:
 
 
 @dataclass
+class AgentIdentityProvider:
+    """Adapter from the shared identity.AgentIdentity bundle to security ports."""
+
+    identity: Any
+
+    def current_identity(self) -> SecurityIdentity:
+        bundle = self.identity.public_bundle()
+        return SecurityIdentity(
+            agent_id=str(bundle["agent_id"]),
+            network=str(bundle.get("network", "")),
+            identity_hash=str(bundle["agent_id"]),
+            ipv8_public_key=str(bundle.get("ipv8_pubkey", "")),
+            app_public_key=str(bundle.get("app_pubkey", "")),
+            wallet_public_key=str(bundle.get("wallet_xpub", "")),
+        )
+
+
+@dataclass
 class NoopEvidencePublisher:
     published: list[dict[str, Any]] = field(default_factory=list)
 

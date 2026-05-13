@@ -50,11 +50,12 @@ class OpenClawAgent:
         self,
         network: str = "MAINNET",
         key_path: str | Path | None = None,
+        identity: OpenClawIdentity | None = None,
         host: str = "0.0.0.0",
         port: int = 9000,
         working_dir: str = ".",
     ):
-        self.identity = OpenClawIdentity(network=network, key_path=key_path)
+        self.identity = identity or OpenClawIdentity(network=network, key_path=key_path)
         self.identity_hash = self.identity.get_identity_hash()
         self.network_config = NetworkConfig(host=host, port=port, working_dir=working_dir)
         self.runtime = IPv8Runtime(self.identity, self.network_config)

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
+from bitcoinlib.keys import HDKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from identity.derivation import DerivationPath, wallet_path
 from identity.seed import Seed
+
+
+UTXO = Any
+SignedTransaction = Any
 
 
 def _bitcoin_network(network: str) -> str:
@@ -28,6 +34,8 @@ class Wallet:
         self._child = child
         self._path = path
         self._network = network
+        signing_seed = hashlib.sha256(child.private_byte).digest()
+        self.key = Ed25519PrivateKey.from_private_bytes(signing_seed)
 
     @classmethod
     def from_seed(
@@ -49,6 +57,11 @@ class Wallet:
     def path(self) -> str:
         """Derivation path used to create this wallet child key."""
         return str(self._path)
+
+    @property
+    def xpub(self) -> str:
+        """Return the public extended key for identity metadata."""
+        return str(self._child.public_master())
 
     @property
     def pubkey(self) -> bytes:
