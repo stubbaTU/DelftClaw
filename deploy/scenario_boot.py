@@ -355,6 +355,77 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
 
 
+# ---------------------------------------------------------------------------
+# Network manifest synthesis
+# ---------------------------------------------------------------------------
+
+def _pick_genesis(scenario: Scenario) -> str | None:
+    """Pick the agent referenced as a peer by the most other agents.
+
+    For a scenario like ``seek_cc`` where bob.peers = [alice] and alice has
+    no peers entry, alice wins. For scenarios where nobody references a
+    peer (single-agent demos), this returns the first agent in YAML order.
+    """
+    refs: dict[str, int] = {name: 0 for name in scenario.agents}
+    for agent in scenario.agents.values():
+        for peer in agent.peers:
+            refs[peer] = refs.get(peer, 0) + 1
+    if not refs:
+        return None
+    name, count = max(refs.items(), key=lambda kv: kv[1])
+    if count == 0:
+        # No-one referenced; pick the first declared agent for determinism.
+        return next(iter(scenario.agents))
+    return name
+
+
+def _default_overlay_hashes(scenario: Scenario, genesis_name: str) -> list[str]:
+    """Sha1[:20] (hex) of every overlay the genesis agent publishes at boot."""
+    from protocol.compiler import community_id_from_md
+    hashes: list[str] = []
+    for p in scenario.agents[genesis_name].publish_overlays:
+        text = Path(p).read_text(encoding="utf-8")
+        hashes.append(community_id_from_md(text).hex())
+    return hashes
+
+
+def _build_manifest_md(
+    *,
+    scenario: Scenario,
+    genesis_name: str,
+    genesis_coords: dict,
+    default_overlay_hashes: list[str],
+    min_sats: int = 10_000,
+    min_confirmations: int = 0,
+) -> str:
+    """Render a network manifest .md from the genesis agent's runtime coords."""
+    if default_overlay_hashes:
+        overlays_section = "\n".join(
+            f"- sha1: {h}  (default overlay)" for h in default_overlay_hashes
+        )
+    else:
+        overlays_section = "(none — joiners discover overlays via OVERLAY_OFFER)"
+    return (
+        "# Identity\n"
+        f"- name: {scenario.name}\n"
+        "- version: 1.0.0\n"
+        f"- description: Auto-generated manifest for scenario {scenario.name}.\n"
+        "\n"
+        "# Admission\n"
+        f"- gatekeeper_address: {genesis_coords['wallet_address']}\n"
+        f"- min_sats: {min_sats}\n"
+        f"- min_confirmations: {min_confirmations}\n"
+        "\n"
+        "# Genesis Peers\n"
+        "| host | port | pubkey_hex |\n"
+        "|------|------|------------|\n"
+        f"| {genesis_coords['host']} | {genesis_coords['port']} | {genesis_coords['pubkey_hex']} |\n"
+        "\n"
+        "# Default Overlays\n"
+        f"{overlays_section}\n"
+    )
+
+
 def _pubkey_for_agent(scenario: Scenario, agent: AgentSpec) -> str:
     """Read the agent's seed file (as the delftclaw user) and derive its IPv8 pubkey hex."""
     seed_file = _state_dir(scenario.name, agent.name) / "seed.txt"
@@ -445,6 +516,39 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
                 c_fail(f"peer_add {agent.name}->{peer_name} failed: {exc}")
                 return 1
             c_ok(f"{agent.name} now knows {peer_name}: {result}")
+
+    # Phase 4b: build a network manifest from the genesis agent's runtime
+    # coords and inject it into every agent. Without this, state.network is
+    # null in the snapshot and the LLMs have no admission target — the most
+    # common cause of "scenario is up but nothing happens."
+    genesis_name = _pick_genesis(scenario)
+    if genesis_name is None:
+        c_warn("manifest: no agents declared; skipping injection")
+    else:
+        default_hashes = _default_overlay_hashes(scenario, genesis_name)
+        manifest_md = _build_manifest_md(
+            scenario=scenario,
+            genesis_name=genesis_name,
+            genesis_coords=coords[genesis_name],
+            default_overlay_hashes=default_hashes,
+        )
+        c_info(f"manifest: genesis={genesis_name}, "
+               f"gatekeeper={coords[genesis_name]['wallet_address']}, "
+               f"overlays={len(default_hashes)}")
+        for agent in scenario.agents.values():
+            url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
+            c_info(f"{agent.name}.agent_inject_manifest(...)")
+            try:
+                result = await _call_mcp(url, "agent_inject_manifest", {
+                    "md_text": manifest_md,
+                })
+            except Exception as exc:
+                c_fail(f"agent_inject_manifest {agent.name} failed: {exc}")
+                return 1
+            if isinstance(result, dict) and "error" in result:
+                c_fail(f"agent_inject_manifest {agent.name}: {result['error']}")
+                return 1
+            c_ok(f"{agent.name}: manifest cached: {result}")
 
     # Phase 5: start watchdogs.
     for agent in scenario.agents.values():

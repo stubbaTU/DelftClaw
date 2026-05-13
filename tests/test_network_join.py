@@ -275,10 +275,15 @@ async def test_network_join_with_no_args_and_no_cached_manifest_errors(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_genesis_publishes_manifest_into_seedbox(two_agents_with_publishable_overlay):
-    """Verify the wire surface a real ``--genesis`` flag exercises: the
-    manifest hash is in published_manifests, so a peer requesting it
-    via MANIFEST_REQUEST would get a delivery."""
+async def test_load_manifest_auto_publishes_when_self_is_genesis(
+    two_agents_with_publishable_overlay,
+):
+    """load_manifest on the named-genesis agent should also publish into seedbox.
+
+    This keeps the ``--genesis`` CLI flag and scenario_boot's MCP-driven
+    manifest injection in sync: the agent doesn't need to know whether
+    it's "the genesis", the manifest tells it.
+    """
     alice, _bob, _ = two_agents_with_publishable_overlay
     manifest_md = _build_manifest(
         alice_address=alice.wallet.address(),
@@ -288,11 +293,37 @@ async def test_genesis_publishes_manifest_into_seedbox(two_agents_with_publishab
         default_overlay_hash=CONTENT_HASH.hex(),
     )
 
-    # Simulate what `python -m agent ... --genesis manifest.md` does:
+    # Alice IS in the manifest's genesis peer list (alice_pubkey_hex above).
     alice.load_manifest(manifest_md)
-    md_hash = alice.seedbox.publish_manifest(manifest_md)
 
+    # Even though we never called publish_manifest manually, the manifest
+    # is in the bootstrap community's published_manifests dict so a peer's
+    # MANIFEST_REQUEST would resolve.
+    from communication.community import manifest_id
+    md_hash = manifest_id(manifest_md)
     assert md_hash in alice.seedbox.published_manifests
     assert alice.seedbox.published_manifests[md_hash] == manifest_md
     assert alice.network_manifest is not None
     assert alice.network_manifest.identity["name"] == "test_network"
+
+
+@pytest.mark.asyncio
+async def test_load_manifest_does_not_publish_when_self_absent_from_genesis(
+    two_agents_with_publishable_overlay,
+):
+    """A consumer (not named in genesis peers) must NOT publish the manifest."""
+    alice, bob, _ = two_agents_with_publishable_overlay
+    # Manifest names Alice as the only genesis peer.
+    manifest_md = _build_manifest(
+        alice_address=alice.wallet.address(),
+        alice_pubkey_hex=alice.pubkey_hex,
+        alice_host="127.0.0.1",
+        alice_port=alice.address[1],
+        default_overlay_hash=CONTENT_HASH.hex(),
+    )
+
+    bob.load_manifest(manifest_md)
+
+    # Bob caches the manifest but does NOT advertise it as something he serves.
+    assert bob.network_manifest is not None
+    assert bob.seedbox.published_manifests == {}

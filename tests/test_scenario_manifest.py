@@ -246,6 +246,91 @@ def test_port_below_1024_rejected(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Manifest synthesis helpers (deploy.scenario_boot)
+# ---------------------------------------------------------------------------
+
+from deploy.scenario_boot import (
+    _build_manifest_md,
+    _default_overlay_hashes,
+    _pick_genesis,
+)
+from protocol.manifest import parse_manifest
+
+
+def test_pick_genesis_picks_most_referenced_agent(tmp_path: Path):
+    """``bob.peers = [alice]``, ``alice.peers = []`` -> alice wins."""
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert _pick_genesis(s) == "alice"
+
+
+def test_pick_genesis_breaks_ties_with_declared_order(tmp_path: Path):
+    """No agent referenced -> the first agent in YAML order wins."""
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["bob"]["peers"] = []
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    # ``alice`` is declared first in VALID_BASE.
+    assert _pick_genesis(s) == "alice"
+
+
+def test_default_overlay_hashes_from_genesis_publish_list(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    hashes = _default_overlay_hashes(s, "alice")
+    # alice publishes content_community.md whose sha1 prefix is well-known.
+    assert hashes == ["0b5cafdd65c3e0021949bdc8f071d830ef5ce66f"]
+
+
+def test_build_manifest_md_round_trips_through_parser(tmp_path: Path):
+    """The manifest scenario_boot synthesises must parse cleanly."""
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    md = _build_manifest_md(
+        scenario=s,
+        genesis_name="alice",
+        genesis_coords={
+            "host": "127.0.0.1",
+            "port": 8190,
+            "pubkey_hex": "aa" * 37,    # 74 hex chars
+            "wallet_address": "tb1qexamplewalletxxxxxxxxxxxxxxxxxxxxxx",
+        },
+        default_overlay_hashes=["0b5cafdd65c3e0021949bdc8f071d830ef5ce66f"],
+    )
+    parsed = parse_manifest(md)
+    assert parsed.identity["name"] == "smoke"
+    assert parsed.admission.gatekeeper_address.startswith("tb1q")
+    assert parsed.admission.min_sats == 10000
+    assert len(parsed.genesis_peers) == 1
+    assert parsed.genesis_peers[0].port == 8190
+    assert parsed.default_overlays == (
+        "0b5cafdd65c3e0021949bdc8f071d830ef5ce66f",
+    )
+
+
+def test_build_manifest_md_with_no_overlays_still_parses(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    md = _build_manifest_md(
+        scenario=s,
+        genesis_name="alice",
+        genesis_coords={
+            "host": "127.0.0.1",
+            "port": 8190,
+            "pubkey_hex": "bb" * 37,
+            "wallet_address": "tb1qexamplewalletxxxxxxxxxxxxxxxxxxxxxx",
+        },
+        default_overlay_hashes=[],
+    )
+    parsed = parse_manifest(md)
+    assert parsed.default_overlays == ()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

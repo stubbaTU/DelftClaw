@@ -216,14 +216,23 @@ class OpenClawAgent:
         one (the agent runs one network at a time). Genesis peers whose
         pubkey matches this agent's own ipv8 pubkey are skipped to avoid
         the runtime adding itself as a peer.
+
+        If this agent IS named in the manifest's genesis peer list, the
+        manifest is also published into the bootstrap community so future
+        joiners can fetch it via ``MANIFEST_REQUEST``. That keeps the
+        ``--genesis`` CLI flag and any MCP-driven manifest injection in
+        sync — an agent doesn't need to know whether it's "the genesis";
+        the manifest tells it.
         """
         manifest = parse_manifest(md_text)
         if self._manifest is not None and self._manifest.network_id == manifest.network_id:
             return self._manifest  # idempotent: same network already loaded
 
         own_pubkey_hex = self.pubkey_hex.lower()
+        self_is_genesis = False
         for gp in manifest.genesis_peers:
             if gp.pubkey_hex.lower() == own_pubkey_hex:
+                self_is_genesis = True
                 continue  # don't add self
             try:
                 self.add_peer(gp.host, gp.port, gp.pubkey_hex)
@@ -235,6 +244,10 @@ class OpenClawAgent:
 
         self._manifest = manifest
         self._manifest_md = md_text
+
+        if self_is_genesis and self._seedbox is not None:
+            self._seedbox.publish_manifest(md_text)
+
         return manifest
 
 
