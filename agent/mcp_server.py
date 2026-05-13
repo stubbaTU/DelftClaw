@@ -1,10 +1,10 @@
 """FastMCP streamable-HTTP server wrapping the agent's tool surface.
 
 The actual OpenClaw chat session is the reasoning LLM. This server exposes
-``OpenClawAgent``'s 12 tools so OpenClaw can call them over the wire — same
-deployment shape as the colleague's security gateway, but the tools are
-the communication/network surface (peers, wallet, overlays, torrents)
-instead of the privilege/accountability surface.
+``OpenClawAgent``'s 16 tools (v5.1) so OpenClaw can call them over the wire
+— same deployment shape as the colleague's security gateway, but the tools
+are the communication/network surface (peers, wallet, overlays, manifests,
+torrents) instead of the privilege/accountability surface.
 
 There are now **two LLMs** in the picture, and they do not overlap:
 
@@ -37,11 +37,20 @@ SERVER_INSTRUCTIONS = """\
 DelftClaw agent tools. Use these to operate on the P2P content network:
 
   - peers_list / wallet_* — local-node introspection + Bitcoin ops.
-  - seedbox_donate_and_join — admission flow (pay, then JOIN_REQUEST).
-  - overlay_fetch_and_load — when a peer offers a protocol you don't yet
-    speak, fetch the markdown descriptor over the wire and compile it
-    locally. After this returns, that overlay's messages are usable via
-    overlay_invoke.
+  - agent_inject_manifest — load a network manifest into the runtime so
+    state.network is populated; pre-introduces every genesis peer.
+  - network_join — one-shot admission: parse manifest (or use cached),
+    fetch default overlays from a genesis peer, donate the required sats,
+    send JOIN_REQUEST. The recommended entry point when state.network is
+    set but you have not yet joined.
+  - seedbox_donate_and_join — the manual decomposition of network_join's
+    last two steps; use only if you want explicit control.
+  - overlays_list — every loaded overlay's full per-message field schema
+    and handler text. Read this before calling overlay_invoke.
+  - overlay_describe — canonical markdown for one overlay (use when
+    handler_text in overlays_list is ambiguous).
+  - overlay_fetch_and_load — pull a descriptor from a peer by md_hash and
+    compile + register it. After this returns, overlay_invoke works.
   - overlay_invoke — send a message defined by a compiled overlay.
   - torrent_* — fetch/seed by magnet URI.
 
@@ -53,10 +62,11 @@ descriptor first before trying to invoke it.
 def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> FastMCP:
     """Wrap an ``OpenClawAgent`` as a FastMCP server.
 
-    Each of the 12 tools is registered as a typed async function so FastMCP
-    can produce the OpenAI-style JSON schema automatically. The functions
-    close over ``agent``.
+    Each of the 16 tools (v5.1) is registered as a typed async function so
+    FastMCP can produce the OpenAI-style JSON schema automatically. The
+    functions close over ``agent``.
     """
+    OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
     mcp = FastMCP(name=name, instructions=SERVER_INSTRUCTIONS)
 
     # ---- Peers ---------------------------------------------------------
@@ -136,9 +146,12 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     # ---- Overlays ------------------------------------------------------
 
     async def overlays_list() -> list[dict[str, Any]]:
-        """List the compiled overlays this agent has loaded.
+        """List compiled overlays with full per-message field schemas.
 
-        Each entry is {community_id_hex, name, version, messages}.
+        Each entry is ``{community_id_hex, name, version, description,
+        messages: [{name, msg_id, fields: [{name, encoding, description}],
+        handler_text}], errors, dependencies}``. Read this before calling
+        ``overlay_invoke`` so you know each message's field shape.
         """
         out: list[dict[str, Any]] = []
         for community_id in agent.registry.list_loaded():
@@ -147,11 +160,57 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
                 "community_id_hex": community_id.hex(),
                 "name": compiled.parsed.identity.get("name", ""),
                 "version": compiled.parsed.identity.get("version", ""),
-                "messages": [m.name for m in compiled.parsed.messages],
+                "description": compiled.parsed.identity.get("description", ""),
+                "messages": [
+                    {
+                        "name": m.name,
+                        "msg_id": m.msg_id,
+                        "fields": [
+                            {
+                                "name": f.name,
+                                "encoding": f.encoding,
+                                "description": f.description,
+                            }
+                            for f in m.fields
+                        ],
+                        "handler_text": m.handler_text,
+                    }
+                    for m in compiled.parsed.messages
+                ],
+                "errors": [dict(e) for e in compiled.parsed.errors],
+                "dependencies": list(compiled.parsed.dependencies),
             })
         return out
 
     mcp.add_tool(overlays_list)
+
+    async def overlay_describe(community_id_hex: str) -> dict[str, Any]:
+        """Return the canonical markdown of a loaded overlay.
+
+        Use when the structured ``handler_text`` in ``overlays_list`` is
+        ambiguous. Capped at 32 KiB; the ``truncated`` flag tells you
+        whether the descriptor was clipped.
+        """
+        try:
+            community_id = bytes.fromhex(community_id_hex)
+        except ValueError as exc:
+            return {"error": f"bad_hex:{exc}"}
+        compiled = agent.registry._compiled.get(community_id)
+        if compiled is None:
+            return {"error": f"overlay_not_loaded:{community_id_hex}"}
+        md_bytes = compiled.canonical_md_bytes
+        truncated = False
+        if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:
+            md_bytes = md_bytes[:OVERLAY_DESCRIBE_MAX_BYTES]
+            truncated = True
+        return {
+            "community_id_hex": community_id_hex,
+            "md_text": md_bytes.decode("utf-8", errors="replace"),
+            "truncated": truncated,
+            "size_bytes": len(compiled.canonical_md_bytes),
+        }
+
+    mcp.add_tool(overlay_describe)
 
     async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
         """Ask a peer for an overlay descriptor by md_hash, compile + register it locally.
@@ -203,6 +262,120 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         return {"sent": True}
 
     mcp.add_tool(overlay_invoke)
+
+    # ---- Network manifest ----------------------------------------------
+
+    async def agent_inject_manifest(md_text: str) -> dict[str, Any]:
+        """Parse + cache a network manifest into this agent's runtime.
+
+        Pre-introduces every genesis peer (skipping self). Idempotent on
+        ``network_id``. If this agent is named as a genesis peer, the
+        manifest is also published into the bootstrap community so future
+        joiners can fetch it via MANIFEST_REQUEST.
+        """
+        from protocol.manifest import ManifestParseError
+        try:
+            manifest = agent.load_manifest(md_text)
+        except ManifestParseError as exc:
+            return {"error": f"manifest_parse_failed: {exc}"}
+        return {
+            "network_id_hex": manifest.network_id.hex(),
+            "name": manifest.identity.get("name", ""),
+            "genesis_peers": len(manifest.genesis_peers),
+            "default_overlays": list(manifest.default_overlays),
+        }
+
+    mcp.add_tool(agent_inject_manifest)
+
+    async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
+        """Join the network end-to-end.
+
+        Steps inside the tool:
+          1. Parse the provided manifest (or use the cached one).
+          2. Pre-introduce every genesis peer (skipping self).
+          3. Fetch + compile + register every default overlay from the
+             first reachable genesis peer.
+          4. ``wallet.send(gatekeeper_address, min_sats)`` — broadcast
+             the donation.
+          5. ``request_join(primary_peer, txid)`` and await the decision.
+
+        Returns ``{network_id_hex, accepted, overlays_loaded, overlay_errors,
+        txid}``. If any stage fails, an ``error`` key surfaces the cause.
+        """
+        import asyncio
+        from protocol.manifest import ManifestParseError
+
+        if manifest_md_text is not None:
+            try:
+                manifest = agent.load_manifest(manifest_md_text)
+            except ManifestParseError as exc:
+                return {"error": f"manifest_parse_failed: {exc}"}
+        else:
+            manifest = agent.network_manifest
+            if manifest is None:
+                return {"error": "no_manifest_loaded"}
+
+        genesis_pubkey_set = {gp.pubkey_hex.lower() for gp in manifest.genesis_peers}
+        genesis_peers = [
+            p for p in agent.known_peers()
+            if p.public_key.key_to_bin().hex().lower() in genesis_pubkey_set
+        ]
+        if not genesis_peers:
+            return {
+                "error": "no_genesis_peers_reachable",
+                "network_id_hex": manifest.network_id.hex(),
+            }
+        primary = genesis_peers[0]
+
+        overlays_loaded: list[str] = []
+        overlay_errors: list[dict[str, str]] = []
+        for h_hex in manifest.default_overlays:
+            h = bytes.fromhex(h_hex)
+            if agent.registry.get(h) is not None:
+                overlays_loaded.append(h_hex)
+                continue
+            try:
+                fut = agent.seedbox.fetch_overlay(primary, h)
+                md_bytes = await asyncio.wait_for(fut, timeout=10)
+                agent.registry.load(md_bytes.decode("utf-8"))
+                overlays_loaded.append(h_hex)
+            except Exception as exc:
+                overlay_errors.append({"sha1": h_hex, "error": str(exc)})
+
+        try:
+            txid = agent.wallet.send(
+                manifest.admission.gatekeeper_address,
+                manifest.admission.min_sats,
+            )
+        except Exception as exc:
+            return {
+                "error": f"donation_failed: {exc}",
+                "network_id_hex": manifest.network_id.hex(),
+                "overlays_loaded": overlays_loaded,
+                "overlay_errors": overlay_errors,
+            }
+
+        try:
+            fut = agent.seedbox.request_join(primary, bytes.fromhex(txid))
+            accepted = await asyncio.wait_for(fut, timeout=60)
+        except Exception as exc:
+            return {
+                "error": f"join_failed: {exc}",
+                "network_id_hex": manifest.network_id.hex(),
+                "overlays_loaded": overlays_loaded,
+                "overlay_errors": overlay_errors,
+                "txid": txid,
+            }
+
+        return {
+            "network_id_hex": manifest.network_id.hex(),
+            "accepted": bool(accepted),
+            "overlays_loaded": overlays_loaded,
+            "overlay_errors": overlay_errors,
+            "txid": txid,
+        }
+
+    mcp.add_tool(network_join)
 
     # ---- BitTorrent ---------------------------------------------------
 

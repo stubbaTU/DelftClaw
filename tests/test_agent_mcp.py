@@ -80,6 +80,14 @@ async def two_agents_with_mcp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
+    """All 16 v5.1 tools must appear on the FastMCP surface.
+
+    Regression guard: previous v5.1 iterations added new tools to
+    ``agent/tools.py`` (the offline tool-call path) without mirroring
+    them in ``agent/mcp_server.py`` (the production path the watchdog
+    actually uses). That left scenario_boot calling tools that the
+    real MCP server didn't expose.
+    """
     alice, _bob = two_agents_with_mcp
     server = build_mcp_server(alice)
     async with Client(server) as client:
@@ -89,8 +97,9 @@ async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
         "peers_list", "peer_add",
         "wallet_address", "wallet_balance", "wallet_send",
         "seedbox_donate_and_join",
-        "overlays_list", "overlay_fetch_and_load", "overlay_publish",
-        "overlay_invoke",
+        "overlays_list", "overlay_describe", "overlay_fetch_and_load",
+        "overlay_publish", "overlay_invoke",
+        "agent_inject_manifest", "network_join",
         "torrent_seed", "torrent_fetch", "torrent_stats",
     }
 
@@ -219,3 +228,126 @@ async def test_mcp_client_can_publish_fetch_and_invoke_overlay(two_agents_with_m
             break
         await asyncio.sleep(0.05)
     assert any("Creative Commons" in r["name"] for r in content_b.response_cache)
+
+
+# ---------------------------------------------------------------------------
+# v5.1 manifest tools (the surface scenario_boot drives over MCP)
+# ---------------------------------------------------------------------------
+
+def _build_manifest_md_for_test(alice: OpenClawAgent) -> str:
+    return (
+        "# Identity\n"
+        "- name: test_network\n"
+        "- version: 1.0.0\n"
+        "- description: MCP smoke test manifest.\n"
+        "\n"
+        "# Admission\n"
+        f"- gatekeeper_address: {alice.wallet.address()}\n"
+        "- min_sats: 10000\n"
+        "- min_confirmations: 0\n"
+        "\n"
+        "# Genesis Peers\n"
+        "| host | port | pubkey_hex |\n"
+        "|------|------|------------|\n"
+        f"| 127.0.0.1 | {alice.address[1]} | {alice.pubkey_hex} |\n"
+        "\n"
+        "# Default Overlays\n"
+        f"- sha1: {CONTENT_HASH.hex()}  (content_community v1)\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_agent_inject_manifest_round_trips(two_agents_with_mcp):
+    """The exact MCP call ``deploy.scenario_boot`` issues at Phase 4b."""
+    alice, _bob = two_agents_with_mcp
+    md_text = _build_manifest_md_for_test(alice)
+
+    server_a = build_mcp_server(alice)
+    async with Client(server_a) as client:
+        result = await client.call_tool("agent_inject_manifest", {"md_text": md_text})
+    payload = json.loads(result.content[0].text)
+    assert "error" not in payload
+    assert payload["name"] == "test_network"
+    assert payload["genesis_peers"] == 1
+    assert payload["default_overlays"] == [CONTENT_HASH.hex()]
+
+    # Alice's runtime now has the manifest cached and (since she's named
+    # as the genesis) has published it via the bootstrap community.
+    assert alice.network_manifest is not None
+    from communication.community import manifest_id
+    assert manifest_id(md_text) in alice.seedbox.published_manifests
+
+
+@pytest.mark.asyncio
+async def test_mcp_overlays_list_exposes_full_message_schema(two_agents_with_mcp):
+    """v5.1 overlays_list must surface field encodings, not just message names."""
+    alice, _bob = two_agents_with_mcp
+    server_a = build_mcp_server(alice)
+    async with Client(server_a) as client:
+        await client.call_tool("overlay_publish", {"md_text": CONTENT_MD})
+        result = await client.call_tool("overlays_list", {})
+    payload = json.loads(result.content[0].text)
+    # FastMCP wraps single-list results either as a list or under {"result":}.
+    if isinstance(payload, dict) and "result" in payload:
+        payload = payload["result"]
+    entry = next(o for o in payload if o["community_id_hex"] == CONTENT_HASH.hex())
+
+    msg = next(m for m in entry["messages"] if m["name"] == "SEARCH_REQUEST")
+    assert msg["msg_id"] == 1
+    assert msg["fields"] == [
+        {"name": "query", "encoding": "varlenH-utf8",
+         "description": "utf-8 search string; empty string returns the full index"},
+    ]
+    assert "scan the local content index" in msg["handler_text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_mcp_overlay_describe_returns_canonical_md(two_agents_with_mcp):
+    alice, _bob = two_agents_with_mcp
+    server_a = build_mcp_server(alice)
+    async with Client(server_a) as client:
+        await client.call_tool("overlay_publish", {"md_text": CONTENT_MD})
+        result = await client.call_tool(
+            "overlay_describe",
+            {"community_id_hex": CONTENT_HASH.hex()},
+        )
+    payload = json.loads(result.content[0].text)
+    assert payload["truncated"] is False
+    assert "# Identity" in payload["md_text"]
+    assert "SEARCH_REQUEST" in payload["md_text"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_network_join_uses_cached_manifest_when_no_arg(two_agents_with_mcp):
+    """After inject, network_join() with no args must use the cached manifest."""
+    alice, bob = two_agents_with_mcp
+    md_text = _build_manifest_md_for_test(alice)
+
+    # Wire Alice as gatekeeper (accept-everything verifier) and Bob's wallet
+    # as a mock so .send() doesn't try to broadcast on testnet.
+    from admission.donation_verifier import DonationVerification
+
+    class _Accept:
+        def verify(self, _txid_hex: str) -> DonationVerification:
+            return DonationVerification(accepted=True, paid_sats=10_000, confirmations=1)
+
+    alice.seedbox.configure(verifier=_Accept())
+    alice.seedbox.publish_overlay(CONTENT_MD)
+    sends: list[tuple[str, int]] = []
+
+    def _fake_send(to: str, sats: int) -> str:
+        sends.append((to, sats))
+        return "aa" * 32
+
+    bob.wallet.send = _fake_send  # type: ignore[method-assign]
+
+    server_b = build_mcp_server(bob)
+    async with Client(server_b) as client:
+        await client.call_tool("agent_inject_manifest", {"md_text": md_text})
+        result = await client.call_tool("network_join", {})
+    payload = json.loads(result.content[0].text)
+
+    assert "error" not in payload, payload
+    assert payload["accepted"] is True
+    assert payload["overlays_loaded"] == [CONTENT_HASH.hex()]
+    assert sends == [(alice.wallet.address(), 10000)]
