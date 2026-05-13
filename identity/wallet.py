@@ -1,8 +1,4 @@
-"""Synthetic-BTC wallet keyed off Ed25519 at WALLET_PATH.
-
-Balance state lives in ``stake.StakeOracle``, not on the wallet itself. The
-wallet object holds only the signing key — restart-safe, no balance recovery.
-"""
+"""Bitcoin HD wallet wrapper used by autonomous OpenClaw agents."""
 
 from __future__ import annotations
 
@@ -11,22 +7,48 @@ import hashlib
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from identity.derivation import WALLET_PATH, derive
+from identity.derivation import DerivationPath, wallet_path
 from identity.seed import Seed
 
 
-class Wallet:
-    """Ed25519 signing key derived at WALLET_PATH; signs synthetic ``StakeOp`` ops."""
+def _bitcoin_network(network: str) -> str:
+    normalized = network.strip().upper()
+    if normalized == "MAINNET":
+        return "bitcoin"
+    if normalized in {"TESTNET", "REGTEST"}:
+        return "testnet"
+    raise ValueError(f"Unsupported network: {network}")
 
-    def __init__(self, key: Ed25519PrivateKey) -> None:
-        self.key = key
+
+class Wallet:
+    """BIP-32 wallet derived from the agent seed and BIP-44 path."""
+
+    def __init__(self, root: HDKey, child: HDKey, *, path: DerivationPath, network: str) -> None:
+        self._root = root
+        self._child = child
+        self._path = path
+        self._network = network
 
     @classmethod
-    def from_seed(cls, seed: Seed) -> "Wallet":
-        priv_bytes = derive(seed, WALLET_PATH)
-        if len(priv_bytes) == 64:
-            priv_bytes = priv_bytes[:32]
-        return cls(Ed25519PrivateKey.from_private_bytes(priv_bytes))
+    def from_seed(
+        cls,
+        seed: Seed,
+        *,
+        network: str = "MAINNET",
+        agent_index: int = 0,
+        path: DerivationPath | None = None,
+    ) -> "Wallet":
+        """Derive wallet keys at m/44'/0'/agent_index'/0/0 by default."""
+        net = _bitcoin_network(network)
+        root = HDKey.from_seed(seed.bytes, network=net)
+        resolved_path = path or wallet_path(agent_index)
+        child = root.subkey_for_path(str(resolved_path))
+        return cls(root, child, path=resolved_path, network=network.strip().upper())
+
+    @property
+    def path(self) -> str:
+        """Derivation path used to create this wallet child key."""
+        return str(self._path)
 
     @property
     def pubkey(self) -> bytes:

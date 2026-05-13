@@ -39,8 +39,12 @@ __all__ = [
     "IPV8_PATH",
     "APP_PATH",
     "WALLET_PATH",
+    "wallet_path",
+    "verification_challenge_path",
     "IPv8KeyPair",
     "AppSigningKey",
+    "MLSSigningKey",
     "Wallet",
     "AgentIdentity",
+    "OpenClawIdentity",
 ]
