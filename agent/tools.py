@@ -133,6 +133,13 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     # ---- Overlays ------------------------------------------------------
 
     async def overlays_list() -> list[dict[str, Any]]:
+        """Full per-overlay spec the LLM needs to invoke any message zero-shot.
+
+        Drains everything ``CompiledOverlay.parsed`` already holds —
+        identity, every message's field encodings + handler text, error
+        policies, dependencies. Without this, the LLM has only message
+        names and would have to guess field shapes.
+        """
         out: list[dict[str, Any]] = []
         for community_id in agent.registry.list_loaded():
             compiled = agent.registry._compiled[community_id]
@@ -140,9 +147,50 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
                 "community_id_hex": community_id.hex(),
                 "name": compiled.parsed.identity.get("name", ""),
                 "version": compiled.parsed.identity.get("version", ""),
-                "messages": [m.name for m in compiled.parsed.messages],
+                "description": compiled.parsed.identity.get("description", ""),
+                "messages": [
+                    {
+                        "name": m.name,
+                        "msg_id": m.msg_id,
+                        "fields": [
+                            {
+                                "name": f.name,
+                                "encoding": f.encoding,
+                                "description": f.description,
+                            }
+                            for f in m.fields
+                        ],
+                        "handler_text": m.handler_text,
+                    }
+                    for m in compiled.parsed.messages
+                ],
+                "errors": [dict(e) for e in compiled.parsed.errors],
+                "dependencies": list(compiled.parsed.dependencies),
             })
         return out
+
+    OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
+
+    async def overlay_describe(community_id_hex: str) -> dict[str, Any]:
+        """Return the canonical markdown of a loaded overlay (truncated if oversized)."""
+        try:
+            community_id = bytes.fromhex(community_id_hex)
+        except ValueError as exc:
+            return {"error": f"bad_hex:{exc}"}
+        compiled = agent.registry._compiled.get(community_id)
+        if compiled is None:
+            return {"error": f"overlay_not_loaded:{community_id_hex}"}
+        md_bytes = compiled.canonical_md_bytes
+        truncated = False
+        if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:
+            md_bytes = md_bytes[:OVERLAY_DESCRIBE_MAX_BYTES]
+            truncated = True
+        return {
+            "community_id_hex": community_id_hex,
+            "md_text": md_bytes.decode("utf-8", errors="replace"),
+            "truncated": truncated,
+            "size_bytes": len(compiled.canonical_md_bytes),
+        }
 
     async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
         peer = _resolve_peer(agent, peer_mid)
@@ -257,8 +305,18 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
              seedbox_donate_and_join),
 
         Tool("overlays_list",
-             "List the compiled overlays this agent has loaded (community_id, name, messages).",
+             "List compiled overlays loaded locally with full per-message field "
+             "schemas + handler text. Read this before calling overlay_invoke.",
              P_NONE, overlays_list),
+
+        Tool("overlay_describe",
+             "Return the canonical markdown spec of a loaded overlay. Use when "
+             "the structured handler_text in overlays_list is ambiguous.",
+             {"type": "object",
+              "properties": {"community_id_hex": {"type": "string"}},
+              "required": ["community_id_hex"],
+              "additionalProperties": False},
+             overlay_describe),
 
         Tool("overlay_fetch_and_load",
              "Ask a peer for an overlay descriptor by md_hash, then compile + register it locally.",

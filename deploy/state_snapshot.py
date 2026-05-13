@@ -93,7 +93,17 @@ def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     return out
 
 
+_HANDLER_SUMMARY_MAX_CHARS = 240
+
+
 def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
+    """Per-overlay summary the LLM consumes inside the turn prompt.
+
+    Field encodings ARE included so the LLM can call overlay_invoke
+    without an extra tool round-trip. Handler text is truncated per
+    message to keep the prompt bounded — the LLM can call
+    ``overlay_describe`` for the full markdown when it needs it.
+    """
     out: list[dict[str, Any]] = []
     for community_id in agent.registry.list_loaded():
         compiled = agent.registry._compiled[community_id]
@@ -101,9 +111,26 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             "community_id_hex": community_id.hex(),
             "name": compiled.parsed.identity.get("name", ""),
             "version": compiled.parsed.identity.get("version", ""),
-            "messages": [m.name for m in compiled.parsed.messages],
+            "messages": [
+                {
+                    "name": m.name,
+                    "msg_id": m.msg_id,
+                    "fields": [
+                        {"name": f.name, "encoding": f.encoding}
+                        for f in m.fields
+                    ],
+                    "handler_summary": _truncate(m.handler_text, _HANDLER_SUMMARY_MAX_CHARS),
+                }
+                for m in compiled.parsed.messages
+            ],
         })
     return out
+
+
+def _truncate(text: str, n: int) -> str:
+    if len(text) <= n:
+        return text
+    return text[: n - 3] + "..."
 
 
 def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:

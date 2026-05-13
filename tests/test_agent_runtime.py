@@ -118,6 +118,70 @@ async def test_tools_overlay_publish_loads_locally(two_agents):
 
 
 @pytest.mark.asyncio
+async def test_overlays_list_exposes_full_message_schema(two_agents):
+    """overlays_list must give the LLM enough info to call overlay_invoke zero-shot."""
+    alice, _bob = two_agents
+    tools = build_tools(alice)
+    await tools.dispatch("overlay_publish", {"md_text": CONTENT_MD})
+    listed = await tools.dispatch("overlays_list", {})
+
+    entry = next(o for o in listed if o["community_id_hex"] == CONTENT_HASH.hex())
+    assert entry["name"] == "content_community"
+    assert entry["version"] == "1.0.0"
+    assert "description" in entry
+
+    msg_names = {m["name"] for m in entry["messages"]}
+    assert msg_names == {"SEARCH_REQUEST", "SEARCH_RESPONSE"}
+
+    search_req = next(m for m in entry["messages"] if m["name"] == "SEARCH_REQUEST")
+    assert search_req["msg_id"] == 1
+    assert search_req["fields"] == [
+        {"name": "query", "encoding": "varlenH-utf8",
+         "description": "utf-8 search string; empty string returns the full index"},
+    ]
+    # Handler text is the prose the LLM uses to know what receipt means.
+    assert "scan the local content index" in search_req["handler_text"].lower()
+
+    assert entry["errors"], "errors section must surface in overlays_list"
+    assert entry["dependencies"] == []
+
+
+@pytest.mark.asyncio
+async def test_overlay_describe_returns_canonical_md(two_agents):
+    alice, _bob = two_agents
+    tools = build_tools(alice)
+    await tools.dispatch("overlay_publish", {"md_text": CONTENT_MD})
+
+    result = await tools.dispatch(
+        "overlay_describe",
+        {"community_id_hex": CONTENT_HASH.hex()},
+    )
+    assert result["community_id_hex"] == CONTENT_HASH.hex()
+    assert result["truncated"] is False
+    assert "# Identity" in result["md_text"]
+    assert "SEARCH_REQUEST" in result["md_text"]
+
+
+@pytest.mark.asyncio
+async def test_overlay_describe_unknown_id_returns_error(two_agents):
+    alice, _bob = two_agents
+    tools = build_tools(alice)
+    result = await tools.dispatch(
+        "overlay_describe",
+        {"community_id_hex": "00" * 20},
+    )
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_overlay_describe_bad_hex_returns_error(two_agents):
+    alice, _bob = two_agents
+    tools = build_tools(alice)
+    result = await tools.dispatch("overlay_describe", {"community_id_hex": "ZZZZ"})
+    assert "error" in result
+
+
+@pytest.mark.asyncio
 async def test_tools_overlay_fetch_and_load_round_trips(two_agents):
     alice, bob = two_agents
     # Alice publishes the descriptor.
