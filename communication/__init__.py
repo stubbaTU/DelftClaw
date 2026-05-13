@@ -1,14 +1,7 @@
-"""OpenClaw Communication: Layers 0–5 plus the AgentChannel adapter for OpenClaw."""
+"""OpenClaw P2P communication: SeedboxCommunity over py-ipv8."""
 
 __version__ = "0.1.0"
 
-from communication.channel.agent_channel import AgentChannel
-from communication.channel.inbox import Inbox, IncomingMessage
-from communication.trustroom.community import TrustroomCommunity
+from communication.community import SeedboxCommunity
 
-__all__ = [
-    "AgentChannel",
-    "Inbox",
-    "IncomingMessage",
-    "TrustroomCommunity",
-]
+__all__ = ["SeedboxCommunity"]

@@ -11,12 +11,7 @@ from shared.errors import (
 )
 from shared.threats import Threat
 from shared.envelopes import WireFrame, ApplicationMessage
-from shared.credentials import (
-    Credential,
-    Presentation,
-    VerifiedCredential,
-    KeyBundle,
-)
+from shared.credentials import KeyBundle
 
 __all__ = [
     "AgentId",
@@ -34,8 +29,5 @@ __all__ = [
     "Threat",
     "WireFrame",
     "ApplicationMessage",
-    "Credential",
-    "Presentation",
-    "VerifiedCredential",
     "KeyBundle",
 ]

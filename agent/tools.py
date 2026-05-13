@@ -1,0 +1,317 @@
+"""Tool surface the LLM tool-call loop dispatches into.
+
+Each tool is a thin sync/async function over the ``OpenClawAgent``
+runtime. The ``Tool`` dataclass pairs the callable with an OpenAI-style
+JSON schema describing its parameters. ``ToolRegistry.specs()`` produces
+the ``tools=[...]`` array for an OpenAI-compatible chat-completions call;
+``ToolRegistry.dispatch(name, args)`` runs the named tool against the
+agent and returns a JSON-serialisable result.
+
+Tools are intentionally small. Composition (e.g. "donate then join")
+lives in the LLM loop's reasoning, not in glue code.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from ipv8.peer import Peer
+
+from agent.runtime import OpenClawAgent
+from communication.community import overlay_id
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Tool:
+    name: str
+    description: str
+    parameters: dict[str, Any]              # OpenAI-style JSON schema
+    fn: Callable[..., Awaitable[Any]]       # always async; sync tools wrap themselves
+
+    def spec(self) -> dict[str, Any]:
+        """OpenAI-compatible function-tool spec."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+class ToolRegistry:
+    """Looks up and dispatches tools by name."""
+
+    def __init__(self, tools: list[Tool]) -> None:
+        self._tools = {t.name: t for t in tools}
+
+    def specs(self) -> list[dict[str, Any]]:
+        return [t.spec() for t in self._tools.values()]
+
+    def names(self) -> list[str]:
+        return list(self._tools.keys())
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        if name not in self._tools:
+            return {"error": f"unknown_tool:{name}"}
+        try:
+            return await self._tools[name].fn(**args)
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Helper: peer lookup by mid (hex prefix matching)
+# ---------------------------------------------------------------------------
+
+def _resolve_peer(agent: OpenClawAgent, mid_hex_prefix: str) -> Peer:
+    """Find a known peer by hex prefix of its mid (8 chars or more)."""
+    needle = bytes.fromhex(mid_hex_prefix.lower()) if len(mid_hex_prefix) % 2 == 0 \
+        else bytes.fromhex(mid_hex_prefix.lower() + "0")
+    for peer in agent.known_peers():
+        if peer.mid.startswith(needle):
+            return peer
+    raise KeyError(f"no peer with mid prefix {mid_hex_prefix!r}")
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+def build_tools(agent: OpenClawAgent) -> ToolRegistry:
+    """Construct the tool registry bound to ``agent``."""
+
+    # ---- Peers ---------------------------------------------------------
+
+    async def peers_list() -> list[dict[str, Any]]:
+        return [
+            {
+                "mid_hex": p.mid.hex(),
+                "address": list(p.addresses.values())[0] if p.addresses else None,
+            }
+            for p in agent.known_peers()
+        ]
+
+    async def peer_add(host: str, port: int, pubkey_hex: str) -> dict[str, Any]:
+        peer = agent.add_peer(host, port, pubkey_hex)
+        return {
+            "mid_hex": peer.mid.hex(),
+            "address": list(peer.addresses.values())[0] if peer.addresses else None,
+        }
+
+    # ---- Wallet --------------------------------------------------------
+
+    async def wallet_address() -> str:
+        return agent.wallet.address()
+
+    async def wallet_balance() -> int:
+        return agent.wallet.balance_sats(refresh=True)
+
+    async def wallet_send(to_address: str, sats: int) -> str:
+        return agent.wallet.send(to_address, sats)
+
+    # ---- Seedbox admission --------------------------------------------
+
+    async def seedbox_donate_and_join(
+        gatekeeper_mid: str, sats: int, gatekeeper_address: str
+    ) -> dict[str, Any]:
+        """Send ``sats`` to ``gatekeeper_address`` then JOIN_REQUEST the gatekeeper."""
+        peer = _resolve_peer(agent, gatekeeper_mid)
+        txid = agent.wallet.send(gatekeeper_address, sats)
+        future = agent.seedbox.request_join(peer, bytes.fromhex(txid))
+        accepted = await asyncio.wait_for(future, timeout=60)
+        return {"txid": txid, "accepted": bool(accepted)}
+
+    # ---- Overlays ------------------------------------------------------
+
+    async def overlays_list() -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for community_id in agent.registry.list_loaded():
+            compiled = agent.registry._compiled[community_id]
+            out.append({
+                "community_id_hex": community_id.hex(),
+                "name": compiled.parsed.identity.get("name", ""),
+                "version": compiled.parsed.identity.get("version", ""),
+                "messages": [m.name for m in compiled.parsed.messages],
+            })
+        return out
+
+    async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
+        peer = _resolve_peer(agent, peer_mid)
+        md_hash = bytes.fromhex(md_hash_hex)
+        future = agent.seedbox.fetch_overlay(peer, md_hash)
+        md_bytes = await asyncio.wait_for(future, timeout=10)
+        instance = agent.registry.load(md_bytes.decode("utf-8"))
+        return {
+            "community_id_hex": instance.community_id.hex(),
+            "loaded": True,
+        }
+
+    async def overlay_publish(md_text: str) -> str:
+        md_hash = agent.seedbox.publish_overlay(md_text)
+        # Also load it locally so we serve traffic on the new overlay.
+        agent.registry.load(md_text)
+        return md_hash.hex()
+
+    async def overlay_invoke(
+        community_id_hex: str, message_name: str, peer_mid: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Send a message on a compiled overlay. ``fields`` map JSON values to wire bytes."""
+        community_id = bytes.fromhex(community_id_hex)
+        instance = agent.registry.get(community_id)
+        if instance is None:
+            return {"error": f"overlay_not_loaded:{community_id_hex}"}
+        compiled = agent.registry._compiled[community_id]
+        if message_name not in compiled.payload_classes:
+            return {"error": f"unknown_message:{message_name}"}
+        payload_cls = compiled.payload_classes[message_name]
+
+        from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
+        coerced = [_coerce_field_value(v) for v in fields.values()]
+        peer = _resolve_peer(agent, peer_mid)
+        instance.ez_send(peer, payload_cls(*coerced))
+        return {"sent": True}
+
+    # ---- BitTorrent ---------------------------------------------------
+
+    async def torrent_seed(path: str) -> str:
+        return agent.bittorrent.seed(Path(path))
+
+    async def torrent_fetch(magnet_uri: str, timeout_s: float = 600.0) -> str:
+        future = agent.bittorrent.add_magnet(magnet_uri)
+        path = await asyncio.wait_for(future, timeout=timeout_s)
+        return str(path)
+
+    async def torrent_stats() -> list[dict[str, Any]]:
+        return [
+            {
+                "magnet": t.magnet,
+                "name": t.name,
+                "progress": t.progress,
+                "seeding": t.seeding,
+                "save_path": str(t.save_path) if t.save_path else None,
+                "peers": t.peers,
+            }
+            for t in agent.bittorrent.stats()
+        ]
+
+    # ---- Spec definitions ---------------------------------------------
+
+    P_NONE = {"type": "object", "properties": {}, "additionalProperties": False}
+
+    return ToolRegistry([
+        Tool("peers_list",
+             "List peers verified on any overlay this agent runs.",
+             P_NONE, peers_list),
+
+        Tool("peer_add",
+             "Introduce a peer to this agent's IPv8 network at runtime.",
+             {"type": "object",
+              "properties": {
+                  "host": {"type": "string", "description": "remote peer's IPv8 UDP host"},
+                  "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                  "pubkey_hex": {"type": "string",
+                                  "description": "remote peer's serialised IPv8 public key (74 hex chars)"},
+              },
+              "required": ["host", "port", "pubkey_hex"],
+              "additionalProperties": False},
+             peer_add),
+
+        Tool("wallet_address",
+             "Return this agent's testnet receiving address.",
+             P_NONE, wallet_address),
+
+        Tool("wallet_balance",
+             "Return this agent's wallet balance in satoshis (refreshes from network).",
+             P_NONE, wallet_balance),
+
+        Tool("wallet_send",
+             "Send satoshis to a Bitcoin address. Returns the broadcast txid (hex).",
+             {"type": "object",
+              "properties": {
+                  "to_address": {"type": "string"},
+                  "sats": {"type": "integer", "minimum": 1},
+              },
+              "required": ["to_address", "sats"],
+              "additionalProperties": False},
+             wallet_send),
+
+        Tool("seedbox_donate_and_join",
+             "Donate satoshis to a gatekeeper's address, then send JOIN_REQUEST so they admit us.",
+             {"type": "object",
+              "properties": {
+                  "gatekeeper_mid": {"type": "string", "description": "hex prefix of the gatekeeper's IPv8 mid"},
+                  "sats": {"type": "integer", "minimum": 1},
+                  "gatekeeper_address": {"type": "string", "description": "BTC address of the seedbox"},
+              },
+              "required": ["gatekeeper_mid", "sats", "gatekeeper_address"],
+              "additionalProperties": False},
+             seedbox_donate_and_join),
+
+        Tool("overlays_list",
+             "List the compiled overlays this agent has loaded (community_id, name, messages).",
+             P_NONE, overlays_list),
+
+        Tool("overlay_fetch_and_load",
+             "Ask a peer for an overlay descriptor by md_hash, then compile + register it locally.",
+             {"type": "object",
+              "properties": {
+                  "peer_mid": {"type": "string"},
+                  "md_hash_hex": {"type": "string", "description": "20-byte hash, hex-encoded"},
+              },
+              "required": ["peer_mid", "md_hash_hex"],
+              "additionalProperties": False},
+             overlay_fetch_and_load),
+
+        Tool("overlay_publish",
+             "Publish (serve + locally load) a markdown overlay descriptor. Returns its md_hash hex.",
+             {"type": "object",
+              "properties": {"md_text": {"type": "string"}},
+              "required": ["md_text"],
+              "additionalProperties": False},
+             overlay_publish),
+
+        Tool("overlay_invoke",
+             "Send a message defined by a compiled overlay to a peer.",
+             {"type": "object",
+              "properties": {
+                  "community_id_hex": {"type": "string"},
+                  "message_name": {"type": "string"},
+                  "peer_mid": {"type": "string"},
+                  "fields": {"type": "object", "description": "field_name -> value (str, int, list, dict)"},
+              },
+              "required": ["community_id_hex", "message_name", "peer_mid", "fields"],
+              "additionalProperties": False},
+             overlay_invoke),
+
+        Tool("torrent_seed",
+             "Begin seeding a local file. Returns the resulting magnet URI.",
+             {"type": "object",
+              "properties": {"path": {"type": "string"}},
+              "required": ["path"],
+              "additionalProperties": False},
+             torrent_seed),
+
+        Tool("torrent_fetch",
+             "Download a magnet URI to local disk; returns the saved path.",
+             {"type": "object",
+              "properties": {
+                  "magnet_uri": {"type": "string"},
+                  "timeout_s": {"type": "number", "default": 600.0},
+              },
+              "required": ["magnet_uri"],
+              "additionalProperties": False},
+             torrent_fetch),
+
+        Tool("torrent_stats",
+             "Snapshot of all currently-known torrents (downloads + seeds).",
+             P_NONE, torrent_stats),
+    ])

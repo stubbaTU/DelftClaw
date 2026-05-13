@@ -1,0 +1,57 @@
+# Scenario: seek_cc
+#
+# Two autonomous agents on a single VPS. Alice is a long-running
+# seedbox that publishes the content_community overlay and seeds one
+# Creative Commons audio file. Bob is a one-shot content seeker — donate,
+# join, search, download.
+#
+# Stop condition: bob.torrent_stats reports progress >= 1.0; the watchdog
+# exits 0. Alice never stops (operator tears down via scenario_boot
+# --teardown).
+#
+# Ports: scenario "seek_cc" uses the 8190-8199 IPv8 UDP range and the
+# 18765-18774 MCP TCP range. Future scenarios should claim disjoint
+# windows (see deploy/README.md).
+
+name: seek_cc
+description: Bob finds and downloads a Creative Commons file from Alice's seedbox.
+
+watchdog:
+  # interval_s is also passed to ``openclaw agent --timeout`` and is the
+  # subprocess soft cap. Qwen3.6:27b over Tailscale with a ~3KB tool-spec
+  # prompt typically wants 30–90s per turn (first turn longer for GPU
+  # cold-load), so we give the watchdog 180s of headroom per tick.
+  interval_s: 180
+  max_iterations_per_turn: 8
+  max_total_turns: 20
+  max_wall_clock_s: 3600
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/seek_cc
+
+agents:
+
+  alice:
+    ipv8_port: 8190
+    mcp_port: 18765
+    publish_overlays:
+      - protocol/examples/content_community.md
+    persona_file: alice/persona.md
+    goal_file: alice/goal.md
+    stop_predicate: never
+    seed_content:
+      - magnet: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=cc_audio_2023.mp3"
+        name: "Creative Commons Audio Archive 2023.mp3"
+        size: 4200000
+        mime: audio/mpeg
+        tags: [cc, audio]
+
+  bob:
+    ipv8_port: 8191
+    mcp_port: 18766
+    publish_overlays: []
+    persona_file: bob/persona.md
+    goal_file: bob/goal.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - alice

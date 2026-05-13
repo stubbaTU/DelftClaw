@@ -1,0 +1,24 @@
+[Unit]
+Description=DelftClaw watchdog (instance %i)
+After=delftclaw-mcp@%i.service
+Requires=delftclaw-mcp@%i.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=delftclaw
+Group=delftclaw
+WorkingDirectory=/opt/delftclaw
+EnvironmentFile=/etc/delftclaw/instances/%i.env
+ExecStart=/opt/delftclaw/venv/bin/python -m deploy.watchdog \
+    --instance %i \
+    --scenario-dir /etc/delftclaw/scenarios/%i
+# Exit codes are meaningful: 0 (predicate hit), 1 (turn cap), 2 (wall
+# clock), 3 (LLM errors). Don't auto-restart — let the operator decide.
+Restart=no
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

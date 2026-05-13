@@ -21,7 +21,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from identity.openclaw_identity import OpenClawIdentity
+from identity.agent_identity import AgentIdentity
 from security.subq2_accountability.append_log import AppendOnlyLog
 from shared.logging import get_logger
 
@@ -72,7 +72,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
 
     def __init__(
         self,
-        identity: OpenClawIdentity,
+        identity: AgentIdentity,
         log_path: "str | os.PathLike[str]",
     ) -> None:
         if identity is None:
@@ -213,13 +213,13 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             "details_hash": _stable_hash(details),
             "evidence_hash": _stable_hash(evidence_payload),
             "previous_hash": self.latest_hash(),
-            "reporter_pubkey": self._identity.public_key.hex(),
+            "reporter_pubkey": self._identity.ipv8.raw_pubkey.hex(),
         }
 
         # Sign the canonical JSON of the entry so far (no signature, no
         # entry_hash). Then attach the signature and finally compute the
         # chain hash, which covers the signature too via the override.
-        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
+        entry["signature"] = self._identity.ipv8.sign(_canonical_bytes(entry)).hex()
         entry["entry_hash"] = self._entry_hash(entry)
         return entry
 
@@ -287,7 +287,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             "details_hash": details_hash,
             "evidence_hash": _stable_hash(evidence_payload),
             "previous_hash": self.latest_hash(),
-            "reporter_pubkey": self._identity.public_key.hex(),
+            "reporter_pubkey": self._identity.ipv8.raw_pubkey.hex(),
             "subject_pubkey": pubkey_bytes.hex(),
             "subject_claim": subject_claim,
             "subject_signature": sig_bytes.hex(),
@@ -297,7 +297,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         # subject_signature rides along into the reporter signature and the
         # chain hash, so an attacker who later swaps in a different valid
         # subject sig invalidates the reporter sig and the entry_hash.
-        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
+        entry["signature"] = self._identity.ipv8.sign(_canonical_bytes(entry)).hex()
         entry["entry_hash"] = self._entry_hash(entry)
         return entry
 
