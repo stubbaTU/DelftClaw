@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from identity.agent_identity import AgentIdentity
 from security.integration.gateway import GatewayState
-from security.integration.ports import NoopEvidencePublisher, SecurityIdentity, StaticIdentityProvider
+from security.integration.ports import AgentIdentityProvider, NoopEvidencePublisher, SecurityIdentity, StaticIdentityProvider
 from security.integration.security_readiness import run_security_readiness
 from security.subq2_accountability.bitcoin_anchor import BitcoinAnchorVerifier
 
@@ -23,6 +24,19 @@ def test_security_ports_allow_static_identity_and_noop_publisher() -> None:
     assert provider.current_identity().agent_id == "agent-a"
     publisher.publish({"action": "atomic_microtask_claimed"})
     assert publisher.published == [{"action": "atomic_microtask_claimed"}]
+
+
+def test_security_identity_provider_adapts_shared_agent_identity() -> None:
+    identity = AgentIdentity(network="TESTNET", agent_index=0)
+    provider = AgentIdentityProvider(identity)
+
+    snapshot = provider.current_identity()
+
+    assert snapshot.agent_id == identity.identity_hash
+    assert snapshot.identity_hash == identity.identity_hash
+    assert snapshot.network == "TESTNET"
+    assert snapshot.ipv8_public_key == identity.ipv8.public_key_bytes.hex()
+    assert snapshot.wallet_public_key == identity.wallet.xpub
 
 
 def test_gateway_claims_and_verifies_atomic_microtasks(tmp_path: Path) -> None:
