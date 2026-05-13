@@ -3,8 +3,7 @@
 A scenario is a directory under ``deploy/scenarios/<name>/`` containing:
 
   scenario.yaml         (this file describes the agents + watchdog policy)
-  <agent>/persona.md    (system-prompt persona, per agent)
-  <agent>/goal.md       (initial goal, per agent)
+  <agent>/mission.md    (the single zero-shot intent doc, per agent)
 
 The parser is intentionally strict — every error fails fast at boot, not
 mid-run on the VPS. Validation rules:
@@ -14,7 +13,10 @@ mid-run on the VPS. Validation rules:
   3. Every ``peers: [...]`` entry references another agent in the manifest.
   4. Every ``publish_overlays:`` path exists relative to the repo root.
   5. IPv8 + MCP ports unique inside this scenario; ranges checked.
-  6. ``persona_file`` + ``goal_file`` exist as siblings of scenario.yaml.
+  6. ``mission_file`` exists as a sibling of scenario.yaml AND parses
+     cleanly via ``deploy.mission.parse_mission``.
+  7. Legacy ``persona_file`` / ``goal_file`` keys (pre-v5.1) raise a
+     clear migration error rather than being silently ignored.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Any
 import yaml
 
 from deploy import stop_predicates
+from deploy.mission import MissionParseError, parse_mission
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -89,8 +92,7 @@ class AgentSpec:
     ipv8_port: int
     mcp_port: int
     publish_overlays: tuple[Path, ...]
-    persona_file: Path
-    goal_file: Path
+    mission_file: Path
     stop_predicate: str
     peers: tuple[str, ...] = ()
     seed_content: tuple[SeedContent, ...] = ()
@@ -200,7 +202,17 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
 # ---------------------------------------------------------------------------
 
 def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
-    for key in ("ipv8_port", "mcp_port", "persona_file", "goal_file", "stop_predicate"):
+    # Pre-v5.1 keys are a fatal migration error — don't silently ignore them
+    # or the operator will not notice the recipe is no longer being shown.
+    for legacy in ("persona_file", "goal_file"):
+        if legacy in d:
+            raise ScenarioError(
+                f"agent {name!r}: {legacy!r} is removed in v5.1. Replace "
+                f"persona_file + goal_file with a single mission_file pointing "
+                f"at a mission.md (see deploy/mission_schema.md)."
+            )
+
+    for key in ("ipv8_port", "mcp_port", "mission_file", "stop_predicate"):
         if key not in d:
             raise ScenarioError(f"agent {name!r}: missing key {key!r}")
 
@@ -220,8 +232,12 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
             )
         overlays.append(p)
 
-    persona_file = _resolve_relative(scenario_dir, d["persona_file"], "persona_file", name)
-    goal_file = _resolve_relative(scenario_dir, d["goal_file"], "goal_file", name)
+    mission_file = _resolve_relative(scenario_dir, d["mission_file"], "mission_file", name)
+    # Parse the mission now — schema violations fail at boot, not mid-run.
+    try:
+        parse_mission(mission_file.read_text(encoding="utf-8"))
+    except MissionParseError as exc:
+        raise ScenarioError(f"agent {name!r}: mission_file {mission_file}: {exc}") from exc
 
     # Validate stop predicate at parse time so the watchdog never explodes mid-run.
     stop_spec = str(d["stop_predicate"])
@@ -245,8 +261,7 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         ipv8_port=ipv8_port,
         mcp_port=mcp_port,
         publish_overlays=tuple(overlays),
-        persona_file=persona_file,
-        goal_file=goal_file,
+        mission_file=mission_file,
         stop_predicate=stop_spec,
         peers=peers,
         seed_content=seed_content,

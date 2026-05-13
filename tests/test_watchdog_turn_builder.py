@@ -51,32 +51,29 @@ def test_summary_truncates_long_responses():
 # ---------------------------------------------------------------------------
 
 def test_prompt_is_deterministic_for_same_inputs():
-    persona = "You are a tester."
-    goal = "Goal: do the test."
+    mission = "MISSION:\n- name: tester\n- role: general\n\nDo the test."
     snapshot = {"peers": [], "wallet": {"balance_sats": 0}}
     h = TurnHistory()
-    a = build_turn_prompt(persona, goal, snapshot, h)
-    b = build_turn_prompt(persona, goal, snapshot, h)
+    a = build_turn_prompt(mission, snapshot, h)
+    b = build_turn_prompt(mission, snapshot, h)
     assert a == b
 
 
 def test_prompt_orders_sections_correctly():
     out = build_turn_prompt(
-        persona="PERSONA-BLOCK",
-        goal="GOAL-BLOCK",
+        mission_text="MISSION-BLOCK",
         snapshot={"k": "v"},
         history=TurnHistory(),
     )
-    persona_idx = out.index("PERSONA-BLOCK")
-    goal_idx = out.index("GOAL-BLOCK")
+    mission_idx = out.index("MISSION-BLOCK")
     state_idx = out.index("CURRENT STATE:")
     recent_idx = out.index("RECENT TURNS")
-    assert persona_idx < goal_idx < state_idx < recent_idx
+    assert mission_idx < state_idx < recent_idx
 
 
 def test_prompt_includes_serialised_snapshot_with_sorted_keys():
     out = build_turn_prompt(
-        persona="p", goal="g",
+        mission_text="m",
         snapshot={"b": 2, "a": 1, "c": [3]},
         history=TurnHistory(),
     )
@@ -93,7 +90,7 @@ def test_prompt_lists_recent_turns_when_history_present():
                         stop_predicate_value=False))
     h.append(TurnRecord(turn_n=2, prompt="p", response_text="second turn happened",
                         stop_predicate_value=False))
-    out = build_turn_prompt("p", "g", {}, h)
+    out = build_turn_prompt("m", {}, h)
     assert "[turn 1]" in out
     assert "[turn 2]" in out
     assert "first turn happened" in out
@@ -101,8 +98,15 @@ def test_prompt_lists_recent_turns_when_history_present():
 
 
 def test_prompt_says_none_yet_on_first_turn():
-    out = build_turn_prompt("p", "g", {}, TurnHistory())
+    out = build_turn_prompt("m", {}, TurnHistory())
     assert "RECENT TURNS: (none yet" in out
+
+
+def test_prompt_starts_with_mission_header():
+    out = build_turn_prompt("MISSION-BODY", {}, TurnHistory())
+    # The header literal precedes the body; this prevents an operator
+    # from sneaking arbitrary content above the MISSION block.
+    assert out.split("\n", 1)[0] == "MISSION:"
 
 
 # ---------------------------------------------------------------------------

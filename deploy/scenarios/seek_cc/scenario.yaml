@@ -36,8 +36,7 @@ agents:
     mcp_port: 18765
     publish_overlays:
       - protocol/examples/content_community.md
-    persona_file: alice/persona.md
-    goal_file: alice/goal.md
+    mission_file: alice/mission.md
     stop_predicate: never
     seed_content:
       - magnet: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=cc_audio_2023.mp3"
@@ -50,8 +49,7 @@ agents:
     ipv8_port: 8191
     mcp_port: 18766
     publish_overlays: []
-    persona_file: bob/persona.md
-    goal_file: bob/goal.md
+    mission_file: bob/mission.md
     stop_predicate: torrent_progress_gte_1
     peers:
       - alice

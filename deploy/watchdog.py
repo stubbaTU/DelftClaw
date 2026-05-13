@@ -168,8 +168,7 @@ async def _run_loop(args: argparse.Namespace) -> int:
         )
     spec: AgentSpec = scenario.agents[agent_name]
 
-    persona_text = spec.persona_file.read_text(encoding="utf-8")
-    goal_text = spec.goal_file.read_text(encoding="utf-8")
+    mission_text = spec.mission_file.read_text(encoding="utf-8")
 
     # Bring up our own OpenClawAgent — read-only collector for snapshot calls.
     # Same seed file as the MCP service, but we bind a *different* IPv8 port
@@ -202,8 +201,7 @@ async def _run_loop(args: argparse.Namespace) -> int:
             spec=spec,
             scenario=scenario,
             instance=args.instance,
-            persona_text=persona_text,
-            goal_text=goal_text,
+            mission_text=mission_text,
         )
     finally:
         await agent.stop()
@@ -215,8 +213,7 @@ async def _drive(
     spec: AgentSpec,
     scenario,
     instance: str,
-    persona_text: str,
-    goal_text: str,
+    mission_text: str,
 ) -> int:
     log_dir = Path(os.environ.get("LOG_DIR", str(scenario.log_dir)))
     sink = JsonlSink(log_dir / f"{spec.name}.jsonl")
@@ -268,7 +265,7 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        prompt = build_turn_prompt(persona_text, goal_text, snapshot, history)
+        prompt = build_turn_prompt(mission_text, snapshot, history)
         ok, stdout, stderr = await asyncio.to_thread(
             _invoke_openclaw_agent,
             instance=instance,

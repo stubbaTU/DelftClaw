@@ -48,20 +48,24 @@ class TurnHistory:
 
 
 def build_turn_prompt(
-    persona: str,
-    goal: str,
+    mission_text: str,
     snapshot: dict[str, Any],
     history: TurnHistory,
 ) -> str:
     """Assemble the LLM-facing prompt for one watchdog tick.
 
-    The order is fixed: ``persona`` first (system-prompt style), then the
-    goal (specific to the scenario), then the current STATE block (JSON,
-    human-readable indent), then the RECENT TURNS tail. Determinism here
-    is load-bearing — JSONL replay assumes the same builder produces the
-    same bytes from the same inputs.
+    The order is fixed: ``mission`` first (intent + budget + stop), then
+    the current STATE block (JSON, human-readable indent), then the
+    RECENT TURNS tail. Determinism here is load-bearing — JSONL replay
+    assumes the same builder produces the same bytes from the same
+    inputs.
+
+    The mission is the *only* operator-supplied prose the LLM sees;
+    every other prompt input is either machine-generated (state snapshot,
+    history tail) or content-hashed (the network manifest, which lives
+    inside the snapshot).
     """
-    sections: list[str] = [persona.rstrip(), "", goal.rstrip(), ""]
+    sections: list[str] = ["MISSION:", mission_text.rstrip(), ""]
     sections.append("CURRENT STATE:")
     sections.append("```json")
     sections.append(json.dumps(snapshot, indent=2, sort_keys=True))

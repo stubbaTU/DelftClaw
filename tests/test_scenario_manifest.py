@@ -34,16 +34,14 @@ VALID_BASE = {
             "ipv8_port": 8190,
             "mcp_port": 18765,
             "publish_overlays": ["protocol/examples/content_community.md"],
-            "persona_file": "alice/persona.md",
-            "goal_file": "alice/goal.md",
+            "mission_file": "alice/mission.md",
             "stop_predicate": "never",
         },
         "bob": {
             "ipv8_port": 8191,
             "mcp_port": 18766,
             "publish_overlays": [],
-            "persona_file": "bob/persona.md",
-            "goal_file": "bob/goal.md",
+            "mission_file": "bob/mission.md",
             "stop_predicate": "torrent_progress_gte_1",
             "peers": ["alice"],
         },
@@ -51,15 +49,36 @@ VALID_BASE = {
 }
 
 
+def _mission_md(name: str, stop_predicate: str = "never") -> str:
+    """A minimal valid mission for tests."""
+    return (
+        f"# Identity\n"
+        f"- name: {name}\n"
+        f"- role: general\n"
+        f"\n"
+        f"# Intent\n"
+        f"Test agent {name}; exercise the scenario parser.\n"
+        f"\n"
+        f"# Budget\n"
+        f"- max_sats_outbound: 1000\n"
+        f"- max_total_turns: 10\n"
+        f"\n"
+        f"# Stop\n"
+        f"- predicate: {stop_predicate}\n"
+    )
+
+
 def _write_scenario(tmp_path: Path, manifest: dict) -> Path:
-    """Materialise ``manifest`` + the per-agent persona/goal files in tmp."""
+    """Materialise ``manifest`` + the per-agent mission.md files in tmp."""
     scenario_dir = tmp_path / manifest["name"]
     scenario_dir.mkdir(parents=True)
-    for agent_name in manifest["agents"]:
+    for agent_name, agent in manifest["agents"].items():
         agent_dir = scenario_dir / agent_name
         agent_dir.mkdir()
-        (agent_dir / "persona.md").write_text(f"# {agent_name} persona\n")
-        (agent_dir / "goal.md").write_text(f"# {agent_name} goal\n")
+        stop = agent.get("stop_predicate", "never")
+        # stop_predicate may include parameters like "peer_count_gte_N(n=2)";
+        # mission only carries the predicate name itself unchanged.
+        (agent_dir / "mission.md").write_text(_mission_md(agent_name, stop))
     path = scenario_dir / "scenario.yaml"
     path.write_text(yaml.safe_dump(manifest))
     return path
@@ -164,19 +183,57 @@ def test_publish_overlay_path_must_exist(tmp_path: Path):
         parse_scenario(path)
 
 
-def test_persona_file_must_exist(tmp_path: Path):
+def test_mission_file_must_exist(tmp_path: Path):
     manifest = _copy(VALID_BASE)
-    # Wipe alice's persona.md after _write_scenario so the rest of the tree is intact.
+    # Build the layout WITHOUT alice/mission.md so the parser fails on it.
     scenario_dir = tmp_path / manifest["name"]
     scenario_dir.mkdir(parents=True)
     (scenario_dir / "alice").mkdir()
-    (scenario_dir / "alice" / "goal.md").write_text("goal")
     (scenario_dir / "bob").mkdir()
-    (scenario_dir / "bob" / "persona.md").write_text("p")
-    (scenario_dir / "bob" / "goal.md").write_text("g")
+    (scenario_dir / "bob" / "mission.md").write_text(_mission_md("bob", "torrent_progress_gte_1"))
     path = scenario_dir / "scenario.yaml"
     path.write_text(yaml.safe_dump(manifest))
-    with pytest.raises(ScenarioError, match="persona_file"):
+    with pytest.raises(ScenarioError, match="mission_file"):
+        parse_scenario(path)
+
+
+def test_legacy_persona_file_raises_migration_error(tmp_path: Path):
+    """Pre-v5.1 scenarios with persona_file/goal_file are a fatal migration error."""
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["alice"]["persona_file"] = "alice/persona.md"  # legacy key
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="persona_file.*removed in v5.1"):
+        parse_scenario(path)
+
+
+def test_legacy_goal_file_raises_migration_error(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["bob"]["goal_file"] = "bob/goal.md"  # legacy key
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="goal_file.*removed in v5.1"):
+        parse_scenario(path)
+
+
+def test_mission_with_recipe_rejected_at_scenario_parse(tmp_path: Path):
+    """A mission whose # Intent embeds a step recipe kills scenario boot."""
+    manifest = _copy(VALID_BASE)
+    scenario_dir = tmp_path / manifest["name"]
+    scenario_dir.mkdir(parents=True)
+    for agent_name in manifest["agents"]:
+        agent_dir = scenario_dir / agent_name
+        agent_dir.mkdir()
+    # alice's mission contains a 3-step list inside # Intent — recipe heuristic.
+    bad_mission = (
+        "# Identity\n- name: alice\n- role: general\n\n"
+        "# Intent\nDo this:\n1. First step\n2. Second step\n3. Third step\n\n"
+        "# Budget\n- max_sats_outbound: 0\n- max_total_turns: 10\n\n"
+        "# Stop\n- predicate: never\n"
+    )
+    (scenario_dir / "alice" / "mission.md").write_text(bad_mission)
+    (scenario_dir / "bob" / "mission.md").write_text(_mission_md("bob", "torrent_progress_gte_1"))
+    path = scenario_dir / "scenario.yaml"
+    path.write_text(yaml.safe_dump(manifest))
+    with pytest.raises(ScenarioError, match="step-by-step list"):
         parse_scenario(path)
 
 

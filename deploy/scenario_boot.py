@@ -6,8 +6,8 @@ Run as root (the script `sudo`s where needed). What it does, in order:
   2. For each agent:
        a. Create ``/var/lib/delftclaw/<scenario>/<agent>/{,bitcoinlib,torrents}``.
        b. Generate a deterministic seed file if one isn't there yet.
-       c. Materialise the agent's persona/goal under
-          ``/etc/delftclaw/scenarios/<scenario>-<agent>/``.
+       c. Materialise the agent's mission.md (and the scenario tree)
+          under ``/etc/delftclaw/scenarios/<scenario>-<agent>/``.
        d. Write the per-instance env file under
           ``/etc/delftclaw/instances/<scenario>-<agent>.env``.
   3. ``systemctl enable --now delftclaw-mcp@<instance>.service`` per agent.
@@ -171,9 +171,9 @@ def _stage_scenario_dir(scenario: Scenario, agent: AgentSpec) -> None:
     """Copy the whole scenario source tree into ``/etc/delftclaw/scenarios/<instance>/``.
 
     The manifest references files relative to ``scenario.yaml`` (e.g.
-    ``alice/persona.md``). The watchdog re-parses the manifest at boot,
+    ``alice/mission.md``). The watchdog re-parses the manifest at boot,
     which means the *full* directory layout must be present — not just
-    this agent's persona/goal — so the parser can validate every peer's
+    this agent's mission — so the parser can validate every peer's
     paths exist. Each instance gets its own copy so per-agent state can
     diverge later without affecting siblings.
     """
