@@ -157,11 +157,46 @@ class PeerIntroPayload(VariablePayload):
     names = ["wallet_address", "known_overlays"]
 
 
+@vp_compile
+class CommunityJoinRequestPayload(VariablePayload):
+    """Phase-5 community admission: joiner ships a JSON-serialised
+    signed donation_intent entry the gatekeeper validates against the
+    community-log replay state. Coexists with the legacy
+    ``JoinRequestPayload`` (msg_id=1) so older agents still admit by
+    raw-txid. New agents prefer this path because it requires no
+    trusted gatekeeper key custody."""
+
+    msg_id = 10
+    # signed_entry: utf-8 JSON of the signed-log self-entry the donor
+    # appended to their own SignedAppendOnlyLog. The gatekeeper
+    # re-verifies its signature + identity binding and replays the
+    # community state to decide accept/reject.
+    format_list = ["varlenH"]
+    names = ["signed_entry"]
+
+
+@vp_compile
+class CommunityJoinResponsePayload(VariablePayload):
+    """Reply to CommunityJoinRequest. ``reason`` is a short utf-8 string
+    naming the failure mode for the LLM-facing log; empty on accept."""
+
+    msg_id = 11
+    format_list = ["?", "varlenH"]
+    names = ["accepted", "reason"]
+
+
 # Optional callback signatures: invoked when this node receives an OFFER
 # for a hash it doesn't already know about.
 OverlayOfferCallback = Callable[[Peer, bytes], None]
 ManifestOfferCallback = Callable[[Peer, bytes], None]
 PeerIntroCallback = Callable[[Peer, PeerMeta], None]
+
+# Phase 5: callback signature for the community-log admission path.
+# Receives the JSON-decoded signed entry the joiner shipped; returns
+# ``(accepted, reason)``. The community.community_state-replay layer
+# is the source of truth — this callback just plumbs the agent runtime
+# to the wire handler.
+CommunityJoinCallback = Callable[[Peer, dict], tuple[bool, str]]
 
 
 class SeedboxCommunity(Community, PeerObserver):
@@ -193,6 +228,10 @@ class SeedboxCommunity(Community, PeerObserver):
         self._peer_meta: dict[bytes, PeerMeta] = {}        # peer.mid -> PeerMeta
         self._peer_intro_callback: Optional[PeerIntroCallback] = None
 
+        # COMMUNITY_JOIN_REQUEST bookkeeping — Phase 5 admission path.
+        self._pending_community_joins: dict[bytes, asyncio.Future[tuple[bool, str]]] = {}
+        self._community_join_callback: Optional[CommunityJoinCallback] = None
+
         self.add_message_handler(JoinRequestPayload, self.on_join_request)
         self.add_message_handler(JoinResponsePayload, self.on_join_response)
         self.add_message_handler(OverlayOfferPayload, self.on_overlay_offer)
@@ -202,6 +241,8 @@ class SeedboxCommunity(Community, PeerObserver):
         self.add_message_handler(ManifestRequestPayload, self.on_manifest_request)
         self.add_message_handler(ManifestDeliveryPayload, self.on_manifest_delivery)
         self.add_message_handler(PeerIntroPayload, self.on_peer_intro)
+        self.add_message_handler(CommunityJoinRequestPayload, self.on_community_join_request)
+        self.add_message_handler(CommunityJoinResponsePayload, self.on_community_join_response)
 
     # ------------------------------------------------------------------
     # Configuration / wiring
@@ -215,6 +256,7 @@ class SeedboxCommunity(Community, PeerObserver):
         manifest_offer_callback: Optional[ManifestOfferCallback] = None,
         wallet_address: Optional[str] = None,
         peer_intro_callback: Optional[PeerIntroCallback] = None,
+        community_join_callback: Optional[CommunityJoinCallback] = None,
     ) -> None:
         """Wire optional collaborators after construction."""
         if verifier is not None:
@@ -227,6 +269,8 @@ class SeedboxCommunity(Community, PeerObserver):
             self._wallet_address = wallet_address
         if peer_intro_callback is not None:
             self._peer_intro_callback = peer_intro_callback
+        if community_join_callback is not None:
+            self._community_join_callback = community_join_callback
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
@@ -266,6 +310,76 @@ class SeedboxCommunity(Community, PeerObserver):
         future = self._pending_joins.pop(peer.mid, None)
         if future is not None and not future.done():
             future.set_result(payload.accepted)
+        if payload.accepted:
+            self._send_peer_intro(peer)
+
+    # ------------------------------------------------------------------
+    # COMMUNITY_JOIN flow (Phase 5 — admit-by-signed-log-entry)
+    # ------------------------------------------------------------------
+
+    def request_community_join(
+        self, gatekeeper: Peer, signed_entry: dict,
+    ) -> asyncio.Future[tuple[bool, str]]:
+        """Joiner-side: ship a JSON-serialised signed donation_intent entry.
+
+        Returns a future resolving to ``(accepted, reason)``.
+        Compared to the legacy ``request_join``, the joiner does NOT
+        rely on the gatekeeper having a real Bitcoin verifier — the
+        gatekeeper instead caches the entry in its own peer-log and
+        replays community state to decide.
+        """
+        import json as _json
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[tuple[bool, str]] = loop.create_future()
+        self._pending_community_joins[gatekeeper.mid] = future
+        payload_bytes = _json.dumps(signed_entry).encode("utf-8")
+        self.ez_send(gatekeeper, CommunityJoinRequestPayload(payload_bytes))
+        return future
+
+    @lazy_wrapper(CommunityJoinRequestPayload)
+    def on_community_join_request(
+        self, peer: Peer, payload: CommunityJoinRequestPayload,
+    ) -> None:
+        import json as _json
+        if self._community_join_callback is None:
+            self.ez_send(
+                peer,
+                CommunityJoinResponsePayload(False, b"no_community_join_callback"),
+            )
+            return
+        try:
+            entry = _json.loads(payload.signed_entry.decode("utf-8"))
+        except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+            self.ez_send(
+                peer,
+                CommunityJoinResponsePayload(False, f"malformed_entry:{exc}".encode("utf-8")),
+            )
+            return
+        if not isinstance(entry, dict):
+            self.ez_send(peer, CommunityJoinResponsePayload(False, b"entry_not_object"))
+            return
+        accepted, reason = self._community_join_callback(peer, entry)
+        if accepted:
+            self.network.add_verified_peer(peer)
+        self.ez_send(
+            peer,
+            CommunityJoinResponsePayload(bool(accepted), (reason or "").encode("utf-8")),
+        )
+        if accepted:
+            self._send_peer_intro(peer)
+
+    @lazy_wrapper(CommunityJoinResponsePayload)
+    def on_community_join_response(
+        self, peer: Peer, payload: CommunityJoinResponsePayload,
+    ) -> None:
+        future = self._pending_community_joins.pop(peer.mid, None)
+        reason = ""
+        try:
+            reason = payload.reason.decode("utf-8")
+        except UnicodeDecodeError:
+            reason = "<reason: invalid utf-8>"
+        if future is not None and not future.done():
+            future.set_result((bool(payload.accepted), reason))
         if payload.accepted:
             self._send_peer_intro(peer)
 

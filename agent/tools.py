@@ -291,6 +291,59 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             "network_id_hex": manifest.network_id.hex(),
         }
 
+    async def community_join_via_peer(
+        gatekeeper_mid: str, amount_sats: int, timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        """Sign + append + ship a donation_intent to ``gatekeeper_mid``.
+
+        End-to-end Phase 5 admission path:
+
+          1. ``community_donate_and_join(amount_sats)`` writes the signed
+             entry to our local community log (debits wallet, runs
+             local pre-checks).
+          2. Find the peer by mid prefix, then send the entry over the
+             new ``COMMUNITY_JOIN_REQUEST`` wire message.
+          3. Wait for the gatekeeper's accept/reject response. The
+             gatekeeper validates the entry against its own
+             community-state replay.
+
+        Returns ``{"entry_hash": str, "accepted": bool, "reason": str,
+        "amount_sats": int}`` on success, or ``{"error": str}`` on
+        local pre-check failure.
+        """
+        # Step 1 — sign + append locally. Reuses the pre-existing tool
+        # so wallet debit, double-join check, cap check, etc. all run.
+        donate_result = await community_donate_and_join(amount_sats)
+        if "error" in donate_result:
+            return donate_result
+
+        # Step 2 — locate the entry we just wrote so we can ship it.
+        entries = agent.community_log.read_entries()
+        signed_entry = next(
+            (e for e in reversed(entries) if e.get("entry_hash") == donate_result["entry_hash"]),
+            None,
+        )
+        if signed_entry is None:
+            return {"error": "signed_entry_not_found_in_local_log"}
+
+        # Step 3 — find the peer and send.
+        try:
+            peer = _resolve_peer(agent, gatekeeper_mid)
+        except KeyError as exc:
+            return {"error": f"peer_not_found:{exc}"}
+        future = agent.seedbox.request_community_join(peer, signed_entry)
+        try:
+            accepted, reason = await asyncio.wait_for(future, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return {"error": f"community_join_timeout_after_{timeout_s}s"}
+
+        return {
+            "entry_hash": donate_result["entry_hash"],
+            "amount_sats": amount_sats,
+            "accepted": accepted,
+            "reason": reason,
+        }
+
     async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
         """Sign + append a ``seedbox_purchase_intent`` entry to our log.
 
@@ -678,6 +731,23 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               },
               "additionalProperties": False},
              seedbox_purchase_propose),
+
+        Tool("community_join_via_peer",
+             "Phase-5 end-to-end admission: write a signed donation_intent "
+             "to our local community log, ship it to the gatekeeper peer "
+             "over COMMUNITY_JOIN_REQUEST, and await the accept/reject "
+             "response. Use this once an admitted peer is reachable "
+             "(via peer_add or the network manifest's genesis peers).",
+             {"type": "object",
+              "properties": {
+                  "gatekeeper_mid": {"type": "string",
+                                     "description": "hex prefix of the gatekeeper's IPv8 mid"},
+                  "amount_sats": {"type": "integer", "minimum": 1},
+                  "timeout_s": {"type": "number", "default": 30.0},
+              },
+              "required": ["gatekeeper_mid", "amount_sats"],
+              "additionalProperties": False},
+             community_join_via_peer),
 
         Tool("overlays_list",
              "List compiled overlays loaded locally with full per-message field "

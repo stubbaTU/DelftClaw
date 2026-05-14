@@ -141,6 +141,7 @@ class OpenClawAgent:
         self._seedbox.configure(
             verifier=verifier,
             wallet_address=self.wallet.address(),
+            community_join_callback=self._handle_community_join,
         )
         self._registry = OverlayRegistry(self._ipv8, self.llm)
 
@@ -311,6 +312,10 @@ class OpenClawAgent:
         (defaults to ``<save_dir>/peer_logs/``). Each peer's chain lives
         at ``<dir>/<peer_id>.jsonl``; entries are deposited by the redteam
         pull loop after passing ``SignedAppendOnlyLog.verify_foreign_entry``.
+
+        The PeerLog's network parameter is the **identity network**
+        (TESTNET/MAINNET/REGTEST) — not the BTC network — because that's
+        what ``identity_hash = SHA256(pubkey || network)`` was bound with.
         """
         if self._peer_log is None:
             from redteam.primitives.peer_log import PeerLog
@@ -320,7 +325,7 @@ class OpenClawAgent:
             oc_identity = OpenClawIdentity.from_agent_identity(self.identity)
             self._peer_log = PeerLog(
                 peer_log_dir=directory,
-                network=self.config.btc_network.upper(),
+                network=oc_identity.network,
                 own_id=oc_identity.identity_hash,
             )
         return self._peer_log
@@ -356,5 +361,56 @@ class OpenClawAgent:
             return None
         from agent.community_state import replay_community
         return replay_community(self._manifest, self.all_community_entries())
+
+    # ------------------------------------------------------------------
+    # Community-join admission (Phase 5 — gatekeeper side)
+    # ------------------------------------------------------------------
+
+    def _handle_community_join(self, peer, entry: dict) -> tuple[bool, str]:
+        """Validate a foreign signed donation_intent entry from a joiner.
+
+        Pipeline:
+
+          1. No manifest loaded → reject (we don't run a community yet).
+          2. Drop the entry into our PeerLog cache; PeerLog runs
+             ``SignedAppendOnlyLog.verify_foreign_entry`` (signature +
+             identity binding) before persisting.
+          3. Re-run community-state replay over our local view (own log
+             + every cached peer chain). If the joiner is now in
+             ``state.members``, the entry was wire-shape valid AND
+             passed the donation-cap / no-double-join rules — accept.
+             Otherwise the rules rejected it — reject with a reason.
+
+        Returns ``(accepted, reason)``; the seedbox wire handler turns
+        that into a ``CommunityJoinResponsePayload``.
+        """
+        if self._manifest is None:
+            return False, "no_manifest_loaded"
+
+        action = entry.get("action")
+        if action != "donation_intent":
+            return False, f"unsupported_action:{action}"
+
+        reporter_id = entry.get("reporter_id")
+        if not isinstance(reporter_id, str) or not reporter_id:
+            return False, "missing_reporter_id"
+
+        # 1. PeerLog rejects on signature / identity-binding / same-id
+        # failures (the joiner can't sign as us, and can't ship malformed
+        # entries past Ed25519 verify).
+        stored, source_id, errors, duplicate = self.peer_log.accept_entry(entry)
+        if not stored and not duplicate:
+            return False, "; ".join(errors) if errors else "peer_log_rejected"
+
+        # 2. Re-run replay. If the entry's rules-side validation passed,
+        # the joiner now appears in members. Otherwise the entry sits in
+        # the peer-log cache (rules might pass later — e.g. once
+        # additional donations come in) but the joiner stays out for now.
+        state = self.community_state()
+        if state is None:
+            return False, "replay_returned_none"
+        if reporter_id in state.members:
+            return True, ""
+        return False, "rejected_by_community_rules"
 
 

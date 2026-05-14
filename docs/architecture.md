@@ -123,7 +123,8 @@ loaded IPv8 community. It serves two purposes:
 2. Overlay distribution: ship protocol descriptors over the wire so
    other communities can be loaded at runtime.
 
-Wire protocol (9 messages — *v5.1: was 5*):
+Wire protocol (11 messages — *v5.1: was 5; +2 in Phase 5 for the
+no-treasurer admission path*):
 
 | msg_id | Name | Fields | Direction |
 |---|---|---|---|
@@ -136,6 +137,8 @@ Wire protocol (9 messages — *v5.1: was 5*):
 | 7 | `ManifestRequestPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
 | 8 | `ManifestDeliveryPayload` *(v5.1)* | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
 | 9 | `PeerIntroPayload` *(v5.1)* | `wallet_address: varlenH-utf8`, `known_overlays: varlenH-msgpack` | peer → peer (auto-sent on admission accept) |
+| 10 | `CommunityJoinRequestPayload` *(Phase 5)* | `signed_entry: varlenH-utf8 (JSON of signed donation_intent)` | joiner → gatekeeper |
+| 11 | `CommunityJoinResponsePayload` *(Phase 5)* | `accepted: bool`, `reason: varlenH-utf8` | gatekeeper → joiner |
 
 `community_id = b"openclaw_seedbox_v1\x00"` (exactly 20 bytes). The
 manifest trio mirrors the overlay trio bit-for-bit; the separate ids
