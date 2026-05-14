@@ -130,6 +130,222 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         accepted = await asyncio.wait_for(future, timeout=60)
         return {"txid": txid, "accepted": bool(accepted)}
 
+    # ---- Community treasury + signed-log layer (Phase 4) --------------
+
+    def _community_summary() -> dict[str, Any]:
+        """Internal: snapshot of {balance, member_count, threshold_status,
+        my_membership_status, seedbox_count} computed from the local
+        signed log + peer-log union.
+
+        Returns an empty dict when no manifest is loaded; callers should
+        guard against that.
+        """
+        state = agent.community_state()
+        if state is None:
+            return {}
+        manifest = agent.network_manifest
+        me = agent.community_reporter_id
+        return {
+            "balance_sats": state.balance_sats,
+            "member_count": state.member_count,
+            "seedbox_count": state.seedbox_count,
+            "pending_purchases": state.pending_purchases,
+            "threshold_active": state.threshold_active(manifest),
+            "my_membership_status": "admitted" if me in state.members else "outsider",
+        }
+
+    async def community_log_list_recent(limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most-recent entries from the merged community log.
+
+        Merges this agent's own signed log with every peer's cached chain
+        (deterministic order by ``(timestamp, reporter_id, entry_hash)``),
+        filtered to community actions. Each returned dict carries
+        ``action``, ``reporter_id``, ``timestamp``, ``entry_hash``, the
+        relevant ``details`` fields, and an ``accepted`` flag computed by
+        replay validation. Returns at most ``limit`` entries (most-recent
+        last).
+        """
+        from agent.community_state import (
+            COMMUNITY_ACTIONS,
+            replay_community,
+        )
+
+        manifest = agent.network_manifest
+        if manifest is None:
+            return []
+        all_entries = agent.all_community_entries()
+        relevant = [e for e in all_entries if e.get("action") in COMMUNITY_ACTIONS]
+        ordered = sorted(
+            relevant,
+            key=lambda e: (
+                e.get("timestamp", ""),
+                e.get("reporter_id", ""),
+                e.get("entry_hash", ""),
+            ),
+        )
+        # Determine accepted-vs-rejected by re-running replay and matching
+        # entry_hash sets. Cheap because replay is pure.
+        state = replay_community(manifest, ordered)
+        accepted_hashes = (
+            {d.entry_hash for d in state.donations}
+            | {p.entry_hash for p in state.purchases}
+            | {v.entry_hash for v in state.provisioned}
+        )
+        out: list[dict[str, Any]] = []
+        for entry in ordered[-max(0, int(limit)):]:
+            details = entry.get("details") or {}
+            out.append({
+                "action": entry.get("action"),
+                "reporter_id": entry.get("reporter_id"),
+                "timestamp": entry.get("timestamp"),
+                "entry_hash": entry.get("entry_hash"),
+                "amount_sats": details.get("amount_sats"),
+                "cost_sats": details.get("cost_sats"),
+                "purchase_intent_hash": details.get("purchase_intent_hash"),
+                "seedbox_url": details.get("seedbox_url"),
+                "accepted": entry.get("entry_hash") in accepted_hashes,
+            })
+        return out
+
+    async def community_treasury_balance() -> dict[str, Any]:
+        """Current treasury balance + member count + threshold status.
+
+        Returns ``{"error": "no_manifest_loaded"}`` if the agent hasn't
+        injected a network manifest yet.
+        """
+        summary = _community_summary()
+        if not summary:
+            return {"error": "no_manifest_loaded"}
+        return summary
+
+    async def community_member_count() -> dict[str, Any]:
+        """Current admitted-member count. Returns my own membership status too."""
+        summary = _community_summary()
+        if not summary:
+            return {"error": "no_manifest_loaded"}
+        return {
+            "member_count": summary["member_count"],
+            "my_membership_status": summary["my_membership_status"],
+            "threshold_active": summary["threshold_active"],
+        }
+
+    async def community_donate_and_join(amount_sats: int) -> dict[str, Any]:
+        """Compose a signed ``donation_intent`` entry and append it to our log.
+
+        The amount is debited from this agent's synthetic wallet (so
+        ``wallet_balance`` reflects the spend) before the entry is
+        signed. The entry will propagate to peers via the redteam pull
+        loop (Phase 6); peers' replay will accept it iff the donation
+        rules in ``community_state.replay_community`` are met:
+
+          - amount >= manifest.admission.min_sats
+          - amount <= bootstrap_cap_sats (donor #1) or <= running average
+          - we are not already an admitted member
+
+        Returns the produced entry's ``entry_hash`` + a summary, or an
+        ``error`` field on local validation failure.
+        """
+        manifest = agent.network_manifest
+        if manifest is None:
+            return {"error": "no_manifest_loaded"}
+        if not isinstance(amount_sats, int) or amount_sats < 1:
+            return {"error": f"amount_sats must be a positive int; got {amount_sats!r}"}
+
+        # Local sanity pass: refuse to write entries the replay layer
+        # would reject anyway. Strictly an optimisation — the wire-side
+        # validator is authoritative.
+        state = agent.community_state()
+        me = agent.community_reporter_id
+        if state is not None and me in state.members:
+            return {"error": "already_admitted"}
+        if amount_sats < manifest.admission.min_sats:
+            return {"error": f"amount below min_sats {manifest.admission.min_sats}"}
+        if state is None or not state.donations:
+            cap = manifest.admission.effective_bootstrap_cap_sats
+        else:
+            avg = sum(d.amount_sats for d in state.donations) // len(state.donations)
+            cap = max(manifest.admission.min_sats, avg)
+        if amount_sats > cap:
+            return {"error": f"amount above cap {cap}"}
+
+        # Debit the synthetic wallet so wallet_balance + treasury stay in
+        # sync. Raises ValueError("insufficient funds") if the wallet
+        # was constructed with a tracked balance that can't cover it.
+        try:
+            agent.wallet.send(manifest.admission.gatekeeper_address, amount_sats)
+        except ValueError as exc:
+            return {"error": f"wallet_send_failed: {exc}"}
+
+        entry = agent.community_log.append_event(
+            reporter_id=me,
+            subject_id=me,
+            action="donation_intent",
+            details={
+                "network_id_hex": manifest.network_id.hex(),
+                "amount_sats": amount_sats,
+            },
+        )
+        return {
+            "entry_hash": entry["entry_hash"],
+            "amount_sats": amount_sats,
+            "network_id_hex": manifest.network_id.hex(),
+        }
+
+    async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
+        """Sign + append a ``seedbox_purchase_intent`` entry to our log.
+
+        First-comer wins: the intent is only accepted by replay if no
+        prior pending purchase exists. ``cost_sats`` defaults to the
+        manifest's ``seedbox_cost_sats`` (the manifest is the source of
+        truth — passing a different value just causes the entry to be
+        rejected at replay).
+
+        Local sanity check refuses the write if the threshold isn't
+        tripped or the treasury can't cover the cost; this is an
+        optimisation — the replay validator is authoritative.
+        """
+        manifest = agent.network_manifest
+        if manifest is None:
+            return {"error": "no_manifest_loaded"}
+        if not manifest.admission.seedbox_growth_enabled:
+            return {"error": "growth_disabled_in_manifest"}
+
+        state = agent.community_state()
+        if state is None:
+            return {"error": "no_manifest_loaded"}
+
+        me = agent.community_reporter_id
+        if me not in state.members:
+            return {"error": "not_admitted"}
+
+        cost = cost_sats if cost_sats is not None else manifest.admission.seedbox_cost_sats
+        if not isinstance(cost, int) or cost < 1:
+            return {"error": f"cost_sats must be a positive int; got {cost!r}"}
+        if cost != manifest.admission.seedbox_cost_sats:
+            return {"error": f"cost {cost} != manifest.seedbox_cost_sats "
+                             f"{manifest.admission.seedbox_cost_sats}"}
+        if state.balance_sats < cost:
+            return {"error": f"insufficient treasury: balance={state.balance_sats}, cost={cost}"}
+        if not state.threshold_active(manifest):
+            return {"error": "threshold_not_active"}
+        if state.pending_purchases != 0:
+            return {"error": "pending_purchase_already_in_flight"}
+
+        entry = agent.community_log.append_event(
+            reporter_id=me,
+            subject_id=me,
+            action="seedbox_purchase_intent",
+            details={
+                "network_id_hex": manifest.network_id.hex(),
+                "cost_sats": cost,
+            },
+        )
+        return {
+            "entry_hash": entry["entry_hash"],
+            "cost_sats": cost,
+            "network_id_hex": manifest.network_id.hex(),
+        }
+
     # ---- Overlays ------------------------------------------------------
 
     async def overlays_list() -> list[dict[str, Any]]:
@@ -395,7 +611,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
              wallet_send),
 
         Tool("seedbox_donate_and_join",
-             "Donate satoshis to a gatekeeper's address, then send JOIN_REQUEST so they admit us.",
+             "DEPRECATED — single-gatekeeper donate+join. Prefer "
+             "community_donate_and_join, which appends a signed "
+             "donation_intent to the community log and is admitted by "
+             "the no-treasurer membership rules.",
              {"type": "object",
               "properties": {
                   "gatekeeper_mid": {"type": "string", "description": "hex prefix of the gatekeeper's IPv8 mid"},
@@ -405,6 +624,60 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["gatekeeper_mid", "sats", "gatekeeper_address"],
               "additionalProperties": False},
              seedbox_donate_and_join),
+
+        Tool("community_log_list_recent",
+             "Return the most-recent merged community-log entries "
+             "(donation_intent, seedbox_purchase_intent, "
+             "seedbox_provisioned) across this agent's chain and every "
+             "known peer's chain, with an ``accepted`` flag per entry.",
+             {"type": "object",
+              "properties": {
+                  "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+              },
+              "additionalProperties": False},
+             community_log_list_recent),
+
+        Tool("community_treasury_balance",
+             "Snapshot of the community's no-treasurer treasury: "
+             "balance_sats (sum of accepted donations minus accepted "
+             "purchases), member_count, seedbox_count, threshold_active, "
+             "pending_purchases, and our own membership status.",
+             P_NONE, community_treasury_balance),
+
+        Tool("community_member_count",
+             "Number of admitted members + our own membership status + "
+             "whether the seedbox-growth threshold is tripped.",
+             P_NONE, community_member_count),
+
+        Tool("community_donate_and_join",
+             "Compose a signed donation_intent entry for ``amount_sats`` "
+             "and append it to our community log. Replay-validation rules "
+             "(min_sats, bootstrap_cap, running-average cap, no double-join) "
+             "are pre-checked locally; on success the entry propagates to "
+             "peers and admits us when they replay.",
+             {"type": "object",
+              "properties": {
+                  "amount_sats": {"type": "integer", "minimum": 1,
+                                  "description": "satoshis to donate; must be in "
+                                                 "[min_sats, running_avg_cap]"},
+              },
+              "required": ["amount_sats"],
+              "additionalProperties": False},
+             community_donate_and_join),
+
+        Tool("seedbox_purchase_propose",
+             "Sign + append a seedbox_purchase_intent entry. First-comer "
+             "wins on race; replay rejects intents when threshold is not "
+             "tripped or treasury can't cover the cost. ``cost_sats`` "
+             "defaults to the manifest's declared price.",
+             {"type": "object",
+              "properties": {
+                  "cost_sats": {"type": "integer", "minimum": 1,
+                                "description": "satoshis to spend; must match "
+                                               "manifest.seedbox_cost_sats exactly"},
+              },
+              "additionalProperties": False},
+             seedbox_purchase_propose),
 
         Tool("overlays_list",
              "List compiled overlays loaded locally with full per-message field "

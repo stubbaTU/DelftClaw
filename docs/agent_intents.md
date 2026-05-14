@@ -22,7 +22,25 @@ gathered with a short follow-up; never invent values.
 |---|---|
 | "join the Claw Network" / "join the seedbox network" | `network_join()` (uses cached manifest) |
 | "load this network manifest: ⟨md⟩" | `agent_inject_manifest(md_text=⟨md⟩)` |
-| "donate ⟨n⟩ sats to seedbox ⟨peer⟩ at ⟨btc_addr⟩" | `seedbox_donate_and_join(gatekeeper_mid=⟨peer⟩, sats=⟨n⟩, gatekeeper_address=⟨btc_addr⟩)` |
+| "donate ⟨n⟩ sats and join the community" | `community_donate_and_join(amount_sats=⟨n⟩)` |
+| "donate ⟨n⟩ sats to seedbox ⟨peer⟩ at ⟨btc_addr⟩" | `seedbox_donate_and_join(gatekeeper_mid=⟨peer⟩, sats=⟨n⟩, gatekeeper_address=⟨btc_addr⟩)` — **deprecated**, prefer `community_donate_and_join` |
+
+### Community state (no-treasurer signed-log view)
+
+The community has **no treasurer** and **no key custody**. Treasury balance,
+membership, and seedbox count are all computed by replaying every
+member's signed log. Donations are capped at the current running
+average of prior donations (with a `bootstrap_cap_sats` ceiling for
+donor #1). Seedbox purchases are authorised by **first-comer**: the
+first admitted member to write a valid `seedbox_purchase_intent` wins
+when the threshold trips.
+
+| User phrase | Tool call |
+|---|---|
+| "what's the treasury balance?" / "how much money does the community have?" | `community_treasury_balance()` |
+| "how many members are there?" / "am I admitted?" | `community_member_count()` |
+| "show recent community events" / "what's happening in the log?" | `community_log_list_recent(limit=⟨n⟩)` |
+| "buy a new seedbox" / "the threshold tripped — spawn a seedbox" | `seedbox_purchase_propose()` (default cost = manifest's `seedbox_cost_sats`) |
 
 ### Peers + wallet
 

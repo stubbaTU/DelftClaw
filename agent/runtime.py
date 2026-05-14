@@ -45,6 +45,13 @@ class AgentConfig:
     # "insufficient funds" error. Plumbed from scenario.yaml ->
     # /etc/delftclaw/instances/<instance>.env -> cli.py.
     initial_balance_sats: int = 0
+    # Per-agent paths for the community signed log (our own chain) and
+    # the peer-log cache (foreign chains pulled by the redteam pull loop).
+    # Default to in-process state under save_dir so unit tests don't
+    # collide; production sets these via scenario_boot env file to
+    # /var/lib/delftclaw/<scenario>/<agent>/{community.log, peer_logs/}.
+    community_log_path: Optional[Path] = None
+    peer_log_dir: Optional[Path] = None
 
 
 class OpenClawAgent:
@@ -86,6 +93,13 @@ class OpenClawAgent:
         # or agent_inject_manifest loads one).
         self._manifest: Optional[NetworkManifest] = None
         self._manifest_md: Optional[str] = None
+
+        # Community signed log + peer-log cache. Lazily constructed on
+        # first access so unit tests that don't care about the community
+        # layer can construct an OpenClawAgent without paying for log
+        # directories. See the ``community_log`` / ``peer_log`` properties.
+        self._community_log = None  # type: ignore[assignment]
+        self._peer_log = None  # type: ignore[assignment]
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -262,5 +276,85 @@ class OpenClawAgent:
             self._seedbox.publish_manifest(md_text)
 
         return manifest
+
+    # ------------------------------------------------------------------
+    # Community log (own chain) + peer-log cache (foreign chains)
+    # ------------------------------------------------------------------
+
+    @property
+    def community_log(self):
+        """The local agent's own signed append-only log.
+
+        Lazily constructed on first access using ``config.community_log_path``
+        (defaults to ``<save_dir>/community.log``). The log is keyed by an
+        ``OpenClawIdentity`` adapted from this agent's ``AgentIdentity`` —
+        same Ed25519 key, so signatures verify under ``self.pubkey_hex``.
+
+        The tool layer writes community events (donation_intent,
+        seedbox_purchase_intent, seedbox_provisioned) here; the redteam
+        pull loop (Phase 6) is responsible for shipping them to peers.
+        """
+        if self._community_log is None:
+            from identity.openclaw_identity import OpenClawIdentity
+            from redteam.primitives.signed_log import SignedAppendOnlyLog
+            path = self.config.community_log_path or (self.config.save_dir / "community.log")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            oc_identity = OpenClawIdentity.from_agent_identity(self.identity)
+            self._community_log = SignedAppendOnlyLog(oc_identity, str(path))
+        return self._community_log
+
+    @property
+    def peer_log(self):
+        """The per-source cache of foreign community-log entries.
+
+        Lazily constructed on first access using ``config.peer_log_dir``
+        (defaults to ``<save_dir>/peer_logs/``). Each peer's chain lives
+        at ``<dir>/<peer_id>.jsonl``; entries are deposited by the redteam
+        pull loop after passing ``SignedAppendOnlyLog.verify_foreign_entry``.
+        """
+        if self._peer_log is None:
+            from redteam.primitives.peer_log import PeerLog
+            directory = self.config.peer_log_dir or (self.config.save_dir / "peer_logs")
+            directory.mkdir(parents=True, exist_ok=True)
+            from identity.openclaw_identity import OpenClawIdentity
+            oc_identity = OpenClawIdentity.from_agent_identity(self.identity)
+            self._peer_log = PeerLog(
+                peer_log_dir=directory,
+                network=self.config.btc_network.upper(),
+                own_id=oc_identity.identity_hash,
+            )
+        return self._peer_log
+
+    @property
+    def community_reporter_id(self) -> str:
+        """SHA256(ipv8_pubkey || network) hex — the ``reporter_id`` used in
+        every community-log entry we write. Identical to what
+        ``SignedAppendOnlyLog.verify_integrity`` expects for our entries.
+        """
+        from identity.openclaw_identity import OpenClawIdentity
+        return OpenClawIdentity.from_agent_identity(self.identity).identity_hash
+
+    def all_community_entries(self) -> list[dict]:
+        """Merge our own community-log entries with every peer's cached entries.
+
+        Returned in source-iteration order; ``replay_community`` will
+        re-sort deterministically. Read-only — never re-verifies
+        signatures (peer entries were already verified at accept time).
+        """
+        merged: list[dict] = list(self.community_log.read_entries())
+        for source_id in self.peer_log.list_sources():
+            merged.extend(self.peer_log.read_entries_for(source_id))
+        return merged
+
+    def community_state(self):
+        """Compute the current ``CommunityState`` for the loaded network.
+
+        Returns None when no manifest has been injected yet (an agent
+        with no network has no community to score).
+        """
+        if self._manifest is None:
+            return None
+        from agent.community_state import replay_community
+        return replay_community(self._manifest, self.all_community_entries())
 
 
