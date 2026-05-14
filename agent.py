@@ -4,7 +4,8 @@ import json
 from network import UDPEndpoint
 from identity.seed import MnemonicSeedSource
 from identity.agent_identity import AgentIdentity
-from security.subq2_accountability.append_log import AppendOnlyLog
+from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
 from security.subq2_accountability.reputation import ReputationEngine
 
@@ -24,9 +25,15 @@ class P2PAgent:
         master_seed = seed_src.load()
 
         self.identity = AgentIdentity.from_seed(master_seed)
+        self.openclaw_identity = OpenClawIdentity.from_agent_identity(self.identity)
         self.wallet = self.identity.wallet
         self.ipv8 = self.identity.ipv8
+        # security_id is the network/protocol agent id used in send_json/on_message.
+        # identity_hash is the log-binding id used by SignedAppendOnlyLog
+        # (SHA256(raw_pubkey || network)). Kept distinct intentionally:
+        # touching security_id would shift cross-agent message identification.
         self.security_id = self.identity.ipv8.pubkey.hex()
+        self.identity_hash = self.openclaw_identity.identity_hash
 
         self.endpoint = UDPEndpoint(host=host, port=port)
         self.endpoint.add_message_callback(self.on_message)
@@ -38,8 +45,11 @@ class P2PAgent:
         print(f"Agent starting with address: {self.address} and security_id: {self.security_id}")
 
         # Security Components
-        self.host_log = AppendOnlyLog(log_path=log_path or f"agent_{port}_actions.log")
-        self.proxy = IsolationProxy(agent_id=self.security_id, logger=self.host_log)
+        self.host_log = SignedAppendOnlyLog(
+            self.openclaw_identity,
+            log_path or f"agent_{port}_actions.log",
+        )
+        self.proxy = IsolationProxy(agent_id=self.identity_hash, logger=self.host_log)
         self.reputation = ReputationEngine(log_path=self.host_log.log_path)
 
     async def start(self):

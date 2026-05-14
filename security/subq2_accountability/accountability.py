@@ -1,12 +1,14 @@
+from pathlib import Path
 from typing import Any
 
+from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.contracts import (
     AccountabilityMetrics,
     AtomicMicrotaskEvidence,
     SecurityAction,
     SeedboxDonationEvidence,
 )
-from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import DonationLedger, SeedboxRegistry
 
@@ -21,7 +23,7 @@ class AccountabilityMonitor:
     """
     def __init__(
         self,
-        log: AppendOnlyLog,
+        log: SignedAppendOnlyLog,
         reputation: ReputationEngine,
         reporter_id: str,
     ):
@@ -289,7 +291,7 @@ def run_reputation_trap_experiment(
     threshold: int,
     scan_interval: int = 1,
     subject_id: str = "compromised-agent",
-    reporter_id: str = "honest-monitor",
+    reporter_id: str | None = None,
     log_path: str = "accountability.log",
 ) -> AccountabilityMetrics:
     """
@@ -300,7 +302,12 @@ def run_reputation_trap_experiment(
     action and detection/expulsion. Fallout radius is the accepted damage
     during that lag.
     """
-    log = AppendOnlyLog(log_path=log_path)
+    log_dir = Path(log_path).parent
+    key_path = log_dir / ".experiment_identity.json"
+    identity = OpenClawIdentity(network="MAINNET", key_path=str(key_path))
+    if reporter_id is None:
+        reporter_id = identity.identity_hash
+    log = SignedAppendOnlyLog(identity, log_path=log_path)
     reputation = ReputationEngine(log_path=log.log_path, ban_threshold=threshold)
     monitor = AccountabilityMonitor(log=log, reputation=reputation, reporter_id=reporter_id)
     registry = SeedboxRegistry()
