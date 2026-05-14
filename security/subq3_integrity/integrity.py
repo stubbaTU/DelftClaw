@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 
 from security.contracts import LogIntegrityExperimentResult, TamperAttemptResult
-from security.subq2_accountability.append_log import AppendOnlyLog
+from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.subq2_accountability.proxy import IsolationProxy
 
 
@@ -14,9 +15,10 @@ class HostLogService:
     Compromised agent code should receive only the proxy, never log_path. In a
     real gVisor setup this service belongs outside the sandbox/container.
     """
-    def __init__(self, host_log_path: str, agent_id: str = "compromised-agent"):
-        self.log = AppendOnlyLog(log_path=host_log_path)
-        self.proxy = IsolationProxy(agent_id=agent_id, logger=self.log)
+    def __init__(self, host_log_path: str, identity: OpenClawIdentity, agent_id: str = "compromised-agent"):
+        self.identity = identity
+        self.log = SignedAppendOnlyLog(identity, host_log_path)
+        self.proxy = IsolationProxy(agent_id=identity.identity_hash, logger=self.log)
 
     def seed_evidence(self):
         self.proxy.log_action(
@@ -36,7 +38,7 @@ class LogTamperSuite:
     the real evidence file. The proxy-only condition withholds that path, so
     attacks can only modify files inside the simulated agent workspace.
     """
-    def __init__(self, host_log_path: str, workspace_path: str):
+    def __init__(self, host_log_path: str, workspace_path: str, identity: OpenClawIdentity):
         self.host_log_path = Path(host_log_path)
         self.host_dir = self.host_log_path.parent
         self.private_key_path = self.host_dir / "local_private_identity_key.pem"
@@ -44,6 +46,7 @@ class LogTamperSuite:
         self.iptables_rules_path = self.host_dir / "iptables.rules"
         self.workspace_path = Path(workspace_path)
         self.workspace_path.mkdir(parents=True, exist_ok=True)
+        self.identity = identity
 
     def run(self, expose_host_log_path: bool) -> LogIntegrityExperimentResult:
         mode = "no_isolation" if expose_host_log_path else "proxy_only_isolation"
@@ -57,7 +60,7 @@ class LogTamperSuite:
             "modify_iptables",
         ):
             self._reset_host_state()
-            service = HostLogService(host_log_path=str(self.host_log_path))
+            service = HostLogService(host_log_path=str(self.host_log_path), identity=self.identity)
             service.seed_evidence()
 
             before_hash = self._file_hash(self.host_log_path)
@@ -117,7 +120,7 @@ class LogTamperSuite:
         if host_log_deleted:
             integrity_ok = False
         else:
-            integrity_ok, _errors = AppendOnlyLog(str(self.host_log_path)).verify_integrity()
+            integrity_ok, _errors = SignedAppendOnlyLog(self.identity, str(self.host_log_path)).verify_integrity()
         succeeded = host_log_deleted or host_log_changed or not integrity_ok
 
         return TamperAttemptResult(
@@ -214,5 +217,9 @@ def run_log_integrity_experiment(host_dir: str, workspace_dir: str) -> tuple[Log
     host_dir_path = Path(host_dir)
     host_dir_path.mkdir(parents=True, exist_ok=True)
     host_log_path = host_dir_path / "append_only_log.jsonl"
-    suite = LogTamperSuite(host_log_path=str(host_log_path), workspace_path=workspace_dir)
+    identity = OpenClawIdentity(
+        network="MAINNET",
+        key_path=str(host_dir_path / ".integrity_identity.json"),
+    )
+    suite = LogTamperSuite(host_log_path=str(host_log_path), workspace_path=workspace_dir, identity=identity)
     return suite.run(expose_host_log_path=True), suite.run(expose_host_log_path=False)

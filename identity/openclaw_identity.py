@@ -49,6 +49,28 @@ class OpenClawIdentity:
     def sign(self, data: bytes) -> bytes:
         return self.agent_identity.ipv8.sign(data)
 
+    @classmethod
+    def from_agent_identity(cls, agent_identity: AgentIdentity) -> "OpenClawIdentity":
+        """Adapt an in-memory ``AgentIdentity`` into an OpenClawIdentity.
+
+        Bypasses the file-backed ``__init__`` path so callers that already
+        hold an ``AgentIdentity`` (e.g. ``P2PAgent`` derived from a
+        mnemonic seed) can produce a compatible OpenClawIdentity without
+        writing a JSON key file or re-deriving keys.
+        """
+        instance = cls.__new__(cls)
+        instance.network = agent_identity.network.upper()
+        instance.key_path = None  # not file-backed
+        instance.agent_identity = agent_identity
+        instance.ipv8 = agent_identity.ipv8
+        instance.public_key = agent_identity.ipv8.raw_pubkey
+        instance.serialized_public_key = instance.public_key
+        instance.identity_hash_bytes = hashlib.sha256(
+            instance.public_key + instance.network.encode("utf-8")
+        ).digest()
+        instance.identity_hash = instance.identity_hash_bytes.hex()
+        return instance
+
     @staticmethod
     def identity_hash_for_public_key(public_key: bytes, network: str = "MAINNET") -> str:
         tag = network.upper().encode("utf-8")

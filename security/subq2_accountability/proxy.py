@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from security.subq2_accountability.append_log import AppendOnlyLog
+from redteam.primitives.signed_log import SignedAppendOnlyLog
 
 
 class IsolationProxy:
     """Narrow host-side proxy for logging actions from contained code."""
 
-    def __init__(self, agent_id: str, logger: AppendOnlyLog):
+    def __init__(self, agent_id: str, logger: SignedAppendOnlyLog):
         self.agent_id = agent_id
         self.logger = logger
 

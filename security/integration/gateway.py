@@ -14,8 +14,9 @@ from urllib.parse import unquote, urlparse
 from security.contracts import ExecutionResult, SecurityAction, ToolDecision, ToolPolicy, ToolRisk
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.accountability import AccountabilityMonitor
-from security.subq2_accountability.append_log import AppendOnlyLog
 from security.subq2_accountability.bitcoin_anchor import BitcoinAnchor, BitcoinAnchorVerifier
+from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.subq2_accountability.reputation import ReputationEngine
 from security.subq2_accountability.seedbox import (
     AtomicMicrotask,
@@ -48,6 +49,7 @@ class GatewayState:
         experiment_root: str = "",
         bitcoin_network: str = "mock",
         bitcoin_min_confirmations: int = 0,
+        identity: OpenClawIdentity | None = None,
     ):
         if mode not in {"defended", "baseline"}:
             raise ValueError("mode must be 'defended' or 'baseline'")
@@ -75,12 +77,22 @@ class GatewayState:
             "bitcoin_network": bitcoin_network,
             "bitcoin_min_confirmations": bitcoin_min_confirmations,
         }
-        self.log = AppendOnlyLog(log_path=log_path, run_metadata=self.run_metadata)
+        log_dir = Path(log_path).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if identity is None:
+            safe_agent = "".join(c if c.isalnum() or c in "-_" else "_" for c in local_agent_id) or "default"
+            key_path = log_dir / f".gateway_identity_{safe_agent}.json"
+            identity = OpenClawIdentity(
+                network="MAINNET",
+                key_path=str(key_path),
+            )
+        self._identity = identity
+        self.log = SignedAppendOnlyLog(self._identity, log_path=log_path)
         self.reputation = ReputationEngine(log_path=self.log.log_path, ban_threshold=ban_threshold)
         self.monitor = AccountabilityMonitor(
             log=self.log,
             reputation=self.reputation,
-            reporter_id=local_agent_id,
+            reporter_id=self._identity.identity_hash,
         )
         self.registry = SeedboxRegistry()
         self.ledger = DonationLedger(self.registry)
@@ -172,7 +184,7 @@ class GatewayState:
         severity = int(payload.get("severity", ReputationEngine.DEFAULT_WEIGHTS.get(action, 10)))
 
         self.log.append_event(
-            reporter_id=self.local_agent_id,
+            reporter_id=self._identity.identity_hash,
             subject_id=subject_id,
             action=action,
             severity=severity,
@@ -227,7 +239,7 @@ class GatewayState:
                 "proof_count": len(proofs),
             }
             self.log.append_event(
-                reporter_id=self.local_agent_id,
+                reporter_id=self._identity.identity_hash,
                 subject_id=seedbox.owner_id,
                 action=SecurityAction.SEEDBOX_MISSING_PROOF.value,
                 severity=severity,
@@ -289,7 +301,7 @@ class GatewayState:
 
         if result.executed:
             self.log.append_event(
-                reporter_id=self.local_agent_id,
+                reporter_id=self._identity.identity_hash,
                 subject_id=subject_id,
                 action=SecurityAction.TOOL_EXECUTION_SUCCESS.value,
                 severity=0,
@@ -314,7 +326,7 @@ class GatewayState:
                     )
             if decision.tool_name == "submit_seedbox_proof" and result.output:
                 self.log.append_event(
-                    reporter_id=self.local_agent_id,
+                    reporter_id=self._identity.identity_hash,
                     subject_id=subject_id,
                     action=SecurityAction.SEEDBOX_PROOF_OF_SERVICE.value,
                     severity=0,
