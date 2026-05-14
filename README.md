@@ -86,11 +86,15 @@ DelftClaw/
 |   |-- scenarios/           # seek_cc/scenario.yaml + alice/bob mission.md
 |   `-- vps/                 # setup_vps.sh + bootstrap scripts
 |-- shared/                  # cross-cutting identifiers, errors, logging
-|-- examples/                # donation_demo, overlay_demo, run_two_agents
+|-- examples/                # run_two_agents, pull_sync_demo
 |-- security/                # SubQ1/2/3 experiment scaffolding + colleague gateway
-|-- redteam/primitives/      # signed append-only log (research artefact)
+|-- redteam/                 # signed append-only log + HTTP replication
+|   |-- primitives/          # SignedAppendOnlyLog, PeerLog (research artefact)
+|   `-- integration/         # peer_transport.py + pull_loop.py + server.py
 |-- tests/                   # in-tree pytest suite
 |-- configs/                 # template.env + host.env.example
+|-- agent.py                 # legacy P2PAgent (red-step TDD fixture; not the v5.1 entry point)
+|-- network.py               # UDPEndpoint stub used by agent.py only
 |-- Makefile                 # operator entry: deploy / scenario / watch / stop / test
 |-- docs/agent_intents.md    # OpenClaw user-intent → tool-call mappings
 |-- PROJECT_DESIGN.md        # canonical reference (v5.1)

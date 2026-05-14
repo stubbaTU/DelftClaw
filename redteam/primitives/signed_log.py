@@ -1,4 +1,4 @@
-"""Signed append-only log: sign-then-chain wrapper around ``AppendOnlyLog``.
+"""Signed append-only log: sign-then-chain wrapper around an append-only base.
 
 Each entry is signed with the local OpenClaw Ed25519 key before its
 ``entry_hash`` is computed. The override of ``_entry_hash`` excludes both
@@ -15,14 +15,12 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from identity.agent_identity import AgentIdentity
-from security.subq2_accountability.append_log import AppendOnlyLog
+from identity.openclaw_identity import OpenClawIdentity
 from shared.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -38,7 +36,43 @@ def _stable_hash(payload: Any) -> str:
     return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
 
-class SignedAppendOnlyLog(AppendOnlyLog):
+class _LegacyAppendOnlyBase:
+    """Module-private unsigned append-only base for SignedAppendOnlyLog."""
+
+    HEADER = "=== OpenClaw Append-Only Security Log v2 ==="
+
+    def __init__(self, log_path: str = "agent_actions.log"):
+        self.log_path = log_path
+        if not os.path.exists(self.log_path):
+            with open(self.log_path, "a") as f:
+                f.write(f"{self.HEADER}\n")
+
+    def latest_hash(self) -> str:
+        latest = "GENESIS"
+        for entry in self.read_entries():
+            latest = entry.get("entry_hash", latest)
+        return latest
+
+    def read_entries(self) -> list[dict]:
+        if not os.path.exists(self.log_path):
+            return []
+
+        entries = []
+        with open(self.log_path, "r") as f:
+            for line in f:
+                if line.startswith("===") or not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    continue
+
+                if entry.get("version") == 2:
+                    entries.append(entry)
+        return entries
+
+
+class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
     """Append-only log whose entries are Ed25519-signed before chaining.
 
     The wrapper preserves the parent's v2 entry shape and chain semantics,
@@ -72,8 +106,8 @@ class SignedAppendOnlyLog(AppendOnlyLog):
 
     def __init__(
         self,
-        identity: AgentIdentity,
-        log_path: "str | os.PathLike[str]",
+        identity: OpenClawIdentity,
+        log_path: str | os.PathLike[str],
     ) -> None:
         if identity is None:
             raise ValueError("identity must not be None")
@@ -213,13 +247,13 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             "details_hash": _stable_hash(details),
             "evidence_hash": _stable_hash(evidence_payload),
             "previous_hash": self.latest_hash(),
-            "reporter_pubkey": self._identity.ipv8.raw_pubkey.hex(),
+            "reporter_pubkey": self._identity.public_key.hex(),
         }
 
         # Sign the canonical JSON of the entry so far (no signature, no
         # entry_hash). Then attach the signature and finally compute the
         # chain hash, which covers the signature too via the override.
-        entry["signature"] = self._identity.ipv8.sign(_canonical_bytes(entry)).hex()
+        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
         entry["entry_hash"] = self._entry_hash(entry)
         return entry
 
@@ -287,7 +321,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
             "details_hash": details_hash,
             "evidence_hash": _stable_hash(evidence_payload),
             "previous_hash": self.latest_hash(),
-            "reporter_pubkey": self._identity.ipv8.raw_pubkey.hex(),
+            "reporter_pubkey": self._identity.public_key.hex(),
             "subject_pubkey": pubkey_bytes.hex(),
             "subject_claim": subject_claim,
             "subject_signature": sig_bytes.hex(),
@@ -297,7 +331,7 @@ class SignedAppendOnlyLog(AppendOnlyLog):
         # subject_signature rides along into the reporter signature and the
         # chain hash, so an attacker who later swaps in a different valid
         # subject sig invalidates the reporter sig and the entry_hash.
-        entry["signature"] = self._identity.ipv8.sign(_canonical_bytes(entry)).hex()
+        entry["signature"] = self._identity.sign(_canonical_bytes(entry)).hex()
         entry["entry_hash"] = self._entry_hash(entry)
         return entry
 

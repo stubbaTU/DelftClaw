@@ -32,8 +32,12 @@ pytest identity/tests -q
 
 ## Notes
 
-`OpenClawIdentity` (`openclaw_identity.py`) is a thin compatibility
-shim around `AgentIdentity`, kept because the colleague's
-`security/integration/openclaw_bridge.py` and the redteam signed-log
-test suite import it directly. v5.1 production code uses
-`AgentIdentity` everywhere else.
+`OpenClawIdentity` (`openclaw_identity.py`) is the **identity type
+the signed append-only log binds to** —
+`redteam/primitives/signed_log.py:SignedAppendOnlyLog` takes an
+`OpenClawIdentity` and produces signed entries whose `reporter_id`
+equals `SHA256(reporter_pubkey || network)`. It also has a
+`from_agent_identity` factory so callers that already hold an
+`AgentIdentity` (e.g. `agent/runtime.py:OpenClawAgent`) can wrap it
+without re-deriving keys. `security/integration/openclaw_bridge.py`
+and the redteam test suite both consume it directly.
