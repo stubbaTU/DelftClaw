@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from security.seedbox_providers import LocalSeedboxProvider, MockSeedboxProvider, RealSporeStackProvider, provider_for
+from claw_community.seedbox_providers import LocalSeedboxProvider, MockSeedboxProvider, RealSporeStackProvider, provider_for
 
 
 def test_mock_seedbox_launch_returns_demo_metadata(tmp_path: Path) -> None:

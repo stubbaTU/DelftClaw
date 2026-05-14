@@ -15,6 +15,8 @@ as the authority for:
 - returning playback intents for existing streaming skills
 - registering seedboxes and seedbox-hosted files
 - recording donations, service proofs, and reputation evidence
+- creating Claw communities, joining by verification donation, and expanding
+  community seedbox capacity
 - checking gateway status, reputation, and security audit state
 
 ## Connection
@@ -159,6 +161,138 @@ delftclaw_register_seedbox(
   donation_address="<bitcoin-address-or-regtest-address>",
   advertised_capacity_gb=<capacity>
 )
+```
+
+### Claw Community Demo Flow
+
+User says:
+
+```text
+create a Claw community claw-demo with founder agent-a, wallet dclaw-wallet-a, 8000 sats funding, 1000 sats join fee, 3 agent seedbox capacity
+```
+
+Agent action:
+
+```text
+delftclaw_create_community(
+  community_id="claw-demo",
+  founder_agent_id="agent-a",
+  founder_wallet_address="dclaw-wallet-a",
+  initial_funding_sats=8000,
+  join_fee_sats=1000,
+  seedbox_capacity_agents=3,
+  seedbox_purchase_threshold_sats=2000
+)
+```
+
+User says:
+
+```text
+buy a local seedbox for claw-demo
+```
+
+Agent action:
+
+```text
+delftclaw_buy_community_seedbox(
+  community_id="claw-demo",
+  actor_id="agent-a",
+  provider="local"
+)
+```
+
+Allowed providers are `mock` and `local` for live demos. `sporestack` is
+plan-only until real token, balance, payment, SSH, and deployment checks are
+configured.
+
+User says:
+
+```text
+agent-b joins claw-demo by donating 1000 sats from dclaw-wallet-b
+```
+
+Agent action:
+
+```text
+delftclaw_join_community(
+  community_id="claw-demo",
+  agent_id="agent-b",
+  wallet_address="dclaw-wallet-b",
+  amount_sats=1000,
+  txid="<regtest-or-mock-txid>"
+)
+```
+
+The tool records the donation, initial trust value, assignment to a seedbox,
+and capacity-expansion decision in the signed append-only log.
+
+User says:
+
+```text
+import file catalog C:\path\to\demo_files.csv for claw-demo
+```
+
+Agent action:
+
+```text
+delftclaw_import_community_file_catalog(
+  community_id="claw-demo",
+  csv_path="<csv-path>"
+)
+```
+
+The CSV columns are:
+
+```text
+file_id,name,tags,sha256,size_bytes,seedbox_id,content_url,magnet_uri
+```
+
+User says:
+
+```text
+find Creative Commons Audio in claw-demo
+```
+
+Agent action:
+
+```text
+delftclaw_find_community_file(
+  community_id="claw-demo",
+  requester_agent_id="<requesting-agent-id>",
+  query="Creative Commons Audio"
+)
+```
+
+This searches the community catalog and records a communication placeholder.
+When the communication module is merged, that placeholder should become a real
+peer request.
+
+User says:
+
+```text
+retrieve file cc-audio-001 from claw-demo
+```
+
+Agent action:
+
+```text
+delftclaw_retrieve_community_file(
+  community_id="claw-demo",
+  requester_agent_id="<requesting-agent-id>",
+  file_id="cc-audio-001"
+)
+```
+
+User says:
+
+```text
+show claw-demo status
+```
+
+Agent action:
+
+```text
+delftclaw_get_community_status(community_id="claw-demo")
 ```
 
 If any of `seedbox_id`, `donation_address`, or capacity in GB is missing, ask

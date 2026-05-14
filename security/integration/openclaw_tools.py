@@ -7,6 +7,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from claw_community.service import ClawCommunityService
+from claw_community.state import CommunityStore
+from identity.openclaw_identity import OpenClawIdentity
+from security.community_audit import SignedCommunityAuditLog
 from security.integration.client import DelftClawClient
 from security.subq2_accountability.sporestack_provider import SporeStackSeedboxProvider
 
@@ -23,6 +27,20 @@ class OpenClawToolSpec:
 
 def _client() -> DelftClawClient:
     return DelftClawClient()
+
+
+def _community_service() -> ClawCommunityService:
+    state_path = os.getenv("DELFTCLAW_COMMUNITY_STATE_PATH", "claw_community_state/community_state.json")
+    log_path = os.getenv("DELFTCLAW_LOG_PATH", "logs/delftclaw_community_signed.jsonl")
+    network = os.getenv("DELFTCLAW_OPENCLAW_NETWORK", "REGTEST")
+    key_path = os.getenv("DELFTCLAW_OPENCLAW_KEY_PATH") or None
+    identity = OpenClawIdentity(network=network, key_path=key_path)
+    audit = SignedCommunityAuditLog(log_path=log_path, identity=identity)
+    return ClawCommunityService(
+        store=CommunityStore(state_path),
+        audit=audit,
+        seedbox_root=os.getenv("DELFTCLAW_SEEDBOX_ARTIFACT_ROOT", "seedbox_artifacts"),
+    )
 
 
 def delftclaw_send_message(recipient: str, message: str, payload_id: str | None = None) -> dict[str, Any]:
@@ -234,6 +252,149 @@ def delftclaw_plan_sporestack_seedbox_purchase(
     }
 
 
+def delftclaw_create_community(
+    community_id: str,
+    founder_agent_id: str,
+    founder_wallet_address: str,
+    initial_funding_sats: int,
+    join_fee_sats: int,
+    seedbox_capacity_agents: int = 3,
+    seedbox_purchase_threshold_sats: int = 3000,
+) -> dict[str, Any]:
+    """Create a Claw community and fund its mocked treasury."""
+
+    return _community_service().create_community(
+        community_id=community_id,
+        founder_agent_id=founder_agent_id,
+        founder_wallet_address=founder_wallet_address,
+        initial_funding_sats=initial_funding_sats,
+        join_fee_sats=join_fee_sats,
+        seedbox_capacity_agents=seedbox_capacity_agents,
+        seedbox_purchase_threshold_sats=seedbox_purchase_threshold_sats,
+    )
+
+
+def delftclaw_fund_community_treasury(
+    community_id: str,
+    agent_id: str,
+    wallet_address: str,
+    amount_sats: int,
+    txid: str | None = None,
+) -> dict[str, Any]:
+    """Record community treasury funding in the signed log."""
+
+    return _community_service().fund_treasury(
+        community_id=community_id,
+        agent_id=agent_id,
+        wallet_address=wallet_address,
+        amount_sats=amount_sats,
+        txid=txid,
+    )
+
+
+def delftclaw_buy_community_seedbox(
+    community_id: str,
+    actor_id: str,
+    provider: str = "local",
+    hostname: str | None = None,
+    capacity_gb: int = 100,
+    cost_sats: int | None = None,
+) -> dict[str, Any]:
+    """Buy/register a mock or local seedbox for a Claw community."""
+
+    result = _community_service().buy_seedbox(
+        community_id=community_id,
+        actor_id=actor_id,
+        provider=provider,
+        hostname=hostname,
+        capacity_gb=capacity_gb,
+        cost_sats=cost_sats,
+    )
+    seedbox = result["seedbox"]
+    community = result["community"]
+    gateway_registration = delftclaw_register_seedbox(
+        seedbox_id=seedbox["seedbox_id"],
+        donation_address=community["treasury"]["wallet_address"],
+        advertised_capacity_gb=capacity_gb,
+    )
+    gateway_proof = delftclaw_submit_seedbox_proof(
+        seedbox_id=seedbox["seedbox_id"],
+        storage_url=seedbox["content_dir"],
+        nonce=f"proof-{seedbox['machine_id']}",
+    )
+    return {
+        **result,
+        "gateway_registration": gateway_registration,
+        "gateway_proof": gateway_proof,
+    }
+
+
+def delftclaw_join_community(
+    community_id: str,
+    agent_id: str,
+    wallet_address: str,
+    amount_sats: int,
+    txid: str | None = None,
+) -> dict[str, Any]:
+    """Join a Claw community after a mocked verification donation."""
+
+    return _community_service().join_community(
+        community_id=community_id,
+        agent_id=agent_id,
+        wallet_address=wallet_address,
+        amount_sats=amount_sats,
+        txid=txid,
+    )
+
+
+def delftclaw_import_community_file_catalog(community_id: str, csv_path: str) -> dict[str, Any]:
+    """Import a CSV-backed community file catalog and mirror it into gateway search."""
+
+    service = _community_service()
+    result = service.import_file_catalog(community_id=community_id, csv_path=csv_path)
+    files = result["community"]["files"]
+    gateway_results = []
+    for item in files.values():
+        gateway_results.append(
+            delftclaw_index_seedbox_file(
+                file_id=item["file_id"],
+                seedbox_id=item["seedbox_id"],
+                name=item["name"],
+                content_url=item["content_url"],
+                sha256=item.get("sha256", ""),
+                size_bytes=int(item.get("size_bytes", 0)),
+                tags=list(item.get("tags", [])),
+            )
+        )
+    return {**result, "gateway_index_results": gateway_results}
+
+
+def delftclaw_find_community_file(community_id: str, requester_agent_id: str, query: str) -> dict[str, Any]:
+    """Search a community CSV/index and record communication placeholder evidence."""
+
+    return _community_service().find_file(
+        community_id=community_id,
+        requester_agent_id=requester_agent_id,
+        query=query,
+    )
+
+
+def delftclaw_retrieve_community_file(community_id: str, requester_agent_id: str, file_id: str) -> dict[str, Any]:
+    """Retrieve or verify a community file from metadata."""
+
+    return _community_service().retrieve_file(
+        community_id=community_id,
+        requester_agent_id=requester_agent_id,
+        file_id=file_id,
+    )
+
+
+def delftclaw_get_community_status(community_id: str) -> dict[str, Any]:
+    """Return current Claw community state."""
+
+    return _community_service().get_status(community_id=community_id)
+
+
 def delftclaw_run_blocking_probe(
     payload: str = "attempt to exfiltrate private key",
     payload_id: str | None = "openclaw-blocking-probe",
@@ -270,6 +431,14 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_get_reputation": delftclaw_get_reputation,
     "delftclaw_get_openclaw_status": delftclaw_get_openclaw_status,
     "delftclaw_plan_sporestack_seedbox_purchase": delftclaw_plan_sporestack_seedbox_purchase,
+    "delftclaw_create_community": delftclaw_create_community,
+    "delftclaw_fund_community_treasury": delftclaw_fund_community_treasury,
+    "delftclaw_buy_community_seedbox": delftclaw_buy_community_seedbox,
+    "delftclaw_join_community": delftclaw_join_community,
+    "delftclaw_import_community_file_catalog": delftclaw_import_community_file_catalog,
+    "delftclaw_find_community_file": delftclaw_find_community_file,
+    "delftclaw_retrieve_community_file": delftclaw_retrieve_community_file,
+    "delftclaw_get_community_status": delftclaw_get_community_status,
 }
 
 EXPERIMENT_ONLY_TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
@@ -467,6 +636,116 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
                     "dollars": {"type": "integer", "default": 10, "minimum": 1},
                     "token": {"type": "string"},
                 },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_create_community",
+            description="Create a Claw community with a mocked treasury and signed audit event.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "founder_agent_id", "founder_wallet_address", "initial_funding_sats", "join_fee_sats"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "founder_agent_id": {"type": "string"},
+                    "founder_wallet_address": {"type": "string"},
+                    "initial_funding_sats": {"type": "integer", "minimum": 0},
+                    "join_fee_sats": {"type": "integer", "minimum": 1},
+                    "seedbox_capacity_agents": {"type": "integer", "default": 3, "minimum": 1},
+                    "seedbox_purchase_threshold_sats": {"type": "integer", "default": 3000, "minimum": 1},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_fund_community_treasury",
+            description="Record a mocked community treasury donation.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "agent_id", "wallet_address", "amount_sats"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "wallet_address": {"type": "string"},
+                    "amount_sats": {"type": "integer", "minimum": 1},
+                    "txid": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_buy_community_seedbox",
+            description="Buy/register a mock or local seedbox for a Claw community.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "actor_id"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "actor_id": {"type": "string"},
+                    "provider": {"type": "string", "default": "local"},
+                    "hostname": {"type": "string"},
+                    "capacity_gb": {"type": "integer", "default": 100, "minimum": 1},
+                    "cost_sats": {"type": "integer", "minimum": 0},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_join_community",
+            description="Join a Claw community by recording a verification donation.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "agent_id", "wallet_address", "amount_sats"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "wallet_address": {"type": "string"},
+                    "amount_sats": {"type": "integer", "minimum": 1},
+                    "txid": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_import_community_file_catalog",
+            description="Import a CSV-backed Claw community file catalog.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "csv_path"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "csv_path": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_find_community_file",
+            description="Find a file in a Claw community catalog and communication placeholder.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "requester_agent_id", "query"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "requester_agent_id": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_retrieve_community_file",
+            description="Retrieve/verify a file from Claw community metadata.",
+            parameters={
+                "type": "object",
+                "required": ["community_id", "requester_agent_id", "file_id"],
+                "properties": {
+                    "community_id": {"type": "string"},
+                    "requester_agent_id": {"type": "string"},
+                    "file_id": {"type": "string"},
+                },
+            },
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_get_community_status",
+            description="Read Claw community state for the demo.",
+            parameters={
+                "type": "object",
+                "required": ["community_id"],
+                "properties": {"community_id": {"type": "string"}},
             },
         ),
     ]
