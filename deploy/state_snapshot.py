@@ -103,15 +103,20 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     without an extra tool round-trip. Handler text is truncated per
     message to keep the prompt bounded — the LLM can call
     ``overlay_describe`` for the full markdown when it needs it.
+
+    Each entry carries an ``origin`` discriminator (``"markdown"`` or
+    ``"python_class"``) so the LLM knows whether the absent
+    ``handler_summary`` is "operator omitted it" or "no canonical text
+    exists" for that overlay.
     """
     out: list[dict[str, Any]] = []
     for community_id in agent.registry.list_loaded():
         compiled = agent.registry._compiled[community_id]
-        out.append({
-            "community_id_hex": community_id.hex(),
-            "name": compiled.parsed.identity.get("name", ""),
-            "version": compiled.parsed.identity.get("version", ""),
-            "messages": [
+        parsed = compiled.parsed
+        if parsed is not None:
+            name = parsed.identity.get("name", "")
+            version = parsed.identity.get("version", "")
+            messages = [
                 {
                     "name": m.name,
                     "msg_id": m.msg_id,
@@ -121,8 +126,32 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                     ],
                     "handler_summary": _truncate(m.handler_text, _HANDLER_SUMMARY_MAX_CHARS),
                 }
-                for m in compiled.parsed.messages
-            ],
+                for m in parsed.messages
+            ]
+        else:
+            # Hand-written Community: synthesise the table from the
+            # introspected payload classes the registry already populated.
+            name = compiled.community_class.__name__
+            version = ""
+            messages = [
+                {
+                    "name": msg_name,
+                    "msg_id": payload_cls.msg_id,
+                    "fields": [
+                        {"name": n, "encoding": fmt}
+                        for n, fmt in zip(payload_cls.names, payload_cls.format_list)
+                    ],
+                    "handler_summary": "",
+                }
+                for msg_name, payload_cls in compiled.payload_classes.items()
+            ]
+
+        out.append({
+            "community_id_hex": community_id.hex(),
+            "origin": compiled.origin,
+            "name": name,
+            "version": version,
+            "messages": messages,
         })
     return out
 

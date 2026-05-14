@@ -135,44 +135,30 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     async def overlays_list() -> list[dict[str, Any]]:
         """Full per-overlay spec the LLM needs to invoke any message zero-shot.
 
-        Drains everything ``CompiledOverlay.parsed`` already holds —
-        identity, every message's field encodings + handler text, error
-        policies, dependencies. Without this, the LLM has only message
-        names and would have to guess field shapes.
+        Each entry carries an ``origin`` discriminator:
+          - ``"markdown"`` — the v5.1 path; identity / messages / errors
+            / dependencies all populated from the parsed descriptor.
+          - ``"python_class"`` — hand-written Community registered via
+            ``OverlayRegistry.register_community(cls)``; prose-only
+            fields (description, handler_text, errors, dependencies)
+            are empty but message structural metadata (msg_id, field
+            encodings) is present so ``overlay_invoke`` still works.
         """
-        out: list[dict[str, Any]] = []
-        for community_id in agent.registry.list_loaded():
-            compiled = agent.registry._compiled[community_id]
-            out.append({
-                "community_id_hex": community_id.hex(),
-                "name": compiled.parsed.identity.get("name", ""),
-                "version": compiled.parsed.identity.get("version", ""),
-                "description": compiled.parsed.identity.get("description", ""),
-                "messages": [
-                    {
-                        "name": m.name,
-                        "msg_id": m.msg_id,
-                        "fields": [
-                            {
-                                "name": f.name,
-                                "encoding": f.encoding,
-                                "description": f.description,
-                            }
-                            for f in m.fields
-                        ],
-                        "handler_text": m.handler_text,
-                    }
-                    for m in compiled.parsed.messages
-                ],
-                "errors": [dict(e) for e in compiled.parsed.errors],
-                "dependencies": list(compiled.parsed.dependencies),
-            })
-        return out
+        from protocol.registry import overlay_to_dict
+        return [
+            overlay_to_dict(agent.registry._compiled[cid])
+            for cid in agent.registry.list_loaded()
+        ]
 
     OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
 
     async def overlay_describe(community_id_hex: str) -> dict[str, Any]:
-        """Return the canonical markdown of a loaded overlay (truncated if oversized)."""
+        """Return the canonical markdown of a loaded overlay (truncated if oversized).
+
+        Returns ``{"error": "no_canonical_md:python_class"}`` for
+        overlays registered via ``register_community(cls)`` — there is
+        no canonical text for a hand-written Python class.
+        """
         try:
             community_id = bytes.fromhex(community_id_hex)
         except ValueError as exc:
@@ -180,6 +166,8 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         compiled = agent.registry._compiled.get(community_id)
         if compiled is None:
             return {"error": f"overlay_not_loaded:{community_id_hex}"}
+        if compiled.origin == "python_class":
+            return {"error": "no_canonical_md:python_class"}
         md_bytes = compiled.canonical_md_bytes
         truncated = False
         if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:

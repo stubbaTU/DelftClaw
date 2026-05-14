@@ -26,7 +26,7 @@ import json
 import re
 import struct
 from dataclasses import dataclass
-from typing import Any, Iterable, Type
+from typing import Any, Iterable, Optional, Type
 
 
 def struct_error():
@@ -534,12 +534,27 @@ def _run_test_vector(payload_cls: Type, tv: TestVector) -> None:
 
 @dataclass(frozen=True)
 class CompiledOverlay:
+    """A live overlay's metadata + payload classes, in one of two shapes.
+
+    ``origin == "markdown"`` (v5.1 default): every field is populated.
+    ``parsed`` is the rich schema parsed from the descriptor, and
+    ``canonical_md_bytes`` holds the exact bytes that hashed to
+    ``community_id``.
+
+    ``origin == "python_class"`` (traditional hand-written Community):
+    ``parsed`` is None and ``canonical_md_bytes`` is empty — there is
+    no canonical text representation of a Python class. The tool
+    surface uses ``origin`` to emit metadata-light overlay entries that
+    omit the (absent) handler-text / description prose.
+    """
+
     community_id: bytes
-    parsed: ParsedOverlay
+    parsed: Optional[ParsedOverlay]
     canonical_md_bytes: bytes
     community_class: Type
     payload_classes: dict[str, Type]
     source: str
+    origin: str = "markdown"
 
 
 def compile_overlay(md_text: str, llm: LLMClient) -> CompiledOverlay:

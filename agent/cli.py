@@ -170,6 +170,42 @@ def _parse_peer_spec(spec: str) -> tuple[str, int, str]:
     return host, port, pubkey
 
 
+def _import_class_spec(spec: str) -> type:
+    """Import ``module.path:ClassName`` and return the class object.
+
+    Used by ``--register-community`` to materialise a hand-written
+    ``Community`` subclass at boot. Errors out with a helpful
+    ``argparse.ArgumentTypeError`` so the CLI exits cleanly on a typo.
+    """
+    if ":" not in spec:
+        raise argparse.ArgumentTypeError(
+            f"--register-community must be module.path:ClassName, got {spec!r}"
+        )
+    module_path, _, class_name = spec.partition(":")
+    if not module_path or not class_name:
+        raise argparse.ArgumentTypeError(
+            f"--register-community must be module.path:ClassName, got {spec!r}"
+        )
+    import importlib
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--register-community: cannot import {module_path!r}: {exc}"
+        ) from exc
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        raise argparse.ArgumentTypeError(
+            f"--register-community: module {module_path!r} has no attribute {class_name!r}"
+        )
+    if not isinstance(cls, type):
+        raise argparse.ArgumentTypeError(
+            f"--register-community: {spec!r} resolves to {type(cls).__name__}, not a class"
+        )
+    return cls
+
+
 def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str, str]]:
     """Load + serve each .md descriptor at boot. Returns [(name, md_hash_hex), ...].
 
@@ -265,6 +301,16 @@ async def _run(args: argparse.Namespace) -> int:
     # peers immediately see the descriptor in our published map when they ask.
     published = _publish_overlays(agent, args.publish_overlay or [])
 
+    # Register hand-written Python Community classes (if any). These are
+    # LOCAL-ONLY — they do not flow over the wire because Python bytecode
+    # has no canonical transmittable form. Colleagues running static
+    # protocol experiments use this path instead of the markdown one.
+    registered_classes: list[tuple[str, str]] = []
+    for spec in args.register_community or []:
+        cls = _import_class_spec(spec)
+        instance = agent.registry.register_community(cls)
+        registered_classes.append((cls.__name__, instance.community_id.hex()))
+
     # Network manifest: either consume one (--manifest) or publish one (--genesis).
     manifest_loaded: Optional[str] = None
     if args.manifest:
@@ -293,6 +339,9 @@ async def _run(args: argparse.Namespace) -> int:
     if published:
         for name, md_hash_hex in published:
             print(f"[agent] published overlay: {name}  md_hash={md_hash_hex}", flush=True)
+    if registered_classes:
+        for cls_name, cid_hex in registered_classes:
+            print(f"[agent] registered python community: {cls_name}  community_id={cid_hex}", flush=True)
     if manifest_loaded:
         print(f"[agent] manifest: {manifest_loaded}", flush=True)
     if introduced:
@@ -303,17 +352,24 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         if args.cmd == "info":
+            loaded: list[dict] = []
+            for cid, compiled in agent.registry._compiled.items():
+                if compiled.parsed is not None:
+                    name = compiled.parsed.identity.get("name", "")
+                else:
+                    name = compiled.community_class.__name__
+                loaded.append({
+                    "name": name,
+                    "community_id_hex": cid.hex(),
+                    "origin": compiled.origin,
+                })
             print(json.dumps({
                 "agent_id": str(identity.agent_id),
                 "ipv8_address": list(agent.address),
                 "ipv8_pubkey_hex": agent.pubkey_hex,
                 "wallet_address": agent.wallet.address(),
                 "btc_network": args.btc_network,
-                "loaded_overlays": [
-                    {"name": compiled.parsed.identity.get("name", ""),
-                     "community_id_hex": cid.hex()}
-                    for cid, compiled in agent.registry._compiled.items()
-                ],
+                "loaded_overlays": loaded,
                 "peer_introduce_line":
                     f"--peer {agent.address[0]}:{agent.address[1]}:{agent.pubkey_hex}",
             }, indent=2))
@@ -373,6 +429,11 @@ def main() -> int:
     # Per-agent zero-shot config.
     parser.add_argument("--publish-overlay", action="append", metavar="PATH",
                         help="repeatable; load + serve a markdown overlay descriptor at boot")
+    parser.add_argument("--register-community", action="append",
+                        metavar="MODULE.PATH:ClassName",
+                        help="repeatable; register a hand-written Community subclass "
+                             "at boot. LOCAL-ONLY — the class is not advertised over "
+                             "the bootstrap community (no canonical text representation).")
     parser.add_argument("--peer", action="append", metavar="HOST:PORT:PUBKEY_HEX",
                         help="repeatable; pre-introduce a peer at boot (skip walker)")
     parser.add_argument("--system-prompt", metavar="PATH",

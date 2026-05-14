@@ -153,34 +153,11 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         handler_text}], errors, dependencies}``. Read this before calling
         ``overlay_invoke`` so you know each message's field shape.
         """
-        out: list[dict[str, Any]] = []
-        for community_id in agent.registry.list_loaded():
-            compiled = agent.registry._compiled[community_id]
-            out.append({
-                "community_id_hex": community_id.hex(),
-                "name": compiled.parsed.identity.get("name", ""),
-                "version": compiled.parsed.identity.get("version", ""),
-                "description": compiled.parsed.identity.get("description", ""),
-                "messages": [
-                    {
-                        "name": m.name,
-                        "msg_id": m.msg_id,
-                        "fields": [
-                            {
-                                "name": f.name,
-                                "encoding": f.encoding,
-                                "description": f.description,
-                            }
-                            for f in m.fields
-                        ],
-                        "handler_text": m.handler_text,
-                    }
-                    for m in compiled.parsed.messages
-                ],
-                "errors": [dict(e) for e in compiled.parsed.errors],
-                "dependencies": list(compiled.parsed.dependencies),
-            })
-        return out
+        from protocol.registry import overlay_to_dict
+        return [
+            overlay_to_dict(agent.registry._compiled[cid])
+            for cid in agent.registry.list_loaded()
+        ]
 
     mcp.add_tool(overlays_list)
 
@@ -189,7 +166,10 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         Use when the structured ``handler_text`` in ``overlays_list`` is
         ambiguous. Capped at 32 KiB; the ``truncated`` flag tells you
-        whether the descriptor was clipped.
+        whether the descriptor was clipped. Returns
+        ``{"error": "no_canonical_md:python_class"}`` for overlays
+        registered via ``register_community(cls)`` — there is no
+        canonical text for a hand-written Python class.
         """
         try:
             community_id = bytes.fromhex(community_id_hex)
@@ -198,6 +178,8 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         compiled = agent.registry._compiled.get(community_id)
         if compiled is None:
             return {"error": f"overlay_not_loaded:{community_id_hex}"}
+        if compiled.origin == "python_class":
+            return {"error": "no_canonical_md:python_class"}
         md_bytes = compiled.canonical_md_bytes
         truncated = False
         if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:
