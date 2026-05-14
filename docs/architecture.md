@@ -1,8 +1,9 @@
 # DelftClaw — Architecture (As-Built)
 
-**Status:** authoritative as of 2026-05-13. *(v5.1 — network manifests
-+ zero-shot mission descriptors. See ``PROJECT_DESIGN.md §22`` for the
-delta from v5.0.)*
+**Status:** authoritative as of 2026-05-14. *(v5.1 — network manifests
++ zero-shot mission descriptors + post-merge traditional-overlay path
++ synthetic wallet. See ``PROJECT_DESIGN.md §22`` for the delta from
+v5.0 and the post-merge addenda.)*
 
 **Supersedes:** `PROJECT_DESIGN.md` v5.0 (the canonical reference doc;
 this file is a developer-facing distillation. Where they disagree,
@@ -236,20 +237,33 @@ deployment, this is the sandboxing layer to upgrade
 
 ### 5.4 Runtime registration
 
-`protocol/registry.py:OverlayRegistry`:
+`protocol/registry.py:OverlayRegistry` exposes **two** registration paths:
 
 ```python
 reg = OverlayRegistry(ipv8, llm_client)
-overlay_instance = reg.load(md_text)         # idempotent on community_id
+
+# Markdown path (v5.1 default): compile a descriptor via LLM, register
+# the generated class. Idempotent on community_id.
+overlay_instance = reg.load(md_text)
+
+# Python-class path (post-merge): register a hand-written Community
+# subclass directly. No markdown, no LLM. Idempotent on community_id.
+overlay_instance = reg.register_community(MyCommunity)
 ```
 
-Internally: compile, build `CommunitySettings(my_peer, endpoint,
-network)` from any already-loaded overlay, instantiate the class,
+Both paths build `CommunitySettings(my_peer, endpoint, network)` from
+any already-loaded overlay, instantiate the class,
 `ipv8.overlays.append(instance)` under `ipv8.overlay_lock`, call
 `instance.started()`. IPv8 routes incoming UDP packets to the new
 community automatically — `Community.__init__` registers a 22-byte
 prefix listener on the shared endpoint
 (`ipv8/messaging/interfaces/endpoint.py:_prefix_map`).
+
+The two paths cache into the same `_compiled[cid] / _instances[cid]`
+dictionaries; `CompiledOverlay.origin` discriminates them
+(`"markdown"` vs `"python_class"`). The python_class path is
+**local-only** — there is no canonical text representation of a Python
+class, so these overlays are not gossipped via OVERLAY_* messages.
 
 No IPv8 monkey-patching. No restart.
 

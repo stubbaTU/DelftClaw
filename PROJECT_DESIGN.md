@@ -1054,6 +1054,8 @@ the code.
 | Bob never finds Alice's wallet address in state snapshot | Medium | Known gap — Bob's goal.md explicitly says to wait when address isn't visible. Fixable by plumbing peer wallet addresses into the snapshot (small follow-up) |
 | `openclaw agent` not on `PATH` for the watchdog | Low | `setup_vps.sh` warns at install; watchdog exits 3 if subprocess fails repeatedly |
 | `qwen2.5-coder:7b` is too small to generate correct overlay code | Medium | Test vectors catch wire-level errors at activation, so failures are loud; can swap to a larger model via `QWEN_MODEL` env var |
+| **Mock-mode admission auto-admits any txid** *(post-merge)* | High in production / acceptable for demo | `DonationVerifier(network="mock")` is the default for v5.1 + the synthetic wallet. Donation gate is ceremonial in mock mode. Flip to `BTC_NETWORK=testnet` in `configs/host.env` for real on-chain verification. |
+| **Hand-written Python overlays escape the markdown sandbox** *(post-merge)* | High | `register_community(cls)` runs whatever `Community` subclass the operator imports — no AST whitelist, no test vectors. By design (this is the escape hatch for static experiments); local-only because nothing wire-transmittable references the class. Reviewers must audit the source the same way they audit any other module the agent imports. |
 
 ---
 
@@ -1433,3 +1435,54 @@ Agora "zero-shot without any ambiguity" claim the project rests on.
 Out of scope for v5.1 (deferred): DHT/walker bootstrap, signed manifests,
 WASM/seccomp sandbox upgrade, multi-VPS scenarios, mainnet Bitcoin,
 cross-stack (TS/Rust) compiler proof-of-concept.
+
+### Post-merge addenda (2026-05-14)
+
+These three changes landed after the v5.1 plan was approved, in
+response to operator feedback and the master-branch merge:
+
+1. **Traditional Python `Community` overlays alongside markdown.**
+   Colleagues running more complex / static communication experiments
+   can register a hand-written `Community` subclass directly via
+   `OverlayRegistry.register_community(cls)` (or
+   `python -m agent ... --register-community module.path:ClassName`).
+   The class must declare its own 20-byte `community_id` and ship its
+   `@vp_compile`-decorated `VariablePayload` subclasses in the same
+   module; the registry introspects them at registration time.
+   **Local-only** — Python bytecode has no canonical transmittable
+   form, so these overlays do not flow over the bootstrap community's
+   `OVERLAY_*` / `MANIFEST_*` messages. To make a similar protocol
+   discoverable across the network, wrap it in a markdown descriptor
+   and use the v5.1 path.
+
+   `CompiledOverlay` now carries an `origin: Literal["markdown",
+   "python_class"]` discriminator; `parsed` is `Optional` (None for
+   the python_class path). `overlays_list` / `state.overlays` emit
+   the discriminator + a metadata-light entry for hand-written
+   communities; `overlay_describe` returns
+   `{"error": "no_canonical_md:python_class"}` for them.
+
+2. **Synthetic wallet replaces the bitcoinlib HD wallet.** The
+   merge with master adopted its `dclaw1<hex>`-address synthetic
+   `identity.wallet.Wallet`. The deterministic `send(to, sats) -> txid`
+   never broadcasts and never queries a service provider. The donation
+   gate is preserved on the wire and in the manifest; admission
+   verification now defaults to `network="mock"` in
+   `admission.donation_verifier.DonationVerifier`, which auto-admits
+   any non-empty txid. **Trade-off**: kills the on-chain
+   admission verification that was a stated v5.1 goal — but it removes
+   the bitcoinlib provider-rotation stalls and faucet-funding pain
+   that were blocking the seek_cc demo. The `network="testnet"`
+   real-bitcoinlib path is preserved and can be flipped on per-host
+   via `BTC_NETWORK=testnet` in `configs/host.env`.
+
+3. **Templated systemd family extended to identity + security MCPs.**
+   `delftclaw-identity-mcp@.service` and `delftclaw-security-mcp@.service`
+   now mirror the existing `delftclaw-mcp@.service` /
+   `delftclaw-watchdog@.service` pattern (run as the `delftclaw`
+   system user, read `/etc/delftclaw/instances/<instance>.env`).
+   Single bootstrap script (`deploy/setup_vps.sh`) installs all four;
+   the colleagues' non-templated gateway + seedbox-audit units stay
+   as-is. New `configs/host.env` (gitignored; example at
+   `configs/host.env.example`) gives every developer one place to pin
+   their Tailscale GPU IP / Qwen endpoint / Bitcoin network.
