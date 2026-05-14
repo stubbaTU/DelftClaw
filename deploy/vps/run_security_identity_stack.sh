@@ -1,62 +1,77 @@
 #!/usr/bin/env bash
+# Bring up the templated identity + security MCP units for one instance.
+#
+# Prerequisites: ``deploy/setup_vps.sh`` and
+# ``deploy/vps/bootstrap_security_identity.sh`` have already run for this
+# INSTANCE, so the env file ``/etc/delftclaw/instances/<instance>.env``
+# exists and the templated units are installed.
+#
+# This script is intentionally a thin systemctl wrapper — the days of
+# forking the three processes from a single foreground script are over.
+# The colleagues' optional gateway + seedbox-audit units (still
+# non-templated) are also brought up here when their unit files exist.
+
 set -Eeuo pipefail
 
-REPO_DIR="${DELFTCLAW_REPO_DIR:-/root/DelftClaw}"
-ENV_FILE="${DELFTCLAW_ENV_FILE:-$REPO_DIR/configs/vuk.local.env}"
+INSTANCE="${INSTANCE:-${DELFTCLAW_AGENT_ID:-$(hostname -s)}}"
+ENV_FILE="/etc/delftclaw/instances/${INSTANCE}.env"
 
-cd "$REPO_DIR"
-source .venv/bin/activate
+SUDO=""
+if [[ "$(id -u)" -ne 0 ]]; then
+  SUDO="sudo"
+fi
 
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Env file not found: $ENV_FILE"
+  echo "Run deploy/vps/bootstrap_security_identity.sh first (INSTANCE=${INSTANCE})."
+  exit 1
+fi
+
+echo "Bringing up DelftClaw MCP stack for instance '${INSTANCE}'"
+
+$SUDO systemctl daemon-reload
+
+# Templated DelftClaw MCPs (installed by deploy/setup_vps.sh).
+for unit in \
+  "delftclaw-identity-mcp@${INSTANCE}.service" \
+  "delftclaw-security-mcp@${INSTANCE}.service"; do
+  echo "  enabling ${unit}"
+  $SUDO systemctl reset-failed "${unit}" 2>/dev/null || true
+  $SUDO systemctl enable --now "${unit}"
+done
+
+# Colleagues' non-templated gateway + seedbox-audit (optional).
+for legacy in delftclaw-gateway.service delftclaw-seedbox-audit.service; do
+  if [[ -f "/etc/systemd/system/${legacy}" ]]; then
+    echo "  enabling ${legacy} (non-templated)"
+    $SUDO systemctl reset-failed "${legacy}" 2>/dev/null || true
+    $SUDO systemctl enable --now "${legacy}"
+  fi
+done
+
+# Source the env file just so we can print the endpoints to the operator.
 set -a
+# shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
 
-IDENTITY_PATH="${DELFTCLAW_OPENCLAW_KEY_PATH:-$REPO_DIR/identity/agent_identity.json}"
 IDENTITY_PORT="${IDENTITY_MCP_PORT:-7701}"
-SECURITY_MCP_PORT="${DELFTCLAW_SECURITY_MCP_PORT:-7702}"
-GATEWAY_HOST="${DELFTCLAW_GATEWAY_HOST:-127.0.0.1}"
-GATEWAY_PORT="${DELFTCLAW_GATEWAY_PORT:-8765}"
-export DELFTCLAW_GATEWAY_URL="${DELFTCLAW_GATEWAY_URL:-http://$GATEWAY_HOST:$GATEWAY_PORT}"
-NETWORK_LOWER="$(printf '%s' "${DELFTCLAW_OPENCLAW_NETWORK:-REGTEST}" | tr '[:upper:]' '[:lower:]')"
+SECURITY_PORT="${SECURITY_MCP_PORT:-7702}"
+GATEWAY_URL="${DELFTCLAW_GATEWAY_URL:-http://127.0.0.1:8765}"
 
-mkdir -p "$REPO_DIR/logs"
+cat <<EOF
 
-cleanup() {
-  echo
-  echo "Stopping DelftClaw demo stack"
-  kill "${IDENTITY_PID:-}" "${GATEWAY_PID:-}" "${SECURITY_MCP_PID:-}" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+DelftClaw MCP stack is up for '${INSTANCE}'.
 
-echo "Starting identity MCP on 127.0.0.1:$IDENTITY_PORT"
-python -m identity.start_identity_server \
-  --network "$NETWORK_LOWER" \
-  --port "$IDENTITY_PORT" \
-  --identity-path "$IDENTITY_PATH" \
-  > "$REPO_DIR/logs/identity_mcp.log" 2>&1 &
-IDENTITY_PID=$!
+  Identity MCP: http://127.0.0.1:${IDENTITY_PORT}/mcp
+  Security MCP: http://127.0.0.1:${SECURITY_PORT}/mcp
+  Gateway:      ${GATEWAY_URL}
 
-echo "Starting DelftClaw gateway from $ENV_FILE"
-python -m security.integration.gateway --env "$ENV_FILE" \
-  > "$REPO_DIR/logs/gateway.log" 2>&1 &
-GATEWAY_PID=$!
+Tail logs:
+  journalctl -u 'delftclaw-identity-mcp@${INSTANCE}' -f
+  journalctl -u 'delftclaw-security-mcp@${INSTANCE}' -f
 
-echo "Starting security MCP on 127.0.0.1:$SECURITY_MCP_PORT"
-python -m security.integration.start_security_mcp_server --port "$SECURITY_MCP_PORT" \
-  > "$REPO_DIR/logs/security_mcp.log" 2>&1 &
-SECURITY_MCP_PID=$!
-
-echo
-echo "Stack started."
-echo "Identity MCP: http://127.0.0.1:$IDENTITY_PORT/mcp"
-echo "Gateway:      $DELFTCLAW_GATEWAY_URL"
-echo "Security MCP: http://127.0.0.1:$SECURITY_MCP_PORT/mcp"
-echo
-echo "Logs:"
-echo "  $REPO_DIR/logs/identity_mcp.log"
-echo "  $REPO_DIR/logs/gateway.log"
-echo "  $REPO_DIR/logs/security_mcp.log"
-echo
-echo "Press Ctrl+C to stop all three processes."
-
-wait
+Tear down:
+  sudo systemctl disable --now delftclaw-identity-mcp@${INSTANCE}.service
+  sudo systemctl disable --now delftclaw-security-mcp@${INSTANCE}.service
+EOF

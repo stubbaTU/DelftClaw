@@ -166,12 +166,30 @@ step_systemd_templates() {
         systemctl disable delftclaw-mcp.service 2>/dev/null || true
         rm -f /etc/systemd/system/delftclaw-mcp.service
     fi
-    install -m 0644 -o root -g root \
-        "$REPO_ROOT/deploy/systemd/delftclaw-mcp@.service" \
-        /etc/systemd/system/delftclaw-mcp@.service
-    install -m 0644 -o root -g root \
-        "$REPO_ROOT/deploy/systemd/delftclaw-watchdog@.service" \
-        /etc/systemd/system/delftclaw-watchdog@.service
+    # Pre-templated colleagues' units from earlier branches; the templated
+    # form takes over now.
+    for legacy in delftclaw-identity-mcp.service delftclaw-security-mcp.service; do
+        if systemctl list-unit-files | grep -q "^${legacy}\$"; then
+            c_blue "systemd: removing legacy ${legacy}"
+            systemctl stop "${legacy}" 2>/dev/null || true
+            systemctl disable "${legacy}" 2>/dev/null || true
+            rm -f "/etc/systemd/system/${legacy}"
+        fi
+    done
+
+    # Install every templated unit the project ships. Each takes an instance
+    # name via `systemctl enable --now <unit>@<instance>.service` and reads
+    # its env file from /etc/delftclaw/instances/<instance>.env.
+    for unit in \
+        delftclaw-mcp@.service \
+        delftclaw-watchdog@.service \
+        delftclaw-identity-mcp@.service \
+        delftclaw-security-mcp@.service; do
+        install -m 0644 -o root -g root \
+            "$REPO_ROOT/deploy/systemd/${unit}" \
+            "/etc/systemd/system/${unit}"
+    done
+
     install -d -o root -g "$SERVICE_USER" -m 0750 /etc/delftclaw/instances
     install -d -o root -g "$SERVICE_USER" -m 0750 /etc/delftclaw/scenarios
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 /var/log/delftclaw
@@ -207,21 +225,36 @@ main() {
 ==============================================================================
 DelftClaw infrastructure is installed.
 
-The single-instance flow is gone. Instead, scenarios are brought up on
-demand and run autonomously:
+Four templated systemd units are now available, all reading their per-instance
+env file from /etc/delftclaw/instances/<instance>.env:
+
+  delftclaw-mcp@.service           — agent + watchdog scenario MCP (seek_cc, etc.)
+  delftclaw-watchdog@.service      — autonomous tick driver for delftclaw-mcp
+  delftclaw-identity-mcp@.service  — colleague's identity MCP (BIP-44 wallet, MLS)
+  delftclaw-security-mcp@.service  — colleague's security MCP (gateway evidence)
+
+Scenario flow (per-agent):
 
   # On the VPS (or via 'make scenario NAME=seek_cc' from your laptop):
   /opt/delftclaw/venv/bin/python -m deploy.scenario_boot seek_cc
 
+Identity/security stack (per-host; <instance> is your VPS handle):
+
+  # 1. write /etc/delftclaw/instances/<instance>.env with NETWORK,
+  #    IDENTITY_MCP_PORT, IDENTITY_PATH, SECURITY_MCP_PORT, PYTHONPATH=/opt/delftclaw
+  # 2. enable the units you need:
+  sudo systemctl enable --now delftclaw-identity-mcp@<instance>.service
+  sudo systemctl enable --now delftclaw-security-mcp@<instance>.service
+
 Common operator commands:
 
-  systemctl list-units 'delftclaw-mcp@*.service'         # active MCP servers
-  systemctl list-units 'delftclaw-watchdog@*.service'    # active watchdogs
-  journalctl -u 'delftclaw-mcp@seek_cc-alice' -f         # tail one agent
+  systemctl list-units 'delftclaw-*@*.service'                # all instances
+  journalctl -u 'delftclaw-identity-mcp@<instance>' -f        # tail one
+  journalctl -u 'delftclaw-mcp@seek_cc-alice' -f              # tail scenario agent
 
   ufw enable                            # leave open: 22/tcp, 8190-8199/udp, 18765-18774/tcp
 
-  python -m deploy.scenario_boot seek_cc --teardown      # stop everything
+  python -m deploy.scenario_boot seek_cc --teardown           # stop scenario
 
 Ollama : http://127.0.0.1:${OLLAMA_PORT}/v1   (${QWEN_MODEL})
 
