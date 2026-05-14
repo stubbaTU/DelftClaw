@@ -1,72 +1,73 @@
-"""Barebones OpenClaw agent built on the real IPv8 runtime."""
-
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from communication.claw.community import ClawPoCCommunity
-from communication.transport.ipv8_runtime import IPv8Runtime, NetworkConfig
 from identity.openclaw_identity import OpenClawIdentity
-from shared.logging import get_logger
 
-_log = get_logger("openclaw_agent")
+
+@dataclass(frozen=True)
+class NetworkConfig:
+    host: str = "0.0.0.0"
+    port: int = 9000
+    working_dir: str = "."
+
+
+class IPv8Runtime:
+    """Small runtime adapter; replaceable by tests or a fuller IPv8 backend."""
+
+    def __init__(self, identity: OpenClawIdentity, network_config: NetworkConfig):
+        self.identity = identity
+        self.network_config = network_config
+        self.registered: list[type] = []
+        self.overlay = None
+        self.started = False
+        self.stopped = False
+
+    def register_community(self, community_cls) -> None:
+        self.registered.append(community_cls)
+        self.overlay = community_cls()
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    def get_overlay(self, community_cls):
+        if self.overlay is None:
+            self.overlay = community_cls()
+        return self.overlay
+
+    @property
+    def my_peer(self):
+        return self.identity.ipv8
 
 
 class OpenClawAgent:
-    """Small orchestrator that runs a real IPv8-backed OpenClaw node.
-
-    This is the actual proof-of-concept agent: it owns the persistent OpenClaw identity,
-    starts IPv8, loads the `ClawPoCCommunity`, and makes the identity available to the
-    community after startup.
-    """
-
     def __init__(
         self,
-        *,
         network: str = "MAINNET",
         key_path: str | Path | None = None,
-        port: int = 9000,
-        address: str = "0.0.0.0",
-        working_dir: str = ".",
         identity: OpenClawIdentity | None = None,
-    ) -> None:
+        host: str = "0.0.0.0",
+        port: int = 9000,
+        working_dir: str = ".",
+    ):
         self.identity = identity or OpenClawIdentity(network=network, key_path=key_path)
-        self.runtime = IPv8Runtime(
-            self.identity,
-            NetworkConfig(port=port, address=address, working_dir=working_dir),
-        )
-        self.runtime.register_community(ClawPoCCommunity)
-        self._community: ClawPoCCommunity | None = None
+        self.identity_hash = self.identity.get_identity_hash()
+        self.network_config = NetworkConfig(host=host, port=port, working_dir=working_dir)
+        self.runtime = IPv8Runtime(self.identity, self.network_config)
+        self.community = None
 
     async def start(self) -> None:
-        """Start the IPv8 runtime and wire the community with the persistent identity."""
+        Path(self.network_config.working_dir).mkdir(parents=True, exist_ok=True)
+        self.runtime.register_community(ClawPoCCommunity)
         await self.runtime.start()
-        community = self.runtime.get_overlay(ClawPoCCommunity)
-        self._community = community
-        try:
-            community.wire(openclaw_identity=self.identity)
-        except TypeError:
-            # Defensive fallback for older/alternate community implementations.
-            setattr(community, "_openclaw_identity", self.identity)
-        community.announce_identity()
-        _log.info("openclaw_agent_started", identity_hash=self.identity.get_identity_hash())
+        self.community = self.runtime.get_overlay(ClawPoCCommunity)
+        self.community.wire(openclaw_identity=self.identity)
+        self.community.announce_identity()
 
     async def stop(self) -> None:
-        """Stop the IPv8 runtime and release its temporary key file."""
         await self.runtime.stop()
-        self._community = None
-        _log.info("openclaw_agent_stopped")
-
-    @property
-    def community(self) -> ClawPoCCommunity | None:
-        return self._community
-
-    @property
-    def my_peer(self) -> Any:
-        return self.runtime.my_peer
-
-    @property
-    def identity_hash(self) -> str:
-        return self.identity.get_identity_hash()
-

@@ -1,6 +1,6 @@
 """Cross-package primitives. Pure typed contracts, no I/O."""
 
-from shared.ids import AgentId, RoomId, MessageId, Nonce, Epoch, Txid, CredentialId
+from shared.ids import AgentId, RoomId, MessageId, Nonce, Epoch, CredentialId
 from shared.errors import (
     OpenClawError,
     CommunicationError,
@@ -8,11 +8,9 @@ from shared.errors import (
     CredentialInvalid,
     EpochMismatch,
     PayloadInvalid,
-    WalletError,
-    IdentityError,
 )
 from shared.threats import Threat
-from shared.envelopes import WireFrame, ApplicationMessage, BTCPayload
+from shared.envelopes import WireFrame, ApplicationMessage
 from shared.credentials import (
     Credential,
     Presentation,
@@ -26,7 +24,6 @@ __all__ = [
     "MessageId",
     "Nonce",
     "Epoch",
-    "Txid",
     "CredentialId",
     "OpenClawError",
     "CommunicationError",
@@ -34,12 +31,9 @@ __all__ = [
     "CredentialInvalid",
     "EpochMismatch",
     "PayloadInvalid",
-    "WalletError",
-    "IdentityError",
     "Threat",
     "WireFrame",
     "ApplicationMessage",
-    "BTCPayload",
     "Credential",
     "Presentation",
     "VerifiedCredential",

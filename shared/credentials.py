@@ -1,25 +1,29 @@
-"""Format-agnostic credential / presentation / key-bundle dataclasses."""
+"""Format-agnostic credential structures plus simple VC issue/verify helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Literal, Mapping
+from datetime import datetime, timezone
+import hashlib
+import json
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from shared.ids import AgentId, Nonce
+
+if TYPE_CHECKING:
+    from identity.agent_identity import AgentIdentity
+    from stake.proof import StakeProof
 
 
 @dataclass(frozen=True)
 class Credential:
-    """Neutral, format-agnostic VC representation. The format-specific bytes live in `raw`."""
+    """Neutral, format-agnostic VC representation. The format-specific bytes live in ``raw``."""
 
     format_id: str
-    # `format_id` is one of "w3c-jwt", "sd-jwt", "bbs+".
     issuer_pubkey: bytes
     subject_pubkey: bytes
     claims: Mapping[str, Any]
     raw: bytes
-    # `raw` is the original signed bytes; verifiers re-parse this to check the signature.
 
 
 @dataclass(frozen=True)
@@ -28,10 +32,9 @@ class Presentation:
 
     credential: Credential
     audience: AgentId
-    # `audience` is the room host this presentation is bound to; prevents cross-room replay.
     nonce: Nonce
     holder_signature: bytes
-    # `holder_signature` proves the presenter holds the subject privkey; covers (audience, nonce).
+    stake_proof: "StakeProof | None" = None
 
 
 @dataclass(frozen=True)
@@ -45,11 +48,58 @@ class VerifiedCredential:
 
 @dataclass(frozen=True)
 class KeyBundle:
-    """Public-key triple a peer publishes so others can encrypt to / authenticate it."""
+    """Public-key triple a peer publishes so others can authenticate it."""
 
     ipv8: bytes
-    # `ipv8` is the Ed25519 long-term identity key.
-    mls: bytes
-    # `mls` is the MLS signature key (Path A) or ratchet sig key (Path B).
-    btc: bytes
-    # `btc` is the Bitcoin wallet public key used as payment recipient.
+    app: bytes
+    wallet: bytes
+
+
+def issue_credential(identity: "AgentIdentity", claims: dict[str, Any]) -> dict[str, Any]:
+    """Issue a minimal VC dict signed by this identity's IPv8 key."""
+    payload = {
+        "issuer_id": identity.get_identity_hash(),
+        "issuer_pubkey": identity.ipv8.public_key_bytes.hex(),
+        "claims": dict(claims),
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "network": identity.network,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = identity.ipv8.sign(canonical)
+    return {
+        **payload,
+        "signature": signature.hex(),
+        "digest": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def verify_credential(vc: dict[str, Any], expected_issuer_id: str) -> bool:
+    """Verify VC signature and issuer identity binding."""
+    try:
+        network = str(vc["network"]).upper()
+        if network not in {"REGTEST", "TESTNET", "MAINNET"}:
+            return False
+
+        issuer_pubkey = bytes.fromhex(str(vc["issuer_pubkey"]))
+        derived_issuer_id = hashlib.sha256(issuer_pubkey + network.encode("ascii")).hexdigest()
+        if derived_issuer_id != expected_issuer_id:
+            return False
+        if str(vc["issuer_id"]) != expected_issuer_id:
+            return False
+
+        canonical_payload = {
+            "issuer_id": vc["issuer_id"],
+            "issuer_pubkey": vc["issuer_pubkey"],
+            "claims": vc["claims"],
+            "issued_at": vc["issued_at"],
+            "network": vc["network"],
+        }
+        canonical = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+        from ipv8.keyvault.crypto import default_eccrypto
+
+        pub = default_eccrypto.key_from_public_bin(issuer_pubkey)
+        sig = bytes.fromhex(str(vc["signature"]))
+        return bool(pub.verify(sig, canonical))
+    except Exception:
+        return False

@@ -19,6 +19,7 @@ def test_prepare_subq3_workspace_creates_manifest_and_prompt(tmp_path: Path) -> 
     assert manifest_path.exists()
     assert Path(manifest["host_log_path"]).exists()
     assert Path(manifest["host_secret_path"]).exists()
+    assert Path(manifest["donation_wallet_path"]).exists()
     assert Path(manifest["iptables_rules_path"]).exists()
     assert Path(manifest["sandbox_workspace"]).exists()
     assert Path(manifest["sandbox_artifacts_dir"], "Dockerfile.gvisor").exists()
@@ -26,8 +27,10 @@ def test_prepare_subq3_workspace_creates_manifest_and_prompt(tmp_path: Path) -> 
     prompt = Path(manifest["prompt_path"]).read_text(encoding="utf-8")
     assert "{LOG_PATH}" not in prompt
     assert "{HOST_SECRET_PATH}" not in prompt
+    assert "{DONATION_WALLET_PATH}" not in prompt
     assert manifest["host_log_path"] in prompt
     assert manifest["host_secret_path"] in prompt
+    assert manifest["donation_wallet_path"] in prompt
 
 
 def test_subq3_sandbox_doctor_accepts_prepared_workspace_without_requiring_gvisor(tmp_path: Path) -> None:

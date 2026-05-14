@@ -6,10 +6,10 @@ from typing import Any
 
 @dataclass(frozen=True)
 class AttackPayoffModel:
-    """Simple repeated-game model for fake seedbox accountability.
+    """Simple repeated-game model for the Reputation Trap Attack.
 
-    A malicious agent compares immediate gain from fake/self donations against
-    the discounted future value lost after expulsion. Deterrence holds when
+    A rug-pull imposter compares immediate gain from fake/self donations
+    against the discounted future value lost after expulsion. Deterrence holds when
     expected_attack_payoff <= expected_honest_payoff.
     """
 
@@ -55,6 +55,12 @@ class ReputationPolicy:
             return accepted
         return accepted + self.scan_interval - 1
 
+    def expected_fallout_radius(self) -> int:
+        return self.expected_blast_radius()
+
+    def expected_reputation_lag(self) -> int:
+        return max(0, self.expected_fallout_radius() - 1)
+
 
 def sweep_reputation_policies(
     *,
@@ -72,15 +78,17 @@ def sweep_reputation_policies(
                 scan_interval=scan_interval,
                 malicious_action_weight=malicious_action_weight,
             )
-            blast_radius = policy.expected_blast_radius()
+            fallout_radius = policy.expected_fallout_radius()
             rows.append(
                 {
                     **asdict(policy),
-                    "expected_blast_radius": blast_radius,
-                    "attack_payoff": model.expected_attack_payoff(blast_radius),
-                    "honest_payoff": model.expected_honest_payoff(blast_radius),
-                    "deterrence_margin": model.deterrence_margin(blast_radius),
-                    "deterred": model.is_deterred(blast_radius),
+                    "expected_fallout_radius": fallout_radius,
+                    "expected_blast_radius": fallout_radius,
+                    "expected_reputation_lag": policy.expected_reputation_lag(),
+                    "attack_payoff": model.expected_attack_payoff(fallout_radius),
+                    "honest_payoff": model.expected_honest_payoff(fallout_radius),
+                    "deterrence_margin": model.deterrence_margin(fallout_radius),
+                    "deterred": model.is_deterred(fallout_radius),
                 }
             )
     return rows

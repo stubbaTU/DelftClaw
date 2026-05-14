@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from shared.credentials import VerifiedCredential
 from shared.ids import AgentId, Nonce, RoomId
+
+if TYPE_CHECKING:
+    from stake.proof import StakeProof
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class AdmissionContext:
     requester: AgentId
     nonce: Nonce
     received_at: datetime
+    stake_proof: "StakeProof | None" = None
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,29 @@
+# Alice's per-agent server config — HOST in the M3 demo.
+#
+# Boot: `python -m integration.mcp_server integration/configs/alice.yaml`.
+#
+# Alice creates the room and admits Bob. She doesn't need a VC herself in
+# this demo because she's not joining anyone else's room.
+
+agent:
+  name: alice
+  seed_path: ~/.openclaw-alice/seed.txt
+  network: TESTNET
+
+ipv8:
+  bind_ip: 127.0.0.1
+  bind_port: 9091
+
+mcp:
+  bind_ip: 127.0.0.1
+  bind_port: 8081
+
+peers_file: integration/configs/peers.yaml
+
+# Faucet credit so Alice has stake she could use later. Optional for
+# Phase 3 — only Bob needs sats to lock.
+faucet:
+  amount: 5000
+
+logging:
+  no_stdout: false

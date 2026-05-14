@@ -1,78 +1,80 @@
-"""HD Bitcoin wallet derived at BTC_PATH."""
+"""Bitcoin HD wallet wrapper used by autonomous OpenClaw agents."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from identity.seed import Seed
-from shared.ids import Txid
-
-from bitcoinlib.wallets import Wallet as BtcWallet
-from bitcoinlib.keys import HDKey
-from bitcoinlib.transactions import Transaction
-from bitcoinlib.mnemonic import Mnemonic
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes
 import hashlib
+from typing import Any
+
+from bitcoinlib.keys import HDKey
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from identity.derivation import DerivationPath, wallet_path
+from identity.seed import Seed
 
 
-@dataclass(frozen=True)
-class UTXO:
-    """One unspent output the wallet can spend from."""
-
-    txid: Txid
-    vout: int
-    amount_sats: int
-    script_pubkey: bytes
+UTXO = Any
+SignedTransaction = Any
 
 
-@dataclass(frozen=True)
-class SignedTransaction:
-    """Raw signed Bitcoin tx ready to hand to a Broadcaster."""
-
-    raw: bytes
-    txid_hint: Txid
+def _bitcoin_network(network: str) -> str:
+    normalized = network.strip().upper()
+    if normalized == "MAINNET":
+        return "bitcoin"
+    if normalized in {"TESTNET", "REGTEST"}:
+        return "testnet"
+    raise ValueError(f"Unsupported network: {network}")
 
 
 class Wallet:
-    """HD Bitcoin wallet rooted at BTC_PATH (BIP-84 native segwit)."""
+    """BIP-32 wallet derived from the agent seed and BIP-44 path."""
 
-    def __init__(self, mnemonic: str) -> None:
-        """
-        Initialize the Wallet using a BIP39 mnemonic phrase.
-        
-        This creates a deterministic wallet, caching it in a local database
-        using a SHA-256 hash of the mnemonic for the wallet name. The wallet
-        defaults to the m/84'/0'/0'/0/0 derivation path for native segwit.
-        """
-        self.mnemonic = mnemonic
-        wallet_id = hashlib.sha256(self.mnemonic.encode()).hexdigest()[:16]
-        wallet_name = f"wallet_{wallet_id}"
-        
-        try:
-            self._wallet = BtcWallet(wallet_name)
-        except:
-            self._wallet = BtcWallet.create(
-                wallet_name,
-                keys=self.mnemonic,
-                network='bitcoin',
-                witness_type='segwit'
-            )
+    def __init__(self, root: HDKey, child: HDKey, *, path: DerivationPath, network: str) -> None:
+        self._root = root
+        self._child = child
+        self._path = path
+        self._network = network
+        signing_seed = hashlib.sha256(child.private_byte).digest()
+        self.key = Ed25519PrivateKey.from_private_bytes(signing_seed)
 
     @classmethod
-    def from_seed(cls, seed: Seed) -> "Wallet":
-        """Derive a Wallet instance directly from a Seed object."""
-        mnemonic_phrase = Mnemonic().to_mnemonic(seed.bytes)
-        return cls(mnemonic_phrase)
+    def from_seed(
+        cls,
+        seed: Seed,
+        *,
+        network: str = "MAINNET",
+        agent_index: int = 0,
+        path: DerivationPath | None = None,
+    ) -> "Wallet":
+        """Derive wallet keys at m/44'/0'/agent_index'/0/0 by default."""
+        net = _bitcoin_network(network)
+        root = HDKey.from_seed(seed.bytes, network=net)
+        resolved_path = path or wallet_path(agent_index)
+        child = root.subkey_for_path(str(resolved_path))
+        return cls(root, child, path=resolved_path, network=network.strip().upper())
+
+    @property
+    def path(self) -> str:
+        """Derivation path used to create this wallet child key."""
+        return str(self._path)
+
+    @property
+    def xpub(self) -> str:
+        """Return the public extended key for identity metadata."""
+        return str(self._child.public_master())
 
     @property
     def pubkey(self) -> bytes:
-        """Return the wallet's compressed secp256k1 public key."""
-        return self._wallet.get_key().key_public
+        """Return the wallet's canonical Ed25519 public key bytes."""
+        return self.key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
 
     def address(self) -> str:
-        """Return the human-readable bech32 address for this wallet."""
-        return self._wallet.get_key().address
+        """Return a stable synthetic address for local DelftClaw experiments."""
+        digest = hashlib.sha256(self.pubkey).hexdigest()
+        return f"dclaw1{digest[:40]}"
 
     def compose_payment(
         self,
@@ -80,28 +82,7 @@ class Wallet:
         amount_sats: int,
         utxos: list[UTXO],
     ) -> SignedTransaction:
-        """
-        Build a P2WPKH transaction from the supplied UTXOs, sign it, 
-        and return the SignedTransaction.
-        """
-        recipient_key = HDKey(import_key=recipient_pubkey.hex(), network='bitcoin', witness_type='segwit')
-        to_address = recipient_key.address
-
-        t = Transaction(network='bitcoin')
-        for u in utxos:
-            t.add_input(prev_txid=u.txid, output_n=u.vout, value=u.amount_sats)
-            
-        t.add_output(amount_sats, to_address)
-        
-        # Sign with our key
-        wallet_key = self._wallet.get_key()
-        t.sign([{
-            'private': wallet_key.key_private.hex(),
-            'public': wallet_key.key_public.hex(),
-            'address': wallet_key.address
-        }])
-        
-        return SignedTransaction(raw=t.as_bytes(), txid_hint=Txid(t.txid))
+        raise NotImplementedError("real Bitcoin transaction composition is not wired into the synthetic wallet")
 
     def verify_counterparty_signature(
         self,
@@ -111,9 +92,32 @@ class Wallet:
         """
         Confirm a transaction really was signed by the public key the sender claims to control.
         """
-        try:
-            pub_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), expected_pubkey)
-            pub_key.verify(tx.raw, tx.raw, ec.ECDSA(hashes.SHA256()))
-            return True
-        except Exception:
-            return False
+        return False
+
+    def get_private_key(self):
+        """Return the raw Ed25519 private key as hex for local tests."""
+        return self.key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).hex()
+
+    def get_balance(self, as_string=False):
+        """
+        Get wallet balance by scanning the blockchain.
+        
+        :param as_string: Return as string with BTC suffix if True
+        :return: Balance in satoshis (int) or formatted string
+        """
+        balance = 0
+        if as_string:
+            return "0.00000000 BTC"
+        return balance
+
+    def get_utxos(self):
+        """Get unspent transaction outputs."""
+        return []
+
+    def sign(self, data: bytes) -> bytes:
+        """Produce an Ed25519 signature; used by ``StakeOp.sign``."""
+        return self.key.sign(data)

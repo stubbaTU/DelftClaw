@@ -22,23 +22,10 @@ WIRE_VERSION = 1
 
 
 @dataclass(frozen=True)
-class BTCPayload:
-    """The Layer 5 Bitcoin payload carried inside an ApplicationMessage."""
-
-    amount_sats: int
-    recipient_btc_pubkey: bytes
-    signed_tx: bytes
-    # `signed_tx` is already signed by the sender's BIP-32 BTC key; receiver must verify.
-
-
-@dataclass(frozen=True)
 class ApplicationMessage:
-    """Plaintext payload visible after Layer 4 decryption."""
+    """Application-level message body, msgpack-packed into ``WireFrame.payload``."""
 
     text: str
-    payment: BTCPayload | None
-    intent_attestation: bytes | None
-    # `intent_attestation` is the SQ4 hook: a signed digest of the producing prompt.
     sent_at: datetime
 
 
@@ -57,8 +44,8 @@ class WireFrame:
     msg_type: int
     nonce: Nonce
     timestamp_ms: int
-    ciphertext: bytes
-    # `ciphertext` is an MLS PrivateMessage (Path A) or ratchet ciphertext (Path B).
+    payload: bytes
+    # `payload` is canonical-msgpack ApplicationMessage bytes; no L4 encryption.
     sender_signature: bytes
     # Ed25519 signature over canonical_signing_bytes(); empty until signed.
     version: int = WIRE_VERSION
@@ -74,7 +61,7 @@ class WireFrame:
                 self.sender.to_bytes(),
                 self.nonce.to_bytes(),
                 self.timestamp_ms,
-                self.ciphertext,
+                self.payload,
             ),
             use_bin_type=True,
         )
@@ -89,7 +76,7 @@ class WireFrame:
         msg_type: int,
         nonce: Nonce,
         timestamp_ms: int,
-        ciphertext: bytes,
+        payload: bytes,
     ) -> "WireFrame":
         return cls(
             room_id=room_id,
@@ -98,7 +85,7 @@ class WireFrame:
             msg_type=msg_type,
             nonce=nonce,
             timestamp_ms=timestamp_ms,
-            ciphertext=ciphertext,
+            payload=payload,
             sender_signature=b"",
         )
 
@@ -126,7 +113,7 @@ class WireFrame:
                 self.sender.to_bytes(),
                 self.nonce.to_bytes(),
                 self.timestamp_ms,
-                self.ciphertext,
+                self.payload,
                 self.sender_signature,
             ),
             use_bin_type=True,
@@ -137,7 +124,7 @@ class WireFrame:
         unpacked = msgpack.unpackb(data, raw=False, use_list=False)
         if not isinstance(unpacked, tuple) or len(unpacked) != 9:
             raise ValueError("WireFrame: malformed payload")
-        version, msg_type, room_raw, epoch, sender_raw, nonce_raw, ts_ms, ciphertext, sig = unpacked
+        version, msg_type, room_raw, epoch, sender_raw, nonce_raw, ts_ms, payload, sig = unpacked
         if version != WIRE_VERSION:
             raise ValueError(f"WireFrame: unsupported version {version}")
         return cls(
@@ -147,7 +134,7 @@ class WireFrame:
             msg_type=int(msg_type),
             nonce=Nonce(nonce_raw),
             timestamp_ms=int(ts_ms),
-            ciphertext=bytes(ciphertext),
+            payload=bytes(payload),
             sender_signature=bytes(sig),
             version=int(version),
         )

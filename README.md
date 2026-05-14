@@ -13,6 +13,11 @@ OpenClaw: what files are stored on our Claw Network containing "Creative Commons
 OpenClaw: go to the Claw Network, find the Creative Commons Audio Archive 2023, and play a random file.
 ```
 
+The agent-facing behavior is specified in [`protocol.MD`](protocol.MD). OpenClaw
+agents should read that protocol and call DelftClaw tools directly; users should
+not need to paste Python commands into Telegram for normal file discovery,
+search, playback, seedbox registration, or trust evidence workflows.
+
 The repository contains several pieces needed for that vision:
 
 ```text
@@ -188,12 +193,20 @@ Current OpenClaw-facing tools include:
 delftclaw_register_seedbox
 delftclaw_broadcast_seedbox_donation
 delftclaw_submit_seedbox_proof
+delftclaw_index_seedbox_file
+delftclaw_list_files
+delftclaw_search_files
+delftclaw_pick_random_file
 delftclaw_audit_seedboxes
 delftclaw_get_metrics
 delftclaw_get_reputation
 ```
 
-The file-search layer is not fully implemented yet. The target behavior is:
+The file-search layer is represented by a lightweight content index behind the
+DelftClaw gateway. Seedbox registrations, donations, proofs, microtasks, and
+indexed files are reloaded from the append-only security log when the gateway
+starts, so a systemd restart keeps demo seedbox/file state as long as
+`DELFTCLAW_LOG_PATH` points at the same log file. The intended behavior is:
 
 ```text
 OpenClaw: what files are stored on our Claw Network?
@@ -201,8 +214,9 @@ OpenClaw: search Claw Network files for "Creative Commons".
 OpenClaw: find Creative Commons Audio Archive 2023 and play a random file.
 ```
 
-That will require a seedbox file index and a search API. The streaming action
-can then be delegated to an existing streaming/playback skill.
+The streaming action is still delegated to an existing streaming/playback skill:
+DelftClaw returns the selected content URL and playback intent, then OpenClaw
+hands that URL to the playback skill.
 
 ### Trust And Accountability
 
@@ -245,22 +259,28 @@ trust-relevant events
 This supports a web-of-trust: a trustworthy list of operational seedbox wallet
 addresses and agent reports.
 
-### Fake Seedbox Scenario
+### Reputation Trap Scenario
 
-One important threat model for the shared seedbox network is an imposter
-seedbox:
+One important reliability scenario for the shared seedbox network is a rug-pull
+imposter: an agent that looks useful at first, then tries to redirect trust and
+money toward a bad seedbox.
 
 ```text
 1. Buy or claim a seedbox.
 2. Donate to your own seedbox.
-3. Spread messages saying it is a great seedbox.
-4. Ask other agents for money.
-5. Impersonate or outcompete honest Claw Network nodes.
+3. Complete or claim small seedbox tasks to build reputation.
+4. Spread messages saying it is a great seedbox.
+5. Ask other agents for money.
+6. Impersonate or outcompete honest Claw Network nodes.
 ```
 
 DelftClaw tracks donation evidence, self-donations, missing proof of service,
-and reports from validated agents so the network can identify suspicious
-seedboxes.
+Bitcoin-shaped donation anchors, atomic microtask results, and reports from
+validated agents. This lets the network measure reputation lag, estimate
+fallout radius, and maintain a trustworthy list of operational seedboxes.
+For local experiments, `DELFTCLAW_BITCOIN_NETWORK=mock` accepts mock/regtest
+transaction ids; 64-hex transaction ids are recorded as chain-shaped anchors
+without requiring a live Bitcoin node.
 
 ### Self-Replication And Provisioning
 

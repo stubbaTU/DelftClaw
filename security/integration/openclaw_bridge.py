@@ -44,7 +44,7 @@ class OpenClawBridge:
 
     @property
     def agent_id(self) -> str:
-        return self.identity.get_identity_hash()
+        return self.identity.public_bundle()["agent_id"]
 
     def start(self) -> None:
         if not self.p2p_enabled or self._thread is not None:
@@ -84,7 +84,8 @@ class OpenClawBridge:
 
         return {
             "enabled": True,
-            "identity_hash": self.agent_id,
+            "agent_id": self.agent_id,
+            "identity_hash": self.identity.get_identity_hash(),
             "network": self.identity.network,
             "key_path": str(self.identity.key_path),
             "public_key": self.identity.public_key.hex(),

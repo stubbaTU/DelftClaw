@@ -327,6 +327,7 @@ but the DelftClaw side is stable: each function calls the local gateway, the
 gateway applies Brain-vs-Hands policy, and every allowed or blocked action is
 logged in the append-only evidence log.
 
+
 If your OpenClaw extension point can call local commands but not import Python
 functions directly, use the command-line adapter:
 
@@ -517,6 +518,7 @@ Only use `--require-gvisor` after Docker and `runsc` are installed on the VPS.
 - If `DELFTCLAW_ENABLE_OPENCLAW_P2P=true`, the HTTP gateway starts the IPv8
   OpenClaw PoC node itself. If it is `false`, the gateway still works for
   Telegram/OpenClaw tool-call experiments without starting IPv8.
+
 - To run the gateway as a VPS service, copy and edit
   `deploy/systemd/delftclaw-gateway.service.template`.
 - To run seedbox audits automatically, copy and edit

@@ -1,10 +1,10 @@
-"""BIP-32 derivation paths and the derive() helper."""
+"""BIP-32 derivation paths and helpers."""
 
 from __future__ import annotations
 
-from identity.seed import Seed
-from bip_utils import Bip32Slip10Ed25519
 import re
+
+from identity.seed import Seed
 
 
 class DerivationPath(str):
@@ -12,33 +12,36 @@ class DerivationPath(str):
 
     @classmethod
     def parse(cls, p: str) -> "DerivationPath":
-        """Validate the path syntax (segments, hardened markers); raise ValueError on bad input."""
-        if not re.match(r"^m(/\d+'?)+$", p):
+        """Validate path syntax and return a DerivationPath instance."""
+        if not re.match(r"^m(?:/\d+'?)*$", p):
             raise ValueError(f"Invalid derivation path schema: {p}")
         return cls(p)
 
 
-# Canonical derivation paths fixed across the project. Coin-type 0 is Bitcoin per BIP-44.
+# Canonical derivation paths fixed across the project.
 IPV8_PATH = DerivationPath("m/44'/0'/0'/0/0")
-MLS_PATH = DerivationPath("m/44'/0'/0'/1/0")
-BTC_PATH = DerivationPath("m/84'/0'/0'/0/0")
-"""`BTC_PATH` follows BIP-84 for native segwit (P2WPKH) addresses."""
+APP_PATH = DerivationPath("m/44'/0'/0'/1/0")
+WALLET_PATH = DerivationPath("m/44'/0'/0'/2/0")
 
-REPLICA_PATH_TEMPLATE = "m/44'/0'/{replica_index}'/0/0"
-"""Template used by replication.child_seed; the {replica_index} placeholder is replaced per replica."""
+
+def wallet_path(agent_index: int) -> DerivationPath:
+    """Return BIP-44 payment address path for a given agent index."""
+    if agent_index < 0:
+        raise ValueError("agent_index must be non-negative")
+    return DerivationPath.parse(f"m/44'/0'/{agent_index}'/0/0")
+
+
+def verification_challenge_path(agent_index: int) -> DerivationPath:
+    """Return BIP-44 change-branch path used for challenge addresses."""
+    if agent_index < 0:
+        raise ValueError("agent_index must be non-negative")
+    return DerivationPath.parse(f"m/44'/0'/{agent_index}'/1/0")
 
 
 def derive(seed: Seed, path: DerivationPath) -> bytes:
-    """Standard BIP-32 child-key derivation; returns a 32-byte private key for the given path."""
-    from bip_utils import Bip32Ed25519Kholaw, Bip32Secp256k1
+    """BIP-32 child-key derivation returning a 32-byte private key."""
+    from bip_utils import Bip32Ed25519Kholaw
 
-    # We use Khovratovich derivation for Ed25519 because standard SLIP-10 lacks non-hardened support.
-    # We use Secp256k1 for Bitcoin (BIP-84, path m/84'...)
-    if str(path).startswith("m/84'"):
-        bip32_ctx = Bip32Secp256k1.FromSeed(seed.bytes)
-    else:
-        bip32_ctx = Bip32Ed25519Kholaw.FromSeed(seed.bytes)
-
-    # Derive the provided path
+    bip32_ctx = Bip32Ed25519Kholaw.FromSeed(seed.bytes)
     derived_ctx = bip32_ctx.DerivePath(str(path))
     return derived_ctx.PrivateKey().Raw().ToBytes()
