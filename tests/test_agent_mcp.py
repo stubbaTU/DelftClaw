@@ -80,7 +80,7 @@ async def two_agents_with_mcp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
-    """All 16 v5.1 tools must appear on the FastMCP surface.
+    """The full v5.1+ community tool surface must appear on FastMCP.
 
     Regression guard: previous v5.1 iterations added new tools to
     ``agent/tools.py`` (the offline tool-call path) without mirroring
@@ -97,6 +97,10 @@ async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
         "peers_list", "peer_add",
         "wallet_address", "wallet_balance", "wallet_send",
         "seedbox_donate_and_join",
+        "community_log_list_recent", "community_treasury_balance",
+        "community_member_count", "community_donate_and_join",
+        "community_join_via_peer", "seedbox_purchase_propose",
+        "seedbox_provisioned",
         "overlays_list", "overlay_describe", "overlay_fetch_and_load",
         "overlay_publish", "overlay_invoke",
         "agent_inject_manifest", "network_join",

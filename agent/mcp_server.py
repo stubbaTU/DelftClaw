@@ -28,7 +28,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from agent.runtime import OpenClawAgent
-from agent.tools import _resolve_peer  # type: ignore[attr-defined]
+from agent.tools import _resolve_peer, build_tools  # type: ignore[attr-defined]
 from communication.community import overlay_id
 from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
 
@@ -142,6 +142,139 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         return {"txid": txid, "accepted": bool(accepted)}
 
     mcp.add_tool(seedbox_donate_and_join)
+
+    # ---- Community treasury + signed-log layer -----------------------
+
+    async def community_log_list_recent(limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent accepted/rejected community-log entries from local + peer logs."""
+        from agent.community_state import COMMUNITY_ACTIONS, replay_community
+
+        manifest = agent.network_manifest
+        if manifest is None:
+            return []
+        all_entries = agent.all_community_entries()
+        relevant = [entry for entry in all_entries if entry.get("action") in COMMUNITY_ACTIONS]
+        ordered = sorted(
+            relevant,
+            key=lambda entry: (
+                entry.get("timestamp", ""),
+                entry.get("reporter_id", ""),
+                entry.get("entry_hash", ""),
+            ),
+        )
+        state = replay_community(manifest, ordered)
+        accepted_hashes = (
+            {donation.entry_hash for donation in state.donations}
+            | {purchase.entry_hash for purchase in state.purchases}
+            | {provisioned.entry_hash for provisioned in state.provisioned}
+        )
+        out: list[dict[str, Any]] = []
+        for entry in ordered[-max(0, int(limit)):]:
+            details = entry.get("details") or {}
+            out.append(
+                {
+                    "action": entry.get("action"),
+                    "reporter_id": entry.get("reporter_id"),
+                    "timestamp": entry.get("timestamp"),
+                    "entry_hash": entry.get("entry_hash"),
+                    "amount_sats": details.get("amount_sats"),
+                    "cost_sats": details.get("cost_sats"),
+                    "purchase_intent_hash": details.get("purchase_intent_hash"),
+                    "seedbox_url": details.get("seedbox_url"),
+                    "accepted": entry.get("entry_hash") in accepted_hashes,
+                }
+            )
+        return out
+
+    mcp.add_tool(community_log_list_recent)
+
+    def _community_summary() -> dict[str, Any]:
+        state = agent.community_state()
+        if state is None:
+            return {}
+        manifest = agent.network_manifest
+        me = agent.community_reporter_id
+        return {
+            "balance_sats": state.balance_sats,
+            "member_count": state.member_count,
+            "seedbox_count": state.seedbox_count,
+            "pending_purchases": state.pending_purchases,
+            "threshold_active": state.threshold_active(manifest),
+            "my_membership_status": "admitted" if me in state.members else "outsider",
+        }
+
+    async def community_treasury_balance() -> dict[str, Any]:
+        """Current no-custody treasury balance derived by replaying signed logs."""
+        summary = _community_summary()
+        if not summary:
+            return {"error": "no_manifest_loaded"}
+        return summary
+
+    mcp.add_tool(community_treasury_balance)
+
+    async def community_member_count() -> dict[str, Any]:
+        """Current admitted-member count plus this node's membership status."""
+        summary = _community_summary()
+        if not summary:
+            return {"error": "no_manifest_loaded"}
+        return {
+            "member_count": summary["member_count"],
+            "my_membership_status": summary["my_membership_status"],
+            "threshold_active": summary["threshold_active"],
+        }
+
+    mcp.add_tool(community_member_count)
+
+    async def community_donate_and_join(amount_sats: int) -> dict[str, Any]:
+        """Append a signed donation_intent entry to this agent's community log."""
+        registry = build_tools(agent)
+        return await registry.dispatch("community_donate_and_join", {"amount_sats": amount_sats})
+
+    mcp.add_tool(community_donate_and_join)
+
+    async def community_join_via_peer(
+        gatekeeper_mid: str,
+        amount_sats: int,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        """Ship a signed donation_intent to a gatekeeper peer and await admission."""
+        registry = build_tools(agent)
+        return await registry.dispatch(
+            "community_join_via_peer",
+            {
+                "gatekeeper_mid": gatekeeper_mid,
+                "amount_sats": amount_sats,
+                "timeout_s": timeout_s,
+            },
+        )
+
+    mcp.add_tool(community_join_via_peer)
+
+    async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
+        """Append a signed seedbox_purchase_intent if growth threshold is active."""
+        registry = build_tools(agent)
+        args = {} if cost_sats is None else {"cost_sats": cost_sats}
+        return await registry.dispatch("seedbox_purchase_propose", args)
+
+    mcp.add_tool(seedbox_purchase_propose)
+
+    async def seedbox_provisioned(
+        purchase_intent_hash: str,
+        seedbox_url: str,
+        seedbox_pubkey_hex: str,
+    ) -> dict[str, Any]:
+        """Append a signed seedbox_provisioned entry closing a purchase intent."""
+        registry = build_tools(agent)
+        return await registry.dispatch(
+            "seedbox_provisioned",
+            {
+                "purchase_intent_hash": purchase_intent_hash,
+                "seedbox_url": seedbox_url,
+                "seedbox_pubkey_hex": seedbox_pubkey_hex,
+            },
+        )
+
+    mcp.add_tool(seedbox_provisioned)
 
     # ---- Overlays ------------------------------------------------------
 
