@@ -57,10 +57,13 @@ The crypto guarantees this server does **not** provide:
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -70,6 +73,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from identity.openclaw_identity import OpenClawIdentity
+from redteam.integration.peer_transport import HttpPeerTransport, PeerTransport
+from redteam.integration.pull_loop import run_pull_loop
 from redteam.primitives.peer_log import PeerLog
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from shared.logging import get_logger
@@ -234,10 +239,28 @@ class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _default_transport_factory() -> tuple[httpx.AsyncClient, PeerTransport]:
+    """Default factory: build a fresh ``httpx.AsyncClient`` + wrap it.
+
+    Returns ``(handle, transport)``. The handle is the AsyncClient
+    itself, which the lifespan will ``aclose()`` on shutdown. Pulled
+    out so :func:`build_app` callers can swap a different factory in
+    (e.g. tests mounting an ASGITransport against an in-process app).
+    """
+    client = httpx.AsyncClient()
+    return client, HttpPeerTransport(client)
+
+
 def build_app(
     identity: OpenClawIdentity,
-    log_path: str,
+    log_path: "str | os.PathLike[str]",
     peer_log_dir: "str | os.PathLike[str] | None" = None,
+    peers: list[str] | None = None,
+    pull_interval: float = 5.0,
+    pull_batch: int = 100,
+    transport_factory: Callable[
+        [], tuple[Any, PeerTransport]
+    ] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI app.
 
@@ -250,6 +273,20 @@ def build_app(
     ``peer_log_dir`` defaults to a ``peer_logs`` sibling of ``log_path``
     when omitted, so callers that don't care about peer-cache placement
     (e.g. legacy POST /log smoke tests) need not supply it.
+
+    Pull-sync (Layer 3, optional):
+
+    * ``peers`` — list of peer base URLs to pull from. ``None`` or
+      empty disables the pull loop entirely (existing single-node
+      behavior preserved).
+    * ``pull_interval`` / ``pull_batch`` — driver knobs forwarded to
+      :func:`redteam.integration.pull_loop.run_pull_loop`.
+    * ``transport_factory`` — test injection seam. A zero-arg callable
+      returning ``(handle, transport)`` where ``handle`` is whatever
+      object the lifespan will ``aclose()`` (typically the underlying
+      ``httpx.AsyncClient``) and ``transport`` is the
+      :class:`PeerTransport` the loop drives. Defaults to a factory
+      that builds a fresh ``httpx.AsyncClient`` + ``HttpPeerTransport``.
     """
     if identity is None:
         raise ValueError("identity must not be None")
@@ -262,8 +299,108 @@ def build_app(
         peer_log_dir, network=identity.network, own_id=reporter_id
     )
 
-    app = FastAPI()
+    # Pull-sync wiring: when ``peers`` is non-empty, spin up the pull
+    # loop. Lifespan handler drives startup/shutdown under uvicorn.
+    # For test harnesses (notably bare ``httpx.ASGITransport``) that
+    # do not dispatch the ASGI lifespan protocol, the start/stop
+    # coroutines are exposed on ``app.state`` so tests can drive them
+    # explicitly. ``_started`` makes the start path idempotent.
+    peer_urls = list(peers or [])
+    for url in peer_urls:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"peer URL must use http:// or https:// scheme: {url!r}"
+            )
+    factory = transport_factory or _default_transport_factory
+
+    # Mutable closure state so lifespan + state-exposed hooks share
+    # one task without leaking module-level globals.
+    _state: dict[str, Any] = {
+        "task": None,
+        "stop_event": None,
+        "handle": None,
+        "started": False,
+    }
+
+    async def _start_pull_loop() -> None:
+        if _state["started"] or not peer_urls:
+            return
+        _state["started"] = True
+        handle, transport = factory()
+        stop_event = asyncio.Event()
+        _state["handle"] = handle
+        _state["stop_event"] = stop_event
+        _state["task"] = asyncio.create_task(
+            run_pull_loop(
+                transport=transport,
+                peer_urls=peer_urls,
+                peer_log=peer_log,
+                interval=pull_interval,
+                batch=pull_batch,
+                stop_event=stop_event,
+            )
+        )
+
+    async def _stop_pull_loop() -> None:
+        loop_task = _state.get("task")
+        stop_event = _state.get("stop_event")
+        handle = _state.get("handle")
+        if loop_task is not None and stop_event is not None:
+            stop_event.set()
+            # Cap at 5s: the loop wakes immediately on ``stop_event.set()``
+            # plus at most one in-flight iteration. Floor at 1s for tiny
+            # test intervals. Without the cap, a large ``pull_interval``
+            # (e.g. 60s) would block teardown for ~120s.
+            shutdown_timeout = min(max(pull_interval * 2, 1.0), 5.0)
+            try:
+                await asyncio.wait_for(loop_task, timeout=shutdown_timeout)
+            except asyncio.TimeoutError:
+                loop_task.cancel()
+                try:
+                    await loop_task
+                except (asyncio.CancelledError, Exception) as exc:
+                    _log.warning(
+                        "server.pull_loop_shutdown_timeout",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+            except Exception as exc:
+                # Loop crashed during shutdown — log and move on so
+                # the rest of teardown still runs.
+                _log.warning(
+                    "server.pull_loop_crash_on_shutdown",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+        if handle is not None:
+            aclose = getattr(handle, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception as exc:
+                    _log.warning(
+                        "server.transport_close_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        await _start_pull_loop()
+        try:
+            yield
+        finally:
+            await _stop_pull_loop()
+
+    app = FastAPI(lifespan=_lifespan)
     app.add_middleware(_BodySizeLimitMiddleware)
+    # Test-driver hooks. ASGI test transports that don't dispatch the
+    # lifespan protocol (e.g. bare ``httpx.ASGITransport``) call these
+    # explicitly: ``await app.state.start_pull_loop()`` /
+    # ``await app.state.stop_pull_loop()``. Both are idempotent and
+    # no-op when ``peers`` is empty.
+    app.state.start_pull_loop = _start_pull_loop
+    app.state.stop_pull_loop = _stop_pull_loop
 
     # Per-route Allow header registry. Built from ``app.routes`` after
     # all routes are registered so the 405 handler can return the actual
@@ -601,6 +738,27 @@ def main() -> None:
             "defaults to <dir of --log>/peer_logs"
         ),
     )
+    parser.add_argument(
+        "--peers",
+        default=None,
+        help=(
+            "comma-separated list of peer base URLs to pull from "
+            "(e.g. http://127.0.0.1:8801,http://127.0.0.1:8802); "
+            "omit / empty to disable pull sync"
+        ),
+    )
+    parser.add_argument(
+        "--pull-interval",
+        type=float,
+        default=5.0,
+        help="seconds between pull cycles (default: 5.0)",
+    )
+    parser.add_argument(
+        "--pull-batch",
+        type=int,
+        default=100,
+        help="max entries pulled per peer per cycle (default: 100)",
+    )
     args = parser.parse_args()
 
     # Defence in depth: refuse to bind a non-loopback host even if the
@@ -610,10 +768,35 @@ def main() -> None:
 
     identity = OpenClawIdentity(network=args.network, key_path=args.key_path)
 
+    # Parse --peers into a clean list[str]; empty / None → no peers (no
+    # pull loop). Trim whitespace and drop empty fragments so e.g.
+    # ``--peers ""`` or ``--peers a,,b,`` behave sensibly.
+    if args.peers:
+        peer_list = [p.strip() for p in args.peers.split(",") if p.strip()]
+        # Reject non-http(s) schemes at CLI parse time so the operator
+        # gets a clean argparse error, not a deeper ValueError on app
+        # construction. ``build_app`` enforces the same rule again as a
+        # second line of defence for programmatic callers.
+        for url in peer_list:
+            if not url.startswith(("http://", "https://")):
+                parser.error(
+                    f"--peers entries must start with http:// or https://: "
+                    f"{url!r}"
+                )
+    else:
+        peer_list = None
+
     # Default peer-log dir derivation lives inside ``build_app`` (single
     # source of truth). Pass ``args.peer_log_dir`` straight through —
     # ``None`` lets ``build_app`` pick the sibling ``peer_logs/`` default.
-    app = build_app(identity, args.log, args.peer_log_dir)
+    app = build_app(
+        identity,
+        args.log,
+        args.peer_log_dir,
+        peers=peer_list,
+        pull_interval=args.pull_interval,
+        pull_batch=args.pull_batch,
+    )
 
     uvicorn.run(
         app,
