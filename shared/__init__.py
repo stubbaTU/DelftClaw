@@ -1,41 +1,5 @@
 """Cross-package primitives. Pure typed contracts, no I/O."""
 
-from shared.ids import AgentId, RoomId, MessageId, Nonce, Epoch, CredentialId
-from shared.errors import (
-    OpenClawError,
-    CommunicationError,
-    AdmissionDenied,
-    CredentialInvalid,
-    EpochMismatch,
-    PayloadInvalid,
-)
-from shared.threats import Threat
-from shared.envelopes import WireFrame, ApplicationMessage
-from shared.credentials import (
-    Credential,
-    Presentation,
-    VerifiedCredential,
-    KeyBundle,
-)
+from shared.ids import AgentId, IdentityHash
 
-__all__ = [
-    "AgentId",
-    "RoomId",
-    "MessageId",
-    "Nonce",
-    "Epoch",
-    "CredentialId",
-    "OpenClawError",
-    "CommunicationError",
-    "AdmissionDenied",
-    "CredentialInvalid",
-    "EpochMismatch",
-    "PayloadInvalid",
-    "Threat",
-    "WireFrame",
-    "ApplicationMessage",
-    "Credential",
-    "Presentation",
-    "VerifiedCredential",
-    "KeyBundle",
-]
+__all__ = ["AgentId", "IdentityHash"]

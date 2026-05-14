@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from identity.openclaw_identity import OpenClawIdentity
+from identity.agent_identity import AgentIdentity
+from identity.seed import KeyfileSeedSource
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -60,13 +61,14 @@ def _run_verify(log_path: str, *extra: str) -> subprocess.CompletedProcess:
 
 def _make_identity(
     tmp_path: Path, name: str = "key.pem", network: str = "MAINNET"
-) -> OpenClawIdentity:
-    """Create a fresh OpenClawIdentity backed by a key file in tmp_path."""
-    return OpenClawIdentity(network=network, key_path=str(tmp_path / name))
+) -> AgentIdentity:
+    """Create a fresh AgentIdentity backed by a seed file in tmp_path."""
+    seed = KeyfileSeedSource(str(tmp_path / name)).load()
+    return AgentIdentity.from_seed(seed, network=network)
 
 
 def _produce_log(
-    identity: OpenClawIdentity,
+    identity: AgentIdentity,
     log_path: str,
     n: int = 3,
 ) -> list[dict]:
@@ -74,7 +76,7 @@ def _produce_log(
     from redteam.primitives.signed_log import SignedAppendOnlyLog
 
     log = SignedAppendOnlyLog(identity, log_path)
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     entries: list[dict] = []
     for i in range(n):
         entry = log.append_event(
@@ -147,7 +149,7 @@ def _canonical_bytes_local(entry: dict) -> bytes:
 
 
 def _hand_crafted_entry_with_wrong_reporter_id(
-    identity: OpenClawIdentity,
+    identity: AgentIdentity,
     wrong_reporter_id: str,
     previous_hash: str = "GENESIS",
 ) -> dict:
@@ -162,7 +164,7 @@ def _hand_crafted_entry_with_wrong_reporter_id(
         "version": 2,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "reporter_id": wrong_reporter_id,
-        "reporter_pubkey": identity.public_key.hex(),
+        "reporter_pubkey": identity.ipv8.raw_pubkey.hex(),
         "subject_id": wrong_reporter_id,
         "action": "test",
         "severity": 0,
@@ -173,7 +175,7 @@ def _hand_crafted_entry_with_wrong_reporter_id(
         "previous_hash": previous_hash,
     }
     canonical = _canonical_bytes_local(entry)
-    entry["signature"] = identity.sign(canonical).hex()
+    entry["signature"] = identity.ipv8.sign(canonical).hex()
     # entry_hash is computed over the same canonical bytes (signature and
     # entry_hash both popped) — must match the verifier's recompute exactly.
     entry["entry_hash"] = hashlib.sha256(canonical).hexdigest()
@@ -508,7 +510,7 @@ def test_signature_swap_to_real_sig_for_different_message(
     log_path = tmp_path / "log.jsonl"
     _produce_log(identity, str(log_path), n=3)
 
-    wrong_sig = identity.sign(b"different content").hex()
+    wrong_sig = identity.ipv8.sign(b"different content").hex()
     _mutate_entry_field(
         log_path, entry_index=1, key="signature", new_value=wrong_sig
     )

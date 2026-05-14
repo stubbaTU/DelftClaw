@@ -1,24 +1,36 @@
 #!/usr/bin/env bash
+# Smoke-test the identity + security MCPs for a given templated INSTANCE.
+#
+# Reads ports + endpoints from /etc/delftclaw/instances/<instance>.env
+# (the env file that bootstrap_security_identity.sh writes and that the
+# templated systemd units consume). Falls back to the legacy
+# configs/vuk.local.env path if DELFTCLAW_ENV_FILE is exported and points
+# there, so existing dev runs still work.
+
 set -Eeuo pipefail
 
-REPO_DIR="${DELFTCLAW_REPO_DIR:-/root/DelftClaw}"
-ENV_FILE="${DELFTCLAW_ENV_FILE:-$REPO_DIR/configs/vuk.local.env}"
+INSTANCE="${INSTANCE:-${DELFTCLAW_AGENT_ID:-$(hostname -s)}}"
+ENV_FILE="${DELFTCLAW_ENV_FILE:-/etc/delftclaw/instances/${INSTANCE}.env}"
 
-cd "$REPO_DIR"
-source .venv/bin/activate
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Env file not found: $ENV_FILE"
+  echo "Run deploy/vps/bootstrap_security_identity.sh first (INSTANCE=${INSTANCE})."
+  exit 1
+fi
 
 set -a
+# shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
 
 IDENTITY_PORT="${IDENTITY_MCP_PORT:-7701}"
-SECURITY_MCP_PORT="${DELFTCLAW_SECURITY_MCP_PORT:-7702}"
+SECURITY_PORT="${SECURITY_MCP_PORT:-7702}"
 GATEWAY_URL="${DELFTCLAW_GATEWAY_URL:-http://127.0.0.1:8765}"
 
 post_json() {
   local url="$1"
   local body="$2"
-  python - "$url" "$body" <<'PY'
+  python3 - "$url" "$body" <<'PY'
 import json
 import sys
 from urllib.request import Request, urlopen
@@ -31,7 +43,7 @@ PY
 }
 
 get_url() {
-  python - "$1" <<'PY'
+  python3 - "$1" <<'PY'
 import sys
 from urllib.request import urlopen
 
@@ -47,18 +59,19 @@ echo "[2/8] Identity MCP health"
 get_url "http://127.0.0.1:$IDENTITY_PORT/health"
 
 echo "[3/8] Security MCP health"
-get_url "http://127.0.0.1:$SECURITY_MCP_PORT/health"
+get_url "http://127.0.0.1:$SECURITY_PORT/health"
 
 echo "[4/8] Identity tool: get_identity"
 post_json "http://127.0.0.1:$IDENTITY_PORT/mcp/tool/get_identity" '{"args":{}}'
 
 echo "[4b/8] Identity and security local agent id must match"
-python - "$IDENTITY_PORT" "$SECURITY_MCP_PORT" <<'PY'
+python3 - "$IDENTITY_PORT" "$SECURITY_PORT" <<'PY'
 import json
 import sys
 from urllib.request import Request, urlopen
 
 identity_port, security_port = sys.argv[1], sys.argv[2]
+
 
 def post(url: str, body: dict) -> dict:
     req = Request(
@@ -69,6 +82,7 @@ def post(url: str, body: dict) -> dict:
     )
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
 
 identity = post(f"http://127.0.0.1:{identity_port}/mcp/tool/get_identity", {"args": {}})
 metrics = post(f"http://127.0.0.1:{security_port}/mcp/tool/delftclaw_get_metrics", {"args": {}})
@@ -84,17 +98,17 @@ if identity_agent_id != security_agent_id:
 PY
 
 echo "[5/8] Security tool: register seedbox"
-post_json "http://127.0.0.1:$SECURITY_MCP_PORT/mcp/tool/delftclaw_register_seedbox" \
+post_json "http://127.0.0.1:$SECURITY_PORT/mcp/tool/delftclaw_register_seedbox" \
   '{"args":{"seedbox_id":"demo-seedbox-1","donation_address":"tb1q-demo","advertised_capacity_gb":100}}'
 
 echo "[6/8] Security tool: index file"
-post_json "http://127.0.0.1:$SECURITY_MCP_PORT/mcp/tool/delftclaw_index_seedbox_file" \
+post_json "http://127.0.0.1:$SECURITY_PORT/mcp/tool/delftclaw_index_seedbox_file" \
   '{"args":{"file_id":"cc-001","seedbox_id":"demo-seedbox-1","name":"Creative Commons Audio","content_url":"https://example.com/audio.mp3","tags":["Creative Commons","audio"]}}'
 
 echo "[7/8] Security tool: list files"
-post_json "http://127.0.0.1:$SECURITY_MCP_PORT/mcp/tool/delftclaw_list_files" '{"args":{}}'
+post_json "http://127.0.0.1:$SECURITY_PORT/mcp/tool/delftclaw_list_files" '{"args":{}}'
 
 echo "[8/8] Security tool: metrics"
-post_json "http://127.0.0.1:$SECURITY_MCP_PORT/mcp/tool/delftclaw_get_metrics" '{"args":{}}'
+post_json "http://127.0.0.1:$SECURITY_PORT/mcp/tool/delftclaw_get_metrics" '{"args":{}}'
 
 echo "Smoke test complete."

@@ -1,8 +1,8 @@
 """Application-layer Ed25519 signing key derived at APP_PATH.
 
-Used to sign WireFrames so receivers (and a future SQ2 audit log) can verify
-sender identity end-to-end. Independent of IPv8's transport-layer signature,
-which does not survive forwarding or storage.
+Used to sign application-layer messages so receivers (and a future SQ2
+audit log) can verify sender identity end-to-end. Independent of IPv8's
+transport-layer signature, which does not survive forwarding or storage.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from identity.seed import Seed
 
 
 class AppSigningKey:
-    """Ed25519 signing key for application-layer WireFrame signatures."""
+    """Ed25519 signing key for application-layer message signatures."""
 
     def __init__(self, key: Ed25519PrivateKey) -> None:
         self.key = key

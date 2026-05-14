@@ -1,0 +1,30 @@
+[Unit]
+Description=DelftClaw Identity MCP server (instance %i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=delftclaw
+Group=delftclaw
+WorkingDirectory=/opt/delftclaw
+# Per-instance env file dropped at /etc/delftclaw/instances/<instance>.env.
+# Must define at least:
+#   PYTHONPATH=/opt/delftclaw
+#   NETWORK={regtest|testnet|mainnet}
+#   IDENTITY_MCP_PORT=<tcp-port>     (default 7701)
+#   IDENTITY_PATH=<absolute-path-to-agent_identity.json>
+EnvironmentFile=/etc/delftclaw/instances/%i.env
+ExecStart=/opt/delftclaw/venv/bin/python -m identity.start_identity_server \
+    --network ${NETWORK} \
+    --port ${IDENTITY_MCP_PORT} \
+    --identity-path ${IDENTITY_PATH}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

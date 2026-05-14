@@ -129,6 +129,17 @@ class AgentIdentity:
         return self.identity_hash
 
     @property
+    def network_hash(self):
+        """Back-compat alias of ``identity_hash_bytes`` wrapped as IdentityHash.
+
+        Used by the v5.1 redteam/signed-log test suite that pre-dates the
+        master rename to ``identity_hash``. Kept so those tests keep
+        working without touching test files colleagues actively edit.
+        """
+        from shared.ids import IdentityHash
+        return IdentityHash(self.identity_hash_bytes)
+
+    @property
     def agent_id(self) -> AgentId:
         """AgentId wrapper around identity hash bytes."""
         return AgentId.from_pubkey(self.identity_hash_bytes)

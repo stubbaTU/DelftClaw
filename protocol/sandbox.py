@@ -1,0 +1,140 @@
+"""AST whitelist and namespaced exec for LLM-generated overlay sources.
+
+This is a *demo-grade* sandbox. The trust gradient is small because compiled
+overlays only run after the peer has been admission-gated by the seedbox
+donation, but the AST walk still rejects the obvious foot-guns (eval,
+exec, open, subprocess, os.*, dunder attribute access, non-ipv8 imports).
+
+For production-grade isolation, swap this for a subprocess+seccomp or
+WASM sandbox without changing the public API: ``validate_ast(source)`` +
+``safe_exec(source) -> namespace``.
+"""
+
+from __future__ import annotations
+
+import ast
+
+
+class SandboxError(Exception):
+    """Raised when the generated source violates the whitelist."""
+
+
+# Imports the generated overlay is allowed to make.
+_ALLOWED_MODULES: frozenset[str] = frozenset({
+    "ipv8.community",
+    "ipv8.lazy_community",
+    "ipv8.messaging.lazy_payload",
+    "ipv8.peer",
+    "ipv8.peerdiscovery.network",
+    "msgpack",
+    "struct",
+})
+
+# Builtin callables the generated source must NOT invoke.
+_FORBIDDEN_BUILTINS: frozenset[str] = frozenset({
+    "eval", "exec", "compile", "open", "__import__",
+    "globals", "locals", "vars", "delattr", "setattr",
+    "getattr",  # too easy to use to escape into dunders
+    "input", "breakpoint",
+})
+
+# Attribute names the generated source must NOT access.
+_FORBIDDEN_ATTRS: frozenset[str] = frozenset({
+    "__class__", "__bases__", "__subclasses__", "__mro__",
+    "__globals__", "__builtins__", "__dict__", "__init_subclass__",
+    "__import__", "__loader__", "__spec__",
+})
+
+
+class _Walker(ast.NodeVisitor):
+    """Single-pass validator. Raises ``SandboxError`` on first violation."""
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name not in _ALLOWED_MODULES:
+                raise SandboxError(f"forbidden import: {alias.name}")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module not in _ALLOWED_MODULES:
+            raise SandboxError(f"forbidden import: from {node.module}")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        # Block direct calls to forbidden builtins.
+        if isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BUILTINS:
+            raise SandboxError(f"forbidden call: {node.func.id}(...)")
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in _FORBIDDEN_ATTRS:
+            raise SandboxError(f"forbidden attribute access: .{node.attr}")
+        self.generic_visit(node)
+
+    def visit_With(self, node: ast.With) -> None:
+        # Easiest blanket-ban — overlay code shouldn't be opening files /
+        # spawning subprocess context managers anyway.
+        raise SandboxError("'with' statements are not allowed in overlay code")
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        raise SandboxError("'async with' statements are not allowed in overlay code")
+
+    def visit_Global(self, node: ast.Global) -> None:
+        raise SandboxError("'global' is not allowed in overlay code")
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        raise SandboxError("'nonlocal' is not allowed in overlay code")
+
+
+def validate_ast(source: str) -> None:
+    """Raise ``SandboxError`` if ``source`` violates the overlay whitelist."""
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError as exc:
+        raise SandboxError(f"syntax error: {exc}") from exc
+    _Walker().visit(tree)
+
+
+def safe_exec(source: str) -> dict:
+    """Validate then exec ``source`` in a fresh namespace; return the namespace.
+
+    The namespace is seeded with a minimal builtin set so the generated
+    code can do ordinary work (``len``, ``range``, ``isinstance``, …) but
+    not call any of the forbidden primitives.
+    """
+    validate_ast(source)
+
+    safe_builtins = {
+        name: getattr(__builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__,
+                      name, None) if False else __import__("builtins").__dict__[name]
+        for name in (
+            "abs", "all", "any", "bool", "bytes", "bytearray", "callable",
+            "dict", "enumerate", "filter", "float", "frozenset", "hash",
+            "hex", "int", "isinstance", "issubclass", "iter", "len", "list",
+            "map", "max", "min", "next", "ord", "chr", "pow", "print",
+            "range", "repr", "reversed", "round", "set", "slice", "sorted",
+            "str", "sum", "tuple", "type", "zip",
+            # exception classes the overlay may need to raise/catch:
+            "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+            "AttributeError", "RuntimeError", "NotImplementedError",
+            "StopIteration", "True", "False", "None",
+            "object", "super", "property", "staticmethod", "classmethod",
+            "__build_class__",  # required for `class Foo(...):` to work
+            "__name__",
+        )
+        if name in __import__("builtins").__dict__
+    }
+    # Imports the compiled overlay is *allowed* to issue must still go
+    # through __import__; provide a wrapper that gates it.
+    import importlib
+
+    def _restricted_import(name: str, globals_=None, locals_=None, fromlist=(), level=0):
+        if name not in _ALLOWED_MODULES:
+            raise SandboxError(f"runtime import blocked: {name}")
+        return importlib.import_module(name)
+
+    safe_builtins["__import__"] = _restricted_import
+
+    namespace: dict = {"__builtins__": safe_builtins, "__name__": "overlay_sandbox"}
+    exec(compile(source, "<overlay>", "exec"), namespace)
+    return namespace
