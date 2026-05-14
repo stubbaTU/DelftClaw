@@ -51,7 +51,9 @@ to A.
 redteam/
 ├── primitives/
 │   ├── signed_log.py    SignedAppendOnlyLog — Ed25519 sign-then-chain
-│   │                    wrapper around AppendOnlyLog. Two entry kinds:
+│   │                    append-only log (self-contained; the unsigned
+│   │                    base is inlined as a module-private class).
+│   │                    Two entry kinds:
 │   │                    "self"    A signs its own actions
 │   │                    "witness" B records A's signed claim in B's chain
 │   ├── peer_log.py      PeerLog — per-source cache of foreign signed
