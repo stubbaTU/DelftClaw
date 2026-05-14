@@ -92,7 +92,7 @@ logs_demo() {
   sudo mkdir -p "$dir"
   sudo touch "$dir"/alice.jsonl "$dir"/bob.jsonl "$dir"/charlie.jsonl "$dir"/dave.jsonl
   if command -v jq >/dev/null 2>&1; then
-    sudo tail -q -n 20 -f "$dir"/*.jsonl | jq -c .
+    sudo tail -q -n 20 -f "$dir"/*.jsonl | jq -R -c 'fromjson?'
   else
     sudo tail -q -n 20 -f "$dir"/*.jsonl
   fi
