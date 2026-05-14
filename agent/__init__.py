@@ -38,20 +38,4 @@ def __getattr__(name: str):
     if name in ("build_mcp_server", "serve_mcp_async"):
         from agent import mcp_server
         return getattr(mcp_server, name)
-    if name == "P2PAgent":
-        # The colleague's legacy root-level ``agent.py`` is shadowed by
-        # this package on import. Load it explicitly via the file path
-        # so the migration test (`from agent import P2PAgent`) collects
-        # without us editing the colleague's source. Implementing the
-        # Phase C green step is the colleague's responsibility; we only
-        # unblock collection here.
-        import importlib.util
-        from pathlib import Path
-        agent_py = Path(__file__).resolve().parent.parent / "agent.py"
-        spec = importlib.util.spec_from_file_location("_root_agent_py", agent_py)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"could not load root-level agent.py at {agent_py}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.P2PAgent
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

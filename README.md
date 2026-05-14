@@ -93,8 +93,6 @@ DelftClaw/
 |   `-- integration/         # peer_transport.py + pull_loop.py + server.py
 |-- tests/                   # in-tree pytest suite
 |-- configs/                 # template.env + host.env.example
-|-- agent.py                 # legacy P2PAgent (red-step TDD fixture; not the v5.1 entry point)
-|-- network.py               # UDPEndpoint stub used by agent.py only
 |-- Makefile                 # operator entry: deploy / scenario / watch / stop / test
 |-- docs/agent_intents.md    # OpenClaw user-intent → tool-call mappings
 |-- PROJECT_DESIGN.md        # canonical reference (v5.1)
