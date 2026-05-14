@@ -41,6 +41,7 @@ when the threshold trips.
 | "how many members are there?" / "am I admitted?" | `community_member_count()` |
 | "show recent community events" / "what's happening in the log?" | `community_log_list_recent(limit=⟨n⟩)` |
 | "buy a new seedbox" / "the threshold tripped — spawn a seedbox" | `seedbox_purchase_propose()` (default cost = manifest's `seedbox_cost_sats`) |
+| "I spawned the new seedbox; announce it" | `seedbox_provisioned(purchase_intent_hash=⟨h⟩, seedbox_url=⟨addr⟩, seedbox_pubkey_hex=⟨hex⟩)` |
 
 ### Peers + wallet
 

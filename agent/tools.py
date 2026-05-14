@@ -399,6 +399,80 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             "network_id_hex": manifest.network_id.hex(),
         }
 
+    async def seedbox_provisioned(
+        purchase_intent_hash: str,
+        seedbox_url: str,
+        seedbox_pubkey_hex: str,
+    ) -> dict[str, Any]:
+        """Sign + append a ``seedbox_provisioned`` entry closing a purchase intent.
+
+        Phase-8 demo path: the actual VPS spawn is mocked — writing this
+        entry IS the provisioning event from the community's point of
+        view. Whichever member won the first-comer purchase intent
+        announces here that the new seedbox is up; community-state
+        replay validates the close (signer is admitted, intent exists,
+        intent not already closed) and bumps ``seedbox_count``.
+
+        Real cloud-spawn (sporestack / hostinger / etc.) goes in
+        ``replication/`` and is wired to this tool in a later phase.
+
+        Local pre-checks refuse to write if no pending intent matches
+        the supplied ``purchase_intent_hash`` — the replay layer would
+        drop it anyway. ``seedbox_url`` is a free-form locator (e.g.
+        ``mock-seedbox-2.delftclaw.test:18769`` for the demo);
+        ``seedbox_pubkey_hex`` is the new seedbox's IPv8 pubkey hex.
+        """
+        manifest = agent.network_manifest
+        if manifest is None:
+            return {"error": "no_manifest_loaded"}
+
+        state = agent.community_state()
+        if state is None:
+            return {"error": "no_manifest_loaded"}
+
+        me = agent.community_reporter_id
+        if me not in state.members:
+            return {"error": "not_admitted"}
+
+        if not isinstance(purchase_intent_hash, str) or not purchase_intent_hash:
+            return {"error": "purchase_intent_hash required"}
+        if not isinstance(seedbox_url, str) or not seedbox_url:
+            return {"error": "seedbox_url required"}
+        if not isinstance(seedbox_pubkey_hex, str) or not seedbox_pubkey_hex:
+            return {"error": "seedbox_pubkey_hex required"}
+
+        matching = next(
+            (p for p in state.purchases if p.entry_hash == purchase_intent_hash),
+            None,
+        )
+        if matching is None:
+            return {"error": f"no_matching_purchase_intent:{purchase_intent_hash[:16]}"}
+
+        already_closed = any(
+            v.purchase_intent_hash == purchase_intent_hash for v in state.provisioned
+        )
+        if already_closed:
+            return {"error": "purchase_intent_already_closed"}
+
+        entry = agent.community_log.append_event(
+            reporter_id=me,
+            subject_id=me,
+            action="seedbox_provisioned",
+            details={
+                "network_id_hex": manifest.network_id.hex(),
+                "purchase_intent_hash": purchase_intent_hash,
+                "seedbox_url": seedbox_url,
+                "seedbox_pubkey_hex": seedbox_pubkey_hex,
+            },
+        )
+        return {
+            "entry_hash": entry["entry_hash"],
+            "purchase_intent_hash": purchase_intent_hash,
+            "seedbox_url": seedbox_url,
+            "seedbox_pubkey_hex": seedbox_pubkey_hex,
+            "network_id_hex": manifest.network_id.hex(),
+        }
+
     # ---- Overlays ------------------------------------------------------
 
     async def overlays_list() -> list[dict[str, Any]]:
@@ -731,6 +805,35 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               },
               "additionalProperties": False},
              seedbox_purchase_propose),
+
+        Tool("seedbox_provisioned",
+             "Close a pending seedbox_purchase_intent by signing + "
+             "appending a seedbox_provisioned entry. Phase-8 mock "
+             "provisioning: writing this entry is the community-visible "
+             "act of spawning a new seedbox. Replay bumps seedbox_count "
+             "by 1 on accept. Use after the cloud-spawn / mock-spawn "
+             "succeeds.",
+             {"type": "object",
+              "properties": {
+                  "purchase_intent_hash": {
+                      "type": "string",
+                      "description": "entry_hash of the seedbox_purchase_intent "
+                                     "this provision event closes",
+                  },
+                  "seedbox_url": {
+                      "type": "string",
+                      "description": "reachable address of the new seedbox "
+                                     "(e.g. 'mock-seedbox-2.delftclaw.test:18769')",
+                  },
+                  "seedbox_pubkey_hex": {
+                      "type": "string",
+                      "description": "the new seedbox's IPv8 pubkey hex "
+                                     "(for future SEARCH-response identity binding)",
+                  },
+              },
+              "required": ["purchase_intent_hash", "seedbox_url", "seedbox_pubkey_hex"],
+              "additionalProperties": False},
+             seedbox_provisioned),
 
         Tool("community_join_via_peer",
              "Phase-5 end-to-end admission: write a signed donation_intent "
