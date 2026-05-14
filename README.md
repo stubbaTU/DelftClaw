@@ -72,7 +72,8 @@ DelftClaw/
 |-- admission/               # bitcoinlib-backed donation verifier
 |-- agent/                   # the per-node process
 |   |-- runtime.py           # OpenClawAgent (owns IPv8 + overlays + wallet + torrents)
-|   |-- tools.py             # the 16 LLM-callable tools
+|   |-- tools.py             # the 23 LLM-callable tools (v5.2)
+|   |-- community_state.py   # no-treasurer replay layer (v5.2)
 |   |-- mcp_server.py        # production FastMCP streamable-HTTP server
 |   |-- loop.py              # offline-test internal tool-call loop
 |   `-- cli.py               # `python -m agent {info,mcp,run,serve}`
@@ -215,20 +216,20 @@ synchronously over the network and was causing systemd boot timeouts.
 seedbox.
 
 The production path is `agent/mcp_server.py` — a FastMCP streamable-HTTP
-server that exposes 16 tools to OpenClaw's chat session:
+server that exposes 23 tools to OpenClaw's chat session:
 
-| Tool | Effect |
+| Tool group | Effect |
 |---|---|
 | `peers_list` / `peer_add` | enumerate / pre-introduce peers |
-| `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops |
-| `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
+| `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops (synthetic in `BTC_NETWORK=mock`) |
+| `community_donate_and_join` / `community_join_via_peer` *(v5.2)* | sign + append a donation_intent; optionally ship to a gatekeeper peer |
+| `community_treasury_balance` / `community_member_count` / `community_log_list_recent` *(v5.2)* | read the no-treasurer treasury + membership + recent log entries |
+| `seedbox_purchase_propose` / `seedbox_provisioned` *(v5.2)* | first-comer authorisation for new seedboxes |
 | `overlays_list` / `overlay_describe` | inspect loaded overlays + schema |
-| `overlay_fetch_and_load` | request a descriptor from a peer, compile, register |
-| `overlay_publish` | serve a `.md` over OVERLAY_REQUEST |
-| `overlay_invoke` | generic dispatcher: send any compiled-overlay message |
-| `agent_inject_manifest` | parse + cache a network manifest, pre-introduce its peers |
-| `network_join` | end-to-end admission: manifest → peer_add → fetch overlays → donate → JOIN |
+| `overlay_fetch_and_load` / `overlay_publish` / `overlay_invoke` | runtime overlay distribution + dispatch |
+| `agent_inject_manifest` / `network_join` | network manifest parsing + end-to-end admission |
 | `torrent_seed` / `torrent_fetch` / `torrent_stats` | libtorrent surface |
+| `seedbox_donate_and_join` | **deprecated** — v5.1 single-gatekeeper path |
 
 Two LLMs operate inside this picture and never overlap: OpenClaw's
 chat-host LLM picks which tool to call; a local Qwen on the VPS only
@@ -317,12 +318,14 @@ Working:
 
 ```text
 BIP-32 multi-key identity + bitcoinlib HD wallet
-SeedboxCommunity bootstrap (9 wire messages)
+SeedboxCommunity bootstrap (11 wire messages)
+Community signed-log replication via redteam HTTP pull (v5.2)
 Markdown overlay compiler with AST sandbox + test-vector gate
 OverlayRegistry: markdown path + traditional Python-class path
 content_community SEARCH overlay (canonical demo)
 BitTorrent service (libtorrent + stub fallback)
-OpenClawAgent + 16-tool MCP surface
+OpenClawAgent + 23-tool MCP surface (v5.2)
+Community signed-log treasury + first-comer seedbox growth (v5.2)
 Donation verifier (lazy bitcoinlib.Service)
 Autonomous scenario orchestrator (scenario_boot + watchdog + stop predicates)
 Network manifest gossip (MANIFEST_* trio) + PEER_INTRO

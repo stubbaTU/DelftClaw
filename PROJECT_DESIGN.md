@@ -3,12 +3,16 @@
 **Author:** Nikola Emilov
 **Project:** CSE3000 Research Project, TU Delft, Q4 2026
 **Sub-project:** Communication (integrated channel for autonomous LLM agents)
-**Document version:** 5.1 — network manifests + zero-shot mission descriptors
-**Last updated:** 2026-05-13
+**Document version:** 5.2 — community-shared-log treasury (no treasurer)
+**Last updated:** 2026-05-14
 
-> v5.1 delta from v5.0 is summarised in §22 at the bottom of this
-> document. Sections marked `v5.1:` inline call out where the
-> implementation moved.
+> v5.2 delta from v5.1 is summarised in §23 at the bottom of this
+> document. The headline: admission and treasury accounting moved off
+> the trust-a-single-gatekeeper model onto a no-key-custody community
+> signed log replicated across every member.
+>
+> v5.1 delta from v5.0 is summarised in §22. Sections marked
+> `v5.1:` or `v5.2:` inline call out where the implementation moved.
 
 ---
 
@@ -36,9 +40,9 @@ component-level detail from §4 onward.
 3. History of the design
 4. Architectural overview
 5. `identity/` — seed, BIP-32 derivation, wallets
-6. `communication/` — bootstrap layer + BitTorrent
+6. `communication/` — bootstrap layer + BitTorrent + community-log replication
 7. `protocol/` — markdown overlays + compiler
-8. `admission/` — donation verifier *(v5.1: was `replication/verification/`)*
+8. `admission/` — donation verifier + community-state replay
 9. `agent/` — agent runtime, tool surface, MCP server
 10. `deploy/` — autonomous multi-tenant scenarios on a VPS
 11. End-to-end flows
@@ -52,6 +56,8 @@ component-level detail from §4 onward.
 19. Future work
 20. Glossary
 21. Where this differs from the v4.0 design
+22. v5.1 delta from v5.0
+23. v5.2 delta from v5.1 — community-shared-log treasury
 
 ---
 
@@ -94,15 +100,18 @@ reference further down.
 
 | Decision | What | §  |
 |---|---|---|
-| **Admission** | Bitcoin donation to the community's seedbox wallet address; existing member verifies the on-chain TX | 6.1, 8 |
-| **Network manifest** *(v5.1)* | Content-hashed `.md` document describing one network's admission policy + genesis peers + default overlays; gossipped via SeedboxCommunity | 6.1, 22 |
+| **Admission** *(v5.2: no-treasurer)* | Donation written as a signed log entry; community replay validates (signature + identity binding + running-average cap + no-double-join). No trusted gatekeeper key; first-comer wins on race | 6.2, 8.5 |
+| **Treasury** *(v5.2)* | Balance computed by replaying the community signed log; `Σ donation_intent − Σ seedbox_purchase`. No keys, no custodian | 8.5, 23 |
+| **Seedbox growth** *(v5.2)* | When `member_count > max_agents_per_seedbox × seedbox_count`, first admitted member to write a `seedbox_purchase_intent` wins; cost matches manifest exactly; provisioning event closes the intent | 8.5, 23 |
+| **Community-log replication** *(v5.2)* | HTTP pull via colleague's `redteam.integration` primitive; each agent runs a FastAPI sub-server + a background pull loop pulling from every other agent. Convergence < pull-interval (~5 s) | 6.3, 23 |
+| **Network manifest** *(v5.1+)* | Content-hashed `.md` document describing admission policy + genesis peers + default overlays; gossipped via SeedboxCommunity. v5.2 adds `bootstrap_cap_sats`, `max_agents_per_seedbox`, `seedbox_cost_sats` fields | 6.1, 22, 23 |
 | **Mission descriptor** *(v5.1)* | One `mission.md` per agent (Identity / Intent / Budget / Stop); strict parser refuses recipes (no tool names, no ≥3-step lists) | 10.3, 22 |
 | **Protocols** | Markdown descriptors compiled at runtime by an LLM into IPv8 `Community` classes; sha1-derived `community_id` | 7 |
 | **Sandbox** | AST whitelist + namespaced `exec` (demo-grade; trust gradient is small because peers are admission-gated) | 7.3 |
 | **Compiler LLM** | Pluggable `LLMClient` Protocol; **production** is an external GPU-host OpenAI-compatible endpoint via `QWEN_BASE_URL`; local Ollama is the dev/CI fallback | 7.2 |
 | **Reasoning LLM** | OpenClaw's chat session (whatever model the chat host runs); driven externally over MCP | 9.4 |
 | **Per-node identity** | One BIP-39 seed → three BIP-32 derived keys (IPv8 transport, app-layer signing, Bitcoin HD) | 5 |
-| **Bitcoin network** | Testnet (faucet-fundable); switch to mainnet by env var | 5.3 |
+| **Bitcoin network** | `mock` (synthetic wallet, default) or `testnet` (real bitcoinlib); the synthetic wallet still tracks per-deploy `initial_balance_sats` so donation budgets are realistic | 5.3 |
 | **MCP transport** | FastMCP streamable-HTTP over TCP (matches OpenClaw's expected MCP server shape) | 9.4 |
 | **Autonomous scenarios** | Watchdog process per agent polls + drives `openclaw agent` subprocess; declarative stop predicates; YAML manifest | 10 |
 | **Multi-tenant** | Multiple scenarios run concurrently on the same VPS, each fully isolated (workspace, ports, seeds, logs) | 10 |
@@ -194,7 +203,7 @@ A ninth deployment milestone (2026-05-12 → present):
 │      ▼                                                                   │
 │ ┌────────────────────────────────────────────────────────────────────┐   │
 │ │  delftclaw-mcp@<scenario>-<agent>.service  (one per agent on VPS)  │   │
-│ │   FastMCP streamable-HTTP server exposing 16 tools (v5.1)                 │   │
+│ │   FastMCP streamable-HTTP server exposing 23 tools (v5.2)                 │   │
 │ │   ──────────────────────────────────────────────────────────────   │   │
 │ │   OpenClawAgent runtime                                            │   │
 │ │     ├─ AgentIdentity        (BIP-32: ipv8 / app / wallet)          │   │
@@ -303,8 +312,8 @@ The **only** statically-loaded IPv8 community. Two responsibilities:
 2. **Overlay distribution**: ship `.md` protocol descriptors over the
    wire so new overlays can be loaded at runtime by other nodes.
 
-Nine wire messages *(v5.1: was five)*, defined as `@vp_compile`-decorated
-`VariablePayload` subclasses:
+Eleven wire messages *(v5.2: +2 over v5.1; v5.1 was 9; v5.0 was 5)*,
+defined as `@vp_compile`-decorated `VariablePayload` subclasses:
 
 | msg_id | Name | Fields | Direction |
 |---|---|---|---|
@@ -317,6 +326,8 @@ Nine wire messages *(v5.1: was five)*, defined as `@vp_compile`-decorated
 | 7 | `ManifestRequestPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
 | 8 | `ManifestDeliveryPayload` *(v5.1)* | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
 | 9 | `PeerIntroPayload` *(v5.1)* | `wallet_address: varlenH-utf8`, `known_overlays: varlenH-msgpack` | peer → peer (auto-sent on admission accept) |
+| 10 | `CommunityJoinRequestPayload` *(v5.2)* | `signed_entry: varlenH-utf8` (JSON of signed `donation_intent`) | joiner → any admitted member |
+| 11 | `CommunityJoinResponsePayload` *(v5.2)* | `accepted: bool`, `reason: varlenH-utf8` | gatekeeper → joiner |
 
 The community_id literal `b"openclaw_seedbox_v1\x00"` is the network-wide
 hand-picked rendezvous string (the only protocol whose id is hand-picked;
@@ -327,6 +338,14 @@ ids let a receiver dispatch on intent without parsing the body. The
 PEER_INTRO message is auto-sent by both sides of a successful JOIN
 round-trip and provides the live wallet address + overlay catalogue
 that the state snapshot then surfaces to the LLM.
+
+The Phase-5 community-join trio (msg_ids 10/11) is the v5.2 admission
+path: a joiner ships a *signed* `donation_intent` log entry instead of
+a bare txid. The gatekeeper drops the entry into its `PeerLog`
+(signature + identity binding verified by the colleague's signed-log
+primitive), re-runs community-state replay (§8.5), and admits iff the
+joiner now appears in `state.members`. Legacy msg_id 1/2 are kept for
+backward compatibility with mock-mode demos.
 
 Joiner-side helpers return `asyncio.Future` for clean async wait:
 
@@ -357,6 +376,48 @@ A small `Protocol` abstraction with two implementations:
 
 `build_default_service(save_dir)` picks the real impl if libtorrent is
 installed, else the stub.
+
+### 6.3 Community-log replication via HTTP pull *(v5.2)*
+
+The community signed log (§8.5) lives one chain per member — never as
+a multi-author shared file. Replication runs over HTTP, not IPv8,
+reusing the colleague's primitive at
+`redteam/integration/{server,peer_transport,pull_loop}.py`:
+
+```
+each member's OpenClawAgent process:
+  ├─ FastAPI sub-server  (uvicorn, port = redteam_port)
+  │    serves: GET /head, GET /entries, GET /identity
+  │    backing store: this agent's own SignedAppendOnlyLog
+  │
+  └─ background asyncio task
+       runs run_pull_loop(transport=HttpPeerTransport, peer_urls=[...])
+       per interval, for each peer URL:
+         peer_transport.get_head()  → did head change?
+         peer_transport.get_entries_since(cursor, batch)
+         for each entry: peer_log.accept_entry()
+           → verify signature + identity binding
+           → persist to <peer_log_dir>/<source_id>.jsonl
+```
+
+Configuration on `AgentConfig`:
+
+- `peer_log_urls: tuple[str, ...]` — full base URLs (`http://host:port`)
+  of peers to pull from. Empty = pull loop disabled.
+- `pull_interval_s: float = 5.0`
+- `pull_batch: int = 100`
+
+`scenario_boot` cross-wires the URLs: in a 4-agent scenario, alice's
+env file lists bob's/charlie's/dave's redteam_port URLs, and so on.
+Each agent's loop runs in its own MCP process's event loop;
+`OpenClawAgent.start()` spawns the task iff `peer_log_urls` is
+non-empty, and `OpenClawAgent.stop()` cancels it via a stop event
+(5 s grace, then `task.cancel()`).
+
+**Convergence property.** The end-to-end ASGI test
+(`tests/test_pull_loop_wiring.py:test_pull_loop_makes_bob_see_alice_in_community_state`)
+asserts that within `~ 2 × pull_interval_s`, bob's
+`community_state()` reflects alice's freshly-written `donation_intent`.
 
 ---
 
@@ -622,6 +683,85 @@ walks outputs, returns the first one paying `seedbox_address` with
 provider exception is caught and surfaced as `accepted=False,
 reason="fetch_failed:..."` — the caller decides to retry.
 
+### 8.5 Community-shared log + replay *(v5.2)*
+
+The v5.1 admission path trusts whichever agent happens to hold the
+gatekeeper wallet key. v5.2 replaces that with a **no-key-custody**
+model: the *community signed log* is the treasury.
+
+**Architecture.** Each member runs its own
+`SignedAppendOnlyLog` (the colleague's primitive at
+`redteam/primitives/signed_log.py`). Every member's chain is also
+replicated as read-only cache files on every *other* member via the
+HTTP pull loop (§6.3). The "community log" is the logical union of
+every chain; balance, membership, and seedbox count are *computed*
+from it by replay — there is no single mutable shared file, no shared
+key, no custodian.
+
+`agent/community_state.py` provides the load-bearing function:
+
+```python
+state = replay_community(manifest, entries) -> CommunityState
+```
+
+Where `entries` is the merged stream from `OpenClawAgent.community_log`
++ every cached peer chain. `CommunityState` is a frozen dataclass:
+
+```python
+@dataclass(frozen=True)
+class CommunityState:
+    members:        frozenset[str]                  # admitted reporter_ids
+    donations:      tuple[DonationIntent, ...]      # accepted, in time order
+    purchases:      tuple[SeedboxPurchaseIntent, ...]
+    provisioned:    tuple[SeedboxProvisioned, ...]
+    balance_sats:   int                             # Σ donations − Σ purchases
+    seedbox_count:  int                             # 1 (genesis) + len(provisioned)
+```
+
+**Three community-action entry types.** The replay recognises three
+`action` values on signed-log entries; every other action (security
+events, etc.) is skipped:
+
+  - `donation_intent` — admits the signer. Details: `network_id_hex`, `amount_sats`.
+  - `seedbox_purchase_intent` — debits the treasury. Details: `network_id_hex`, `cost_sats`.
+  - `seedbox_provisioned` — closes a pending purchase, bumps seedbox count. Details: `network_id_hex`, `purchase_intent_hash`, `seedbox_url`, `seedbox_pubkey_hex`.
+
+**Validation rules** (applied incrementally as entries are merged in
+`(timestamp, reporter_id, entry_hash)` order — independent of input
+iteration; replay is deterministic across permutations):
+
+| Entry | Rules |
+|---|---|
+| `donation_intent` | signer not already a member; `amount >= min_sats`; if no prior donations: `amount <= bootstrap_cap_sats`; else: `amount <= max(min_sats, mean(prior.amount))` |
+| `seedbox_purchase_intent` | growth enabled in manifest; signer admitted; `cost == manifest.seedbox_cost_sats` exactly; treasury covers cost; `member_count > max_agents_per_seedbox × seedbox_count` (threshold tripped); no other purchase still pending (first-comer wins) |
+| `seedbox_provisioned` | signer admitted; referenced intent exists in state; intent not already closed |
+
+Rejected entries are silently dropped from state — they stay in the
+underlying log (replay is read-only) but never affect membership or
+treasury. The dynamic property of the donation cap rule: the running
+average is monotonically non-increasing once seeded, so whales cannot
+dominate — each large donation lowers the ceiling for the next.
+
+**Signature verification is upstream.** The replay does *not* re-check
+signatures: peer-log entries were verified by
+`SignedAppendOnlyLog.verify_foreign_entry` when the pull loop accepted
+them, and the local log's entries are trusted by virtue of being on
+disk. This keeps replay pure (no I/O, no crypto), so it runs cheaply
+on every snapshot.
+
+**Implementation surface.** `OpenClawAgent` exposes lazy properties
+that the tool layer consumes:
+
+- `agent.community_log` — own `SignedAppendOnlyLog`
+- `agent.peer_log` — `PeerLog` cache for foreign chains
+- `agent.community_reporter_id` — our `SHA256(pubkey || network)` hex
+- `agent.all_community_entries()` — merge own + every peer's entries
+- `agent.community_state()` — return `CommunityState | None`
+
+Test coverage: `tests/test_community_state.py` (30 cases) +
+`tests/test_community_tools.py` (17 cases) +
+`tests/test_seedbox_provisioned_tool.py` (7 cases).
+
 ---
 
 ## 9. `agent/` — runtime, tool surface, MCP server
@@ -647,18 +787,26 @@ Runtime methods used by both tests and the MCP server:
 
 ### 9.2 Tool surface (`agent/tools.py`)
 
-A `ToolRegistry` of 16 tools the LLM can call *(v5.1: was 13)*. `build_tools(agent)`
-constructs the registry bound to one agent.
+A `ToolRegistry` of 23 tools the LLM can call *(v5.2: +7 over v5.1;
+v5.1 was 16; v5.0 was 13)*. `build_tools(agent)` constructs the
+registry bound to one agent.
 
 | Tool | Effect |
 |---|---|
 | `peers_list` | list peers known on any overlay |
 | `peer_add` | pre-introduce a peer at runtime (since v9, used by `scenario_boot`) |
 | `wallet_address` | this agent's testnet receiving address |
-| `wallet_balance` | balance in sats (refreshes from network) |
+| `wallet_balance` | balance in sats; under the v5.2 synthetic wallet this reflects `initial_balance_sats − Σspent` |
 | `wallet_send` | sign + broadcast a payment, return txid |
-| `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
-| `overlays_list` | compiled overlays loaded locally — **v5.1**: now returns full per-message field schemas + handler text + errors + dependencies |
+| `seedbox_donate_and_join` | **DEPRECATED** in v5.2 — legacy single-gatekeeper path. Prefer `community_donate_and_join` |
+| `community_donate_and_join` *(v5.2)* | sign a `donation_intent` log entry, debit the wallet, append to own community log. Local pre-checks (min/cap/no-double-join). Propagates to peers via the pull loop |
+| `community_join_via_peer` *(v5.2)* | end-to-end wire path: same as above, then ships the entry to a gatekeeper peer over `COMMUNITY_JOIN_REQUEST` and awaits accept/reject |
+| `community_treasury_balance` *(v5.2)* | snapshot of balance, member_count, seedbox_count, pending_purchases, threshold_active, my_membership_status |
+| `community_member_count` *(v5.2)* | slim view: count + own status + threshold |
+| `community_log_list_recent` *(v5.2)* | merged log view (own + every peer's chain) with accepted/rejected per entry |
+| `seedbox_purchase_propose` *(v5.2)* | sign + append a `seedbox_purchase_intent`. First-comer wins; replay rejects if threshold not tripped or treasury short |
+| `seedbox_provisioned` *(v5.2)* | sign + append a `seedbox_provisioned` entry closing a purchase intent. Currently mock-spawn (writing the entry IS the provisioning event); real cloud-spawn deferred to `replication/` |
+| `overlays_list` | compiled overlays loaded locally — *v5.1*: full per-message field schemas + handler text + errors + dependencies |
 | `overlay_describe` *(v5.1)* | return the canonical markdown of a loaded overlay (32 KiB cap) |
 | `overlay_fetch_and_load` | OVERLAY_REQUEST from a peer → compile → register |
 | `overlay_publish` | serve a `.md` over OVERLAY_REQUEST |
@@ -671,7 +819,10 @@ constructs the registry bound to one agent.
 
 `overlay_invoke` is what closes the loop: once the registry has compiled
 a class, the LLM can call any message in it by name without the runtime
-having ever statically known about that protocol.
+having ever statically known about that protocol. The seven v5.2 tools
+wire ``agent.community_state.replay_community`` (§8.5) into the
+LLM-facing surface so the agent can read treasury/member state and
+write donation / purchase / provisioned entries entirely through MCP.
 
 ### 9.3 LLM tool-call loop (`agent/loop.py`)
 
@@ -686,7 +837,7 @@ Not used in production. Production goes through the MCP server (§9.4).
 ### 9.4 MCP server (`agent/mcp_server.py`)
 
 The **production** path. A FastMCP streamable-HTTP server wrapping the
-`OpenClawAgent` and exposing the 16 tools. OpenClaw's chat session
+`OpenClawAgent` and exposing the 23 tools. OpenClaw's chat session
 connects to this server over HTTP. The OpenClaw chat host's LLM (the
 reasoning brain) calls our tools; the local Qwen on the VPS only does
 overlay compilation when triggered.
@@ -706,7 +857,7 @@ turn talks to the MCP server. Two LLMs in the picture, no overlap:
 | Subcommand | Use |
 |---|---|
 | `info` | print this agent's identity/address/pubkey/wallet, exit |
-| `mcp` | **production** — serve the 16-tool surface over FastMCP streamable-HTTP |
+| `mcp` | **production** — serve the 23-tool surface over FastMCP streamable-HTTP |
 | `run` | offline-test — execute one query via the internal LLM loop |
 | `serve` | offline-test — long-running stdin/stdout via the internal loop |
 
@@ -1484,3 +1635,80 @@ response to operator feedback and the master-branch merge:
    as-is. New `configs/host.env` (gitignored; example at
    `configs/host.env.example`) gives every developer one place to pin
    their Tailscale GPU IP / Qwen endpoint / Bitcoin network.
+
+---
+
+## 23. v5.2 delta from v5.1
+
+v5.1 still depended on a single trusted agent holding the gatekeeper
+wallet key: every donation went to that agent's wallet, and if the
+gatekeeper went away or got compromised the network had no recovery.
+v5.2 removes the trust assumption entirely. Treasury and membership
+become functions of a replicated signed log; there is no key to lose
+and no custodian to corrupt.
+
+### The headline change
+
+**Community treasury = signed append-only log, replicated across every
+member.** Balance is computed by replaying `donation_intent`,
+`seedbox_purchase_intent`, and `seedbox_provisioned` entries.
+Membership is the set of donors whose entries pass the cap rules
+(running average across prior donations, with a bootstrap cap for
+donor #1). New seedboxes are authorised by first-comer: the first
+admitted member to write a valid purchase intent wins; log ordering
+resolves races deterministically.
+
+| Layer | v5.1 | v5.2 |
+|---|---|---|
+| Admission policy | gatekeeper's `DonationVerifier` verifies an on-chain txid | community-state replay verifies a signed log entry against `min_sats`, running-average cap, and no-double-join |
+| Treasury | the gatekeeper's wallet balance (real money in one place) | `Σ donation_intent − Σ seedbox_purchase` computed from the log (no keys) |
+| Membership | "did the gatekeeper say yes?" | "is this donor's entry in `state.members`?" |
+| Seedbox growth | not handled (single seedbox only) | first-comer purchase intent; replay enforces threshold + cost + treasury cover |
+| Wire messages | 9 (JOIN_REQUEST/RESPONSE + OVERLAY_* trio + MANIFEST_* trio + PEER_INTRO) | 11 (+ COMMUNITY_JOIN_REQUEST/RESPONSE for the no-treasurer admission path; legacy msg_ids 1/2 kept for mock-mode demos) |
+| Tool surface | 16 | 23 (+ `community_donate_and_join`, `community_join_via_peer`, `community_log_list_recent`, `community_treasury_balance`, `community_member_count`, `seedbox_purchase_propose`, `seedbox_provisioned`) |
+| Replication | none (each agent's log is private) | HTTP pull via `redteam.integration.pull_loop` — every member runs a FastAPI sub-server + a background pull task fetching from every other member |
+| Manifest fields | `gatekeeper_address`, `min_sats`, `min_confirmations` | + `bootstrap_cap_sats`, `max_agents_per_seedbox`, `seedbox_cost_sats` |
+| Canonical demo | `seek_cc` with 2 agents (alice gatekeeper, bob seeker) | `seek_cc` with 4 agents (alice founder + bob/charlie/dave joiners — dave's join trips the threshold) |
+
+### Phase-by-phase rollout
+
+The v5.2 work landed across 9 commits on the `communication-protocol`
+branch (`44830bf … 53764a7`), each isolated and tested:
+
+| Phase | What | Tests added |
+|---|---|---|
+| 0 | Merge master (colleague's signed-log replication primitive) | took +140 |
+| 1 | `AdmissionPolicy` gains 3 optional fields | +9 |
+| 2 | `Wallet.sign(data)` + `Wallet.verify(pubkey, data, sig)` | +5 |
+| 3 | `agent/community_state.py` — pure-function replay | +30 |
+| 4 | 5 LLM-facing community tools + `OpenClawAgent` lazy log accessors | +17 |
+| 5 | `CommunityJoinRequest/Response` wire messages (msg_id 10/11) + gatekeeper callback | +7 |
+| 6 | Pull-loop wiring: redteam FastAPI sub-server + background pull task | +10 |
+| 7 | `seek_cc` expanded from 2 → 4 agents | +6 |
+| 8 | `seedbox_provisioned` tool closes pending intents | +7 |
+
+End state: **486 tests passing.** The canonical demo no longer needs a
+funded Bitcoin wallet (mock mode is the default), no longer trusts a
+single gatekeeper, and shows seedbox growth as the threshold trips.
+
+### What v5.2 deliberately leaves for later
+
+- **Real cloud-spawn**: `seedbox_provisioned` writes the entry; the
+  actual VPS spin-up via sporestack / hostinger / etc. is mocked at
+  this stage. The next phase plumbs `replication/sporestack_adapter.py`
+  into the tool.
+- **Chain pruning / log compaction**: every community-log entry is
+  kept forever. For small demos this is fine; a production network
+  would need a snapshot mechanism so new joiners don't have to replay
+  the entire history.
+- **Adversarial sybils**: a single attacker can spin up arbitrary
+  pseudonymous donor identities. The running-average cap shrinks the
+  ceiling each donation, but does not enforce identity uniqueness;
+  the trust gradient is "you paid sats" which is sybil-resistant only
+  to the extent that sats are scarce. Fine for the thesis demo;
+  production would layer a richer identity proof on top.
+- **Treasury sweeping across networks**: each manifest's
+  `network_id` isolates one community's treasury. A member of two
+  networks holds two membership records; treasuries do not merge.
+  Intentional — a community's accounting should not depend on every
+  other community its members happen to join.

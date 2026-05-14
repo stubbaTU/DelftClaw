@@ -1,11 +1,10 @@
 # DelftClaw — Architecture (As-Built)
 
-**Status:** authoritative as of 2026-05-14. *(v5.1 — network manifests
-+ zero-shot mission descriptors + post-merge traditional-overlay path
-+ synthetic wallet. See ``PROJECT_DESIGN.md §22`` for the delta from
-v5.0 and the post-merge addenda.)*
+**Status:** authoritative as of 2026-05-14. *(v5.2 — community
+signed-log treasury, no-treasurer admission, 4-agent seek_cc demo.
+See ``PROJECT_DESIGN.md §23`` for the delta from v5.1; §22 for v5.0 → v5.1.)*
 
-**Supersedes:** `PROJECT_DESIGN.md` v5.0 (the canonical reference doc;
+**Supersedes:** `PROJECT_DESIGN.md` v5.1 (the canonical reference doc;
 this file is a developer-facing distillation. Where they disagree,
 `PROJECT_DESIGN.md` wins.)
 
@@ -14,14 +13,21 @@ this file is a developer-facing distillation. Where they disagree,
 The earlier design centred on a stack of bespoke abstractions
 (`TrustroomCommunity`, `AgentChannel`, `StakeOracle`, credential
 presentations) layered on top of IPv8. That stack has been removed.
-The current system rests on two architectural decisions taken with the
-supervisor:
+The current system rests on three architectural decisions:
 
-1. **Admission via Bitcoin donation to a community seedbox.**
-   A joiner sends a real (testnet) transaction to a community's wallet
-   address, then proves admission by handing the txid to an existing
-   member, who verifies it on-chain. No credentials, no stake-locking,
-   no rooms.
+1. **Admission via signed log entry — no treasurer, no key custody
+   (v5.2).** A joiner writes a signed `donation_intent` entry to their
+   own append-only log. Peers replicate everyone's logs via HTTP pull
+   and replay them: membership = the set of donors whose entries pass
+   the validation rules (running-average donation cap, no double-join,
+   etc.). Treasury balance is the same replay's sum:
+   `Σ donation_intent − Σ seedbox_purchase`. There is no gatekeeper
+   wallet to defend and no single point of failure.
+
+   *(v5.1 used a real Bitcoin testnet donation to a gatekeeper's
+   wallet address; v5.2's signed log replaces that with a synthetic
+   wallet + log-replay model. The legacy on-chain path is preserved
+   for completeness — set `BTC_NETWORK=testnet` to switch back.)*
 
 2. **Protocol overlays as transmittable markdown.**
    Each IPv8 community type is described in a single `.md` file (its
@@ -31,6 +37,14 @@ supervisor:
    result with their live IPv8 instance — **at runtime, without a
    software release**. This follows the agentic meta-protocol direction
    from Agora (arXiv:2410.11905) and ANP.
+
+3. **Seedbox growth as a community decision (v5.2).** When the member
+   count exceeds the manifest's `max_agents_per_seedbox × seedbox_count`
+   threshold, any admitted member can write a `seedbox_purchase_intent`
+   to authorise spawning a new seedbox. First valid intent wins on
+   race. Cost matches the manifest's declared `seedbox_cost_sats`
+   exactly. A follow-up `seedbox_provisioned` entry closes the intent
+   and bumps `seedbox_count`.
 
 Everything below documents what is actually in the code today.
 
@@ -507,15 +521,22 @@ agent.known_peers()                      # union across all overlays
 
 ### 8.2 Tool surface for the LLM
 
-`agent/tools.py:build_tools(agent)` builds a `ToolRegistry` of 16
-functions the LLM can call (*v5.1: was 12*):
+`agent/tools.py:build_tools(agent)` builds a `ToolRegistry` of 23
+functions the LLM can call (*v5.2: +7 over v5.1; v5.1 was 16; v5.0 was 12*):
 
 | Tool | Effect |
 |---|---|
 | `peers_list` | list peers verified on any overlay |
 | `peer_add` *(v5.1)* | pre-introduce a peer at runtime |
-| `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops |
-| `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
+| `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops (synthetic in `BTC_NETWORK=mock`) |
+| `seedbox_donate_and_join` | **DEPRECATED** in v5.2 — legacy single-gatekeeper path |
+| `community_donate_and_join` *(v5.2)* | sign + append a `donation_intent` to own log; debits the wallet |
+| `community_join_via_peer` *(v5.2)* | end-to-end wire path — appends locally then ships to a gatekeeper peer over msg_id 10/11 |
+| `community_treasury_balance` *(v5.2)* | balance, member count, seedbox count, threshold status |
+| `community_member_count` *(v5.2)* | slim view: count + own membership status + threshold |
+| `community_log_list_recent` *(v5.2)* | merged log view (own + every peer's chain) with accepted/rejected flags |
+| `seedbox_purchase_propose` *(v5.2)* | sign + append a `seedbox_purchase_intent`; first-comer wins |
+| `seedbox_provisioned` *(v5.2)* | sign + append a `seedbox_provisioned` entry closing a pending intent (mock-spawn for now) |
 | `overlays_list` | full per-message field schemas + handler text + errors + dependencies |
 | `overlay_describe` *(v5.1)* | canonical markdown of a loaded overlay (32 KiB cap) |
 | `overlay_fetch_and_load` | OVERLAY_REQUEST from a peer → compile → register |
@@ -525,9 +546,13 @@ functions the LLM can call (*v5.1: was 12*):
 | `network_join` *(v5.1)* | end-to-end admission: manifest → peer_add → fetch overlays → donate → JOIN_REQUEST |
 | `torrent_seed` / `torrent_fetch` / `torrent_stats` | libtorrent surface |
 
-`overlay_invoke` is what closes the loop: once the registry has a
-compiled class, the LLM can call any message in it by name without
-the runtime having ever statically known about that protocol.
+`overlay_invoke` closes the protocol-extensibility loop: once the
+registry has a compiled class, the LLM can call any message in it by
+name without the runtime having ever statically known about that
+protocol. The seven v5.2 tools close the community-accounting loop:
+the LLM can read treasury + member state and write donation /
+purchase / provisioned entries entirely through MCP, with no
+gatekeeper key custody anywhere in the system.
 
 ### 8.3 LLM tool-call loop
 
