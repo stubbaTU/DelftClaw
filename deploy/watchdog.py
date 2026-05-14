@@ -225,6 +225,12 @@ async def _run_loop(args: argparse.Namespace) -> int:
             address="127.0.0.1",
             btc_network=os.environ.get("BTC_NETWORK", "testnet"),
             save_dir=save_dir,
+            initial_balance_sats=int(os.environ.get("INITIAL_BALANCE_SATS", "0")),
+            community_log_path=Path(os.environ["COMMUNITY_LOG_PATH"])
+            if os.environ.get("COMMUNITY_LOG_PATH") else None,
+            peer_log_dir=Path(os.environ["PEER_LOG_DIR"])
+            if os.environ.get("PEER_LOG_DIR") else None,
+            peer_log_urls=tuple(os.environ.get("PEER_LOG_URLS", "").split()),
         ),
         bt_service=build_default_service(save_dir=save_dir),
     )

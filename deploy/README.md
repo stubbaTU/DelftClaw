@@ -32,6 +32,7 @@ make scenarios                  # list active scenarios
 python -m deploy.paper_demo --provider mock --reset
                                 # run the full Paper - Demo.txt checklist locally
 make paper-demo                  # run that checklist on the VPS
+make paper-demo-real             # launch the real OpenClaw-agent paper demo scenario
 ```
 
 ## Makefile targets
@@ -46,6 +47,8 @@ make paper-demo                  # run that checklist on the VPS
 | `make watch NAME=…` | `journalctl -fu 'delftclaw-{mcp,watchdog}@NAME-*'` |
 | `make stop NAME=…` | `python -m deploy.scenario_boot NAME --teardown` |
 | `make paper-demo` | `python -m deploy.paper_demo --provider mock --root /var/lib/delftclaw/paper_demo --reset` |
+| `make paper-demo-real` | `python -m deploy.paper_demo --real-agents` |
+| `make paper-demo-stop` | `python -m deploy.paper_demo --stop-real-agents` |
 | `make ssh` | Open an interactive shell on the VPS |
 | `make test` | Run the project pytest suite locally |
 
@@ -71,6 +74,23 @@ bash deploy/vps/demo_seek_cc.sh paper-demo
 The command exits non-zero if any checklist item fails and prints a JSON
 report with the generated goal files, signed logs, catalog, security
 evidence, and integrity/tamper results.
+
+For the actual OpenClaw-agent deployment, use the `paper_demo` scenario:
+
+```bash
+make paper-demo-real
+make watch NAME=paper_demo
+```
+
+This starts four real templated MCP/watchdog pairs from
+`deploy/scenarios/paper_demo`: `agent_1` founds and seeds content,
+`agent_2` joins/searches/retrieves, `agent_3` joins as the third
+member, and `agent_4` joins and records the mock second seedbox after
+the threshold is active. Stop it with:
+
+```bash
+make paper-demo-stop
+```
 
 Override `VPS_HOST` / `VPS_USER` / `VPS_ROOT` on the command line:
 

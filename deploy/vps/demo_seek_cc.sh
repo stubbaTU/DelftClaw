@@ -9,6 +9,8 @@
 #   bash deploy/vps/demo_seek_cc.sh mcp-config
 #   bash deploy/vps/demo_seek_cc.sh probe
 #   bash deploy/vps/demo_seek_cc.sh paper-demo
+#   bash deploy/vps/demo_seek_cc.sh paper-demo-real
+#   bash deploy/vps/demo_seek_cc.sh paper-demo-stop
 #   bash deploy/vps/demo_seek_cc.sh stop
 
 set -Eeuo pipefail
@@ -121,6 +123,16 @@ paper_demo() {
   "$PYTHON" -m deploy.paper_demo --provider "$provider" --root "$root" --reset
 }
 
+paper_demo_real() {
+  echo "[demo] launching real OpenClaw-agent paper_demo scenario"
+  "$PYTHON" -m deploy.paper_demo --real-agents
+}
+
+paper_demo_stop() {
+  echo "[demo] stopping real OpenClaw-agent paper_demo scenario"
+  "$PYTHON" -m deploy.paper_demo --stop-real-agents
+}
+
 stop_demo() {
   echo "[demo] stopping ${SCENARIO}"
   "$PYTHON" -m deploy.scenario_boot "$SCENARIO" --teardown
@@ -134,6 +146,8 @@ case "${1:-}" in
   mcp-config) ports_json ;;
   probe) probe_demo ;;
   paper-demo) paper_demo ;;
+  paper-demo-real) paper_demo_real ;;
+  paper-demo-stop) paper_demo_stop ;;
   stop) stop_demo ;;
   *) usage; exit 2 ;;
 esac

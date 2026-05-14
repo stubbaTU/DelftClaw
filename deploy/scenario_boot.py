@@ -144,6 +144,10 @@ def _manifest_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
     return _scenario_dir_on_vps(scenario, agent) / "network_manifest.md"
 
 
+def _seed_content_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
+    return _scenario_dir_on_vps(scenario, agent) / "seed_content.json"
+
+
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
@@ -185,6 +189,7 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"COMMUNITY_LOG_PATH={state / 'community.log'}",
         f"PEER_LOG_DIR={state / 'peer_logs'}",
         f"PUBLISH_OVERLAY={overlay}",
+        f"SEED_CONTENT_FILE={_seed_content_file_path(scenario, agent)}",
         # The watchdog reads this file at boot and calls load_manifest on its
         # snapshot agent. Without it, state.network would be null in every
         # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
@@ -269,9 +274,52 @@ def _stage_scenario_dir(scenario: Scenario, agent: AgentSpec) -> None:
     _sudo(["install", "-d", "-o", "root", "-g", SERVICE_USER, "-m", "0750", str(dst)])
     _sudo(["cp", "-aT", str(src_dir), str(dst)])
     _sudo(["chown", "-R", f"root:{SERVICE_USER}", str(dst)])
+    _write_seed_content_file(scenario, agent)
     # Files readable by the delftclaw group; dirs traversable.
     _sudo(["chmod", "-R", "g+rX,o-rwx", str(dst)])
     c_ok(f"{agent.name}: staged scenario tree under {dst}")
+
+
+def _write_seed_content_file(scenario: Scenario, agent: AgentSpec) -> None:
+    target = _seed_content_file_path(scenario, agent)
+    content_dir = _state_dir(scenario.name, agent.name) / "seed_content"
+    rows = []
+    if agent.seed_content:
+        _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(content_dir)])
+    for item in agent.seed_content:
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in item.name)
+        content_path = content_dir / safe_name
+        payload = (
+            "DelftClaw paper demo seed content\n"
+            f"name={item.name}\n"
+            f"magnet={item.magnet}\n"
+        )
+        subprocess.run(
+            ["sudo", "tee", str(content_path)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _sudo(["chmod", "0640", str(content_path)])
+        _sudo(["chown", f"{SERVICE_USER}:{SERVICE_USER}", str(content_path)])
+        rows.append({
+            "magnet": item.magnet,
+            "name": item.name,
+            "size": item.size,
+            "mime": item.mime,
+            "tags": list(item.tags),
+            "path": str(content_path),
+        })
+    subprocess.run(
+        ["sudo", "tee", str(target)],
+        input=json.dumps(rows, indent=2, sort_keys=True) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _sudo(["chmod", "0640", str(target)])
+    _sudo(["chown", f"root:{SERVICE_USER}", str(target)])
 
 
 def _enable_unit(unit: str) -> None:

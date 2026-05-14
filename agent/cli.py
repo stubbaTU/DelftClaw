@@ -266,6 +266,58 @@ def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str,
     return out
 
 
+def _apply_seed_content(agent: OpenClawAgent, seed_content_file: str | None) -> None:
+    """Prime boot-time content into loaded content overlays and BT stub.
+
+    `scenario_boot` writes this JSON for seedbox agents from
+    scenario.yaml's `seed_content`. The content overlay exposes `local_index`;
+    this hook makes the preloaded catalog visible to SEARCH_REQUEST handlers.
+    """
+    if not seed_content_file:
+        return
+    path = Path(seed_content_file)
+    if not path.is_file():
+        print(f"[boot] seed content file missing: {path}", flush=True)
+        return
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[boot] failed to parse seed content file {path}: {exc}", flush=True)
+        return
+    if not isinstance(rows, list):
+        print(f"[boot] seed content file {path} is not a list", flush=True)
+        return
+
+    index_rows: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        content_path = Path(str(row.get("path", "")))
+        magnet = str(row.get("magnet") or "")
+        if content_path.is_file() and not magnet:
+            magnet = agent.bittorrent.seed(content_path)
+        if content_path.is_file() and hasattr(agent.bittorrent, "prime") and magnet:
+            agent.bittorrent.prime(magnet, content_path)  # type: ignore[attr-defined]
+        index_rows.append({
+            "magnet": magnet,
+            "name": str(row.get("name") or content_path.name),
+            "size": int(row.get("size") or (content_path.stat().st_size if content_path.exists() else 0)),
+            "mime": str(row.get("mime") or "application/octet-stream"),
+            "tags": list(row.get("tags") or []),
+        })
+
+    applied = 0
+    for community_id in agent.registry.list_loaded():
+        instance = agent.registry.get(community_id)
+        if instance is not None and hasattr(instance, "local_index"):
+            instance.local_index = list(index_rows)
+            applied += 1
+    print(
+        f"[boot] loaded {len(index_rows)} seed content entries into {applied} overlay(s)",
+        flush=True,
+    )
+
+
 async def _serve_loop(
     agent: OpenClawAgent,
     args: argparse.Namespace,
@@ -391,6 +443,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.publish_overlay:
         print(f"[boot] publishing {len(args.publish_overlay)} overlay(s)", flush=True)
     published = _publish_overlays(agent, args.publish_overlay or [])
+    _apply_seed_content(agent, _os.environ.get("SEED_CONTENT_FILE"))
 
     # Register hand-written Python Community classes (if any). These are
     # LOCAL-ONLY — they do not flow over the wire because Python bytecode

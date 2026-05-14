@@ -33,6 +33,7 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
         },
         "network": _network_snapshot(agent),
         "wallet": _wallet_snapshot(agent),
+        "community": _community_snapshot(agent),
         "peers": _peers_snapshot(agent),
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
@@ -53,6 +54,10 @@ def _network_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
             "gatekeeper_address": manifest.admission.gatekeeper_address,
             "min_sats": manifest.admission.min_sats,
             "min_confirmations": manifest.admission.min_confirmations,
+            "bootstrap_cap_sats": manifest.admission.effective_bootstrap_cap_sats,
+            "max_agents_per_seedbox": manifest.admission.max_agents_per_seedbox,
+            "seedbox_cost_sats": manifest.admission.seedbox_cost_sats,
+            "seedbox_growth_enabled": manifest.admission.seedbox_growth_enabled,
         },
         "genesis_peers": [
             {"host": gp.host, "port": gp.port, "pubkey_hex": gp.pubkey_hex}
@@ -70,6 +75,46 @@ def _wallet_snapshot(agent: "OpenClawAgent") -> dict[str, Any]:
         return {"address": agent.wallet.address(), "balance_sats": None,
                 "error": f"{type(exc).__name__}: {exc}"}
     return {"address": agent.wallet.address(), "balance_sats": int(balance_sats)}
+
+
+def _community_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
+    """Read-only replay of this agent's signed community-log view."""
+    manifest = agent.network_manifest
+    if manifest is None:
+        return None
+    state = agent.community_state()
+    if state is None:
+        return None
+    me = agent.community_reporter_id
+    recent_entries = []
+    for entry in sorted(
+        agent.all_community_entries(),
+        key=lambda item: (
+            item.get("timestamp", ""),
+            item.get("reporter_id", ""),
+            item.get("entry_hash", ""),
+        ),
+    )[-10:]:
+        details = entry.get("details") or {}
+        recent_entries.append({
+            "action": entry.get("action"),
+            "reporter_id": entry.get("reporter_id"),
+            "entry_hash": entry.get("entry_hash"),
+            "amount_sats": details.get("amount_sats"),
+            "cost_sats": details.get("cost_sats"),
+            "purchase_intent_hash": details.get("purchase_intent_hash"),
+            "seedbox_url": details.get("seedbox_url"),
+        })
+    return {
+        "balance_sats": state.balance_sats,
+        "member_count": state.member_count,
+        "seedbox_count": state.seedbox_count,
+        "pending_purchases": state.pending_purchases,
+        "threshold_active": state.threshold_active(manifest),
+        "my_membership_status": "admitted" if me in state.members else "outsider",
+        "members": sorted(state.members),
+        "recent_log_entries": recent_entries,
+    }
 
 
 def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:

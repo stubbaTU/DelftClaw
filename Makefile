@@ -27,7 +27,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
              --exclude='*.key' --exclude='ec*.pem' --exclude=.venv
 
 .PHONY: help deploy push bootstrap scenario scenarios watch stop \
-        paper-demo ssh test clean check-name
+        paper-demo paper-demo-real paper-demo-stop ssh test clean check-name
 
 help:
 	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -76,6 +76,14 @@ paper-demo: push ## Run the full Paper - Demo.txt checklist on the VPS
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.paper_demo \
 		--provider mock --root /var/lib/delftclaw/paper_demo --reset"
+
+paper-demo-real: push ## Launch the real OpenClaw-agent paper_demo scenario on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.paper_demo --real-agents"
+
+paper-demo-stop: ## Stop the real OpenClaw-agent paper_demo scenario on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.paper_demo --stop-real-agents"
 
 # ---------------------------------------------------------------------------
 # Operator extras

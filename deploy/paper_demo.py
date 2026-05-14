@@ -4,6 +4,8 @@ import argparse
 import csv
 import hashlib
 import json
+import subprocess
+import sys
 import shutil
 from pathlib import Path
 from typing import Any
@@ -480,7 +482,22 @@ def main() -> int:
     parser.add_argument("--provider", choices=("mock", "local"), default="mock")
     parser.add_argument("--root", default="paper_demo_state")
     parser.add_argument("--reset", action="store_true")
+    parser.add_argument(
+        "--real-agents",
+        action="store_true",
+        help="launch the deploy/scenarios/paper_demo OpenClaw-agent scenario instead of the direct checklist runner",
+    )
+    parser.add_argument(
+        "--stop-real-agents",
+        action="store_true",
+        help="stop the deploy/scenarios/paper_demo OpenClaw-agent scenario",
+    )
     args = parser.parse_args()
+    if args.real_agents or args.stop_real_agents:
+        cmd = [sys.executable, "-m", "deploy.scenario_boot", "paper_demo"]
+        if args.stop_real_agents:
+            cmd.append("--teardown")
+        return subprocess.run(cmd).returncode
     result = run_paper_demo(provider=args.provider, root=args.root, reset=args.reset)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 1

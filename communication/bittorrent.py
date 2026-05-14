@@ -86,14 +86,19 @@ class StubBitTorrentService:
         loop = asyncio.get_event_loop()
         future: asyncio.Future[Path] = loop.create_future()
         path = self._seeded.get(magnet_uri)
+        known = path is not None
         if path is None:
             path = self.save_dir / f"stub-{_magnet_btih(magnet_uri)}.bin"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"mock payload for {magnet_uri}\n", encoding="utf-8")
         info = TorrentInfo(
             magnet=magnet_uri,
             name=path.name,
-            progress=1.0 if magnet_uri in self._seeded else 0.0,
+            progress=1.0,
             seeding=False,
             save_path=path,
+            peers=1 if known else 0,
         )
         self._torrents[magnet_uri] = info
         future.set_result(path)
