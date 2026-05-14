@@ -115,6 +115,41 @@ def test_seed_content_parses(tmp_path: Path):
     assert seed[0].tags == ("cc",)
 
 
+def test_initial_balance_defaults_to_zero(tmp_path: Path):
+    """Agents that don't declare initial_balance_sats keep legacy mock behaviour."""
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.agents["alice"].initial_balance_sats == 0
+    assert s.agents["bob"].initial_balance_sats == 0
+
+
+def test_initial_balance_sats_parses(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["bob"]["initial_balance_sats"] = 50_000
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.agents["bob"].initial_balance_sats == 50_000
+
+
+def test_initial_balance_sats_rejects_negative(tmp_path: Path):
+    from deploy.scenario import ScenarioError
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["bob"]["initial_balance_sats"] = -1
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="initial_balance_sats"):
+        parse_scenario(path)
+
+
+def test_initial_balance_sats_rejects_non_int(tmp_path: Path):
+    from deploy.scenario import ScenarioError
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["bob"]["initial_balance_sats"] = "fifty thousand"
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="initial_balance_sats"):
+        parse_scenario(path)
+
+
 # ---------------------------------------------------------------------------
 # Rejection cases
 # ---------------------------------------------------------------------------
@@ -281,7 +316,7 @@ def test_default_overlay_hashes_from_genesis_publish_list(tmp_path: Path):
     s = parse_scenario(path)
     hashes = _default_overlay_hashes(s, "alice")
     # alice publishes content_community.md whose sha1 prefix is well-known.
-    assert hashes == ["0b5cafdd65c3e0021949bdc8f071d830ef5ce66f"]
+    assert hashes == ["a3455e9cec3b78bc281f1c495b0a08baa733833a"]
 
 
 def test_build_manifest_md_round_trips_through_parser(tmp_path: Path):
@@ -298,7 +333,7 @@ def test_build_manifest_md_round_trips_through_parser(tmp_path: Path):
             "pubkey_hex": "aa" * 37,    # 74 hex chars
             "wallet_address": "tb1qexamplewalletxxxxxxxxxxxxxxxxxxxxxx",
         },
-        default_overlay_hashes=["0b5cafdd65c3e0021949bdc8f071d830ef5ce66f"],
+        default_overlay_hashes=["a3455e9cec3b78bc281f1c495b0a08baa733833a"],
     )
     parsed = parse_manifest(md)
     assert parsed.identity["name"] == "smoke"
@@ -307,7 +342,7 @@ def test_build_manifest_md_round_trips_through_parser(tmp_path: Path):
     assert len(parsed.genesis_peers) == 1
     assert parsed.genesis_peers[0].port == 8190
     assert parsed.default_overlays == (
-        "0b5cafdd65c3e0021949bdc8f071d830ef5ce66f",
+        "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     )
 
 

@@ -96,6 +96,10 @@ class AgentSpec:
     stop_predicate: str
     peers: tuple[str, ...] = ()
     seed_content: tuple[SeedContent, ...] = ()
+    # Per-agent synthetic wallet balance the LLM sees via wallet_balance.
+    # Default 0 keeps legacy "always-zero" mock behaviour; set >0 for
+    # agents that need to make donations (e.g. seek_cc's bob).
+    initial_balance_sats: int = 0
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,18 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         raise ScenarioError(f"agent {name!r}: seed_content must be a list")
     seed_content = tuple(SeedContent.from_dict(s) for s in seed_raw)
 
+    initial_balance_sats = d.get("initial_balance_sats", 0)
+    try:
+        initial_balance_sats = int(initial_balance_sats)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioError(
+            f"agent {name!r}: initial_balance_sats must be an int (got {initial_balance_sats!r})"
+        ) from exc
+    if initial_balance_sats < 0:
+        raise ScenarioError(
+            f"agent {name!r}: initial_balance_sats must be >= 0 (got {initial_balance_sats})"
+        )
+
     return AgentSpec(
         name=name,
         ipv8_port=ipv8_port,
@@ -265,6 +281,7 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         stop_predicate=stop_spec,
         peers=peers,
         seed_content=seed_content,
+        initial_balance_sats=initial_balance_sats,
     )
 
 

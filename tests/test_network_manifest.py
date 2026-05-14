@@ -63,7 +63,7 @@ GOOD_MANIFEST = """\
 
 # Default Overlays
 
-- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (content_community v1)
+- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (content_community v1)
 """
 
 
@@ -89,7 +89,7 @@ def test_parse_good_manifest_extracts_every_field():
     assert peer.port == 8190
     assert peer.pubkey_hex.startswith("aaaa")
     assert manifest.default_overlays == (
-        "0b5cafdd65c3e0021949bdc8f071d830ef5ce66f",
+        "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     )
     assert len(manifest.network_id) == 20
 
@@ -102,7 +102,7 @@ def test_parse_bundled_example_manifest():
     manifest = parse_manifest(text)
     assert manifest.identity["name"] == "delftclaw_seek_cc"
     assert manifest.default_overlays == (
-        "0b5cafdd65c3e0021949bdc8f071d830ef5ce66f",
+        "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     )
 
 
@@ -128,7 +128,7 @@ def test_required_sections_out_of_order_rejected():
         "# Genesis Peers\n\n| host | port | pubkey_hex |\n|---|---|---|\n"
         "| 127.0.0.1 | 8190 | "
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa |\n\n"
-        "# Default Overlays\n\n- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f\n"
+        "# Default Overlays\n\n- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a\n"
     )
     with pytest.raises(ManifestParseError, match="in order"):
         parse_manifest(swapped)
@@ -230,7 +230,7 @@ def test_genesis_peers_empty_table_rejected():
 def test_default_overlays_section_may_be_empty():
     """A network with no default overlays is legal — admission alone is enough."""
     text = GOOD_MANIFEST.replace(
-        "- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (content_community v1)\n",
+        "- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (content_community v1)\n",
         "(none — joiners discover overlays via OVERLAY_OFFER)\n",
     )
     manifest = parse_manifest(text)
@@ -239,9 +239,9 @@ def test_default_overlays_section_may_be_empty():
 
 def test_duplicate_default_overlay_hashes_rejected():
     text = GOOD_MANIFEST.replace(
-        "- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (content_community v1)\n",
-        "- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (a)\n"
-        "- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (b)\n",
+        "- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (content_community v1)\n",
+        "- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (a)\n"
+        "- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (b)\n",
     )
     with pytest.raises(ManifestParseError, match="duplicate"):
         parse_manifest(text)

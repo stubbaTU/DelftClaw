@@ -1,3 +1,19 @@
+> ## ⚠ Legacy v4.0 document — withdrawn 2026-05-08
+>
+> This document references trust rooms, credential issuance, and the
+> standalone identity MCP integration as if they're the primary
+> integration path. The v5.1 architecture uses the unified agent MCP
+> (see `agent/mcp_server.py`) and `make scenario` for autonomous
+> orchestration; the identity MCP described here still exists but is
+> one of three coexisting MCP servers, not the primary contract.
+>
+> Tailscale + remote Qwen guidance below is still broadly applicable
+> as networking advice. The trust-room / credential workflows are
+> obsolete — for current architecture see
+> [`PROJECT_DESIGN.md`](../../PROJECT_DESIGN.md).
+
+---
+
 # Connecting DelftClaw Identity + OpenClaw MCP to a Tailscale GPU Node Running Qwen
 
 You now have:

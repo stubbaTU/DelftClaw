@@ -222,6 +222,17 @@ def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str,
 
     out: list[tuple[str, str]] = []
     stub_sources = _discover_stub_sources(paths)
+    if paths and not stub_sources:
+        # Loud warning: stub discovery returned nothing despite overlays being
+        # listed. Either the sibling _stub.py is missing from this deploy or
+        # its *_SOURCE constant disappeared. The fallback path hits whatever
+        # `agent.llm` is — under --compiler-stub that's a StubLLMClient with
+        # no recorded source for this cid, so the compile raises KeyError.
+        print(
+            f"[boot] WARNING: no *_stub.py sibling found for any of "
+            f"{paths!r}; falling back to live LLM compile",
+            flush=True,
+        )
     for p in paths:
         md_text = Path(p).read_text(encoding="utf-8")
         cid_hex = community_id_from_md(md_text).hex()
@@ -229,6 +240,7 @@ def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str,
         # we route compile via the stub source if available.
         agent.seedbox.publish_overlay(md_text)
         if cid_hex in stub_sources:
+            print(f"[boot] compiling {Path(p).name} from stub (cid={cid_hex[:12]})", flush=True)
             stub_llm = StubLLMClient(sources={cid_hex: stub_sources[cid_hex]})
             # Compile via stub and register manually (matches OverlayRegistry.load).
             compiled = compile_overlay(md_text, stub_llm)
@@ -243,6 +255,11 @@ def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str,
         else:
             # No stub sibling — the agent's normal LLM-backed registry path
             # runs and may take a while on cold start.
+            print(
+                f"[boot] compiling {Path(p).name} via live LLM (cid={cid_hex[:12]}) "
+                f"— this can stall if the endpoint is unreachable",
+                flush=True,
+            )
             md_hash = agent.publish_overlay(md_text)
         compiled = agent.registry._compiled[md_hash]
         out.append((compiled.parsed.identity.get("name", Path(p).name), md_hash.hex()))
@@ -282,9 +299,17 @@ async def _serve_loop(
 
 
 async def _run(args: argparse.Namespace) -> int:
+    # Boot-path progress logs flush to journalctl so a hang between
+    # systemd-Started and serve_mcp_async() is localisable. Each `[boot]`
+    # line corresponds to one synchronous step that has historically been
+    # a hang candidate (seed load, identity derivation, IPv8 start, overlay
+    # compile, manifest load).
+    print("[boot] loading seed", flush=True)
     seed = _load_seed(args)
+    print("[boot] deriving identity", flush=True)
     identity = AgentIdentity.from_seed(seed, network=args.network)
 
+    print("[boot] building compiler LLM client", flush=True)
     compiler_llm = _build_compiler_llm(args)
     config = AgentConfig(
         port=args.port,
@@ -293,12 +318,18 @@ async def _run(args: argparse.Namespace) -> int:
         save_dir=Path(args.save_dir),
         seedbox_min_sats=args.seedbox_min_sats,
         seedbox_min_confirmations=args.seedbox_min_confirmations,
+        initial_balance_sats=args.initial_balance_sats,
     )
+    print(f"[boot] constructing agent (port={args.port}, btc={args.btc_network})", flush=True)
     agent = OpenClawAgent(identity=identity, llm=compiler_llm, config=config)
+    print("[boot] starting IPv8 + SeedboxCommunity", flush=True)
     await agent.start()
+    print("[boot] IPv8 up", flush=True)
 
     # Publish overlays at boot (if any). Done before peer-introduction so
     # peers immediately see the descriptor in our published map when they ask.
+    if args.publish_overlay:
+        print(f"[boot] publishing {len(args.publish_overlay)} overlay(s)", flush=True)
     published = _publish_overlays(agent, args.publish_overlay or [])
 
     # Register hand-written Python Community classes (if any). These are
@@ -314,10 +345,12 @@ async def _run(args: argparse.Namespace) -> int:
     # Network manifest: either consume one (--manifest) or publish one (--genesis).
     manifest_loaded: Optional[str] = None
     if args.manifest:
+        print(f"[boot] loading manifest from {args.manifest}", flush=True)
         md_text = Path(args.manifest).read_text(encoding="utf-8")
         manifest = agent.load_manifest(md_text)
         manifest_loaded = f"consumed {manifest.identity.get('name', '?')} ({manifest.network_id.hex()[:8]})"
     elif args.genesis:
+        print(f"[boot] loading genesis manifest from {args.genesis}", flush=True)
         md_text = Path(args.genesis).read_text(encoding="utf-8")
         manifest = agent.load_manifest(md_text)
         agent.seedbox.publish_manifest(md_text)
@@ -425,6 +458,9 @@ def main() -> int:
     parser.add_argument("--save-dir", default="./downloads")
     parser.add_argument("--seedbox-min-sats", type=int, default=10_000)
     parser.add_argument("--seedbox-min-confirmations", type=int, default=0)
+    parser.add_argument("--initial-balance-sats", type=int, default=0,
+                        help="synthetic per-agent wallet balance the LLM sees via "
+                             "wallet_balance; 0 disables (legacy always-zero mock)")
 
     # Per-agent zero-shot config.
     parser.add_argument("--publish-overlay", action="append", metavar="PATH",

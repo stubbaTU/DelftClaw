@@ -140,7 +140,7 @@ async def test_overlays_list_exposes_full_message_schema(two_agents):
          "description": "utf-8 search string; empty string returns the full index"},
     ]
     # Handler text is the prose the LLM uses to know what receipt means.
-    assert "scan the local content index" in search_req["handler_text"].lower()
+    assert "scan ``self.local_index``" in search_req["handler_text"].lower()
 
     assert entry["errors"], "errors section must surface in overlays_list"
     assert entry["dependencies"] == []

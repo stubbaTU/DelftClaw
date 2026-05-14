@@ -31,13 +31,6 @@ def wallet_path(agent_index: int) -> DerivationPath:
     return DerivationPath.parse(f"m/44'/0'/{agent_index}'/0/0")
 
 
-def verification_challenge_path(agent_index: int) -> DerivationPath:
-    """Return BIP-44 change-branch path used for challenge addresses."""
-    if agent_index < 0:
-        raise ValueError("agent_index must be non-negative")
-    return DerivationPath.parse(f"m/44'/0'/{agent_index}'/1/0")
-
-
 def derive(seed: Seed, path: DerivationPath) -> bytes:
     """BIP-32 child-key derivation returning a 32-byte private key."""
     from bip_utils import Bip32Ed25519Kholaw

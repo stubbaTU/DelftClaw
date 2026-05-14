@@ -298,7 +298,7 @@ async def test_mcp_overlays_list_exposes_full_message_schema(two_agents_with_mcp
         {"name": "query", "encoding": "varlenH-utf8",
          "description": "utf-8 search string; empty string returns the full index"},
     ]
-    assert "scan the local content index" in msg["handler_text"].lower()
+    assert "scan ``self.local_index``" in msg["handler_text"].lower()
 
 
 @pytest.mark.asyncio

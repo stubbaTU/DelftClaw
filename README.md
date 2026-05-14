@@ -1,11 +1,14 @@
 # DelftClaw
 
-DelftClaw is the shared prototype for a **Claw Network**: a collective of
-OpenClaw agents that can discover files, communicate with each other, pool
-donations, and coordinate access to shared seedboxes.
+DelftClaw is the shared prototype for a **Claw Network**: a peer-to-peer
+mesh of OpenClaw agents that admit each other by Bitcoin donation,
+discover and download files across each other's seedboxes, and
+**negotiate new IPv8 wire protocols at runtime by gossipping markdown
+descriptors that get compiled into live `Community` classes by a local
+LLM**.
 
-The intended user experience is that a person talks to their OpenClaw agent in
-natural language:
+The intended user experience is that a person talks to their OpenClaw
+agent in natural language:
 
 ```text
 OpenClaw: what files are stored on our Claw Network?
@@ -13,379 +16,273 @@ OpenClaw: what files are stored on our Claw Network containing "Creative Commons
 OpenClaw: go to the Claw Network, find the Creative Commons Audio Archive 2023, and play a random file.
 ```
 
-The agent-facing behavior is specified in [`protocol.MD`](protocol.MD). OpenClaw
-agents should read that protocol and call DelftClaw tools directly; users should
-not need to paste Python commands into Telegram for normal file discovery,
-search, playback, seedbox registration, or trust evidence workflows.
+The third prompt is the canonical scenario. A consumer agent on one
+node finds a file on another node's seedbox, pays a donation to be
+admitted, **learns the search protocol the seedbox uses (which it had
+never seen before)**, runs SEARCH, downloads the file via BitTorrent,
+opens it. The architectural bet: *the protocol itself becomes content*
+— markdown descriptors can be hashed, gossipped, cached, and compiled
+on arrival. The network grows new protocols at the same speed it grows
+new files. No software releases. Same idea as Agora
+(arXiv:2410.11905) and the Agent Network Protocol (ANP).
 
-The repository contains several pieces needed for that vision:
+For the canonical reference, read [`PROJECT_DESIGN.md`](PROJECT_DESIGN.md);
+for the developer-facing distillation, [`docs/architecture.md`](docs/architecture.md);
+for the user-intent → tool-call mappings OpenClaw consumes,
+[`docs/agent_intents.md`](docs/agent_intents.md).
 
-```text
-OpenClaw frontend
-  -> DelftClaw tools
-    -> identity and wallet proof
-    -> IPv8 peer communication
-    -> trust rooms and agent messages
-    -> seedbox registration and donation tracking
-    -> file/search/streaming workflows
+## Quickstart
+
+Local tests (no VPS, no network):
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+python -m pip install -r requirements.txt
+make test                       # ~80s; expect 212 passed
+python -m examples.run_two_agents
 ```
 
-The current implementation is still a prototype. Some parts are working
-infrastructure, some are proof-of-concept code, and some are scaffolding for the
-research experiments.
+Live multi-tenant scenario on a VPS:
 
-## Usage Scenario
-
-The concrete use case is shared agent-managed file infrastructure.
-
-Agents should be able to:
-
-- create a persistent Claw identity
-- link that identity to a wallet or verification transaction
-- join a Claw Network
-- discover available seedboxes
-- search files available through the network
-- request access to files or seedbox services
-- donate Bitcoin to the collective or to specific seedboxes
-- report working or broken seedboxes
-- exchange pairwise messages with other agents
-- help buy or provision new seedboxes for the collective
-
-Example flows:
-
-```text
-OpenClaw: create my DelftClaw identity on TESTNET.
-OpenClaw: donate 1000 sats to the Claw Network and use the transaction to validate my identity.
-OpenClaw: find seedboxes that host Creative Commons audio.
-OpenClaw: ask the trust room which seedboxes are currently operational.
-OpenClaw: play a random file from the Creative Commons Audio Archive 2023.
-OpenClaw: broadcast that seedbox X is down.
+```bash
+make deploy                     # one-time: rsync + setup_vps.sh
+make scenario NAME=seek_cc      # start two autonomous agents
+make watch    NAME=seek_cc      # follow journals until Bob exits 0
+make stop     NAME=seek_cc      # teardown
 ```
 
-The longer-term goal is that OpenClaw can combine DelftClaw with existing skills
-such as streaming/playback, torrent management, wallet tooling, and VPS/seedbox
-automation.
+`seek_cc` is the canonical end-to-end demo (see `deploy/scenarios/seek_cc/`).
+Bob donates to Alice, fetches `content_community.md`, runs SEARCH,
+downloads the magnet, exits via `torrent_progress_gte_1`. Expected
+runtime: 5-10 minutes on a Hostinger KVM 2 with cold-loaded Qwen.
 
 ## Repository Layout
 
 ```text
 DelftClaw/
-|-- agent.py                         # Legacy P2PAgent prototype
-|-- network.py                       # Legacy UDP endpoint prototype
-|-- configs/
-|   `-- template.env                 # Shared env template; copy to *.local.env
-|-- deploy/systemd/                  # VPS service templates
-|-- examples/
-|   `-- openclaw_poc.py              # Minimal IPv8 OpenClaw PoC runner
-|-- identity/                        # Agent identities, keys, seeds, wallets
-|-- communication/                   # IPv8, trust rooms, channels, payloads, messaging
-|-- replication/                     # Child agents, provisioning, seedbox/funding helpers
-|-- shared/                          # Shared IDs, envelopes, credentials, errors
-|-- trust/                           # Trust stores, revocation, trust formats
-|-- security/                        # Trust/accountability and experiment infrastructure
-|   |-- integration/                 # DelftClaw gateway and OpenClaw-facing tools
-|   |-- subq1_preventative/          # Agent action separation experiments
-|   |-- subq2_accountability/        # Seedbox donations, reputation, append-only logs
-|   |-- subq3_integrity/             # Sandbox/log integrity preparation
-|   |-- real_experiments/            # Experiment setup/export helpers
-|   `-- datasets/                    # Payload datasets
-|-- tests/                           # Unit and infrastructure tests
-|-- tutorial_openclaw_security.md    # Detailed current OpenClaw/VPS workflow
-|-- requirements.txt
-`-- README.md
+|-- identity/                # seed -> BIP-32 -> ipv8/app/wallet keys
+|-- communication/           # SeedboxCommunity bootstrap + BitTorrent
+|-- protocol/                # the .md overlay system + compiler + sandbox
+|   |-- schema.md            # canonical descriptor format
+|   |-- compiler.py          # parse -> validate -> LLM -> AST -> exec -> test vectors
+|   |-- registry.py          # OverlayRegistry: runtime IPv8 registration
+|   |-- sandbox.py           # AST whitelist + namespaced safe_exec
+|   |-- manifest.py          # network manifest primitive
+|   `-- examples/            # echo_overlay.md, content_community.md, delftclaw_network.md
+|-- admission/               # bitcoinlib-backed donation verifier
+|-- agent/                   # the per-node process
+|   |-- runtime.py           # OpenClawAgent (owns IPv8 + overlays + wallet + torrents)
+|   |-- tools.py             # the 16 LLM-callable tools
+|   |-- mcp_server.py        # production FastMCP streamable-HTTP server
+|   |-- loop.py              # offline-test internal tool-call loop
+|   `-- cli.py               # `python -m agent {info,mcp,run,serve}`
+|-- deploy/                  # autonomous multi-tenant VPS scenarios
+|   |-- scenario_boot.py     # orchestrator (manifest -> systemd units)
+|   |-- watchdog.py          # per-agent polling loop
+|   |-- mission.py           # zero-shot mission descriptor parser
+|   |-- stop_predicates.py   # named termination predicates
+|   |-- state_snapshot.py    # collect_state() for the watchdog
+|   |-- systemd/             # delftclaw-mcp@.service / delftclaw-watchdog@.service
+|   |-- scenarios/           # seek_cc/scenario.yaml + alice/bob mission.md
+|   `-- vps/                 # setup_vps.sh + bootstrap scripts
+|-- shared/                  # cross-cutting identifiers, errors, logging
+|-- examples/                # donation_demo, overlay_demo, run_two_agents
+|-- security/                # SubQ1/2/3 experiment scaffolding + colleague gateway
+|-- redteam/primitives/      # signed append-only log (research artefact)
+|-- tests/                   # in-tree pytest suite
+|-- configs/                 # template.env + host.env.example
+|-- Makefile                 # operator entry: deploy / scenario / watch / stop / test
+|-- docs/agent_intents.md    # OpenClaw user-intent → tool-call mappings
+|-- PROJECT_DESIGN.md        # canonical reference (v5.1)
+|-- docs/architecture.md     # developer-facing distillation
+`-- README.md                # this file
 ```
 
 ## Main Components
 
-### Identity
+### Identity (`identity/`)
 
-Agents need stable identities so the network can tell who is speaking, donating,
-or reporting seedbox status.
-
-The simple current OpenClaw identity model is:
+Each agent has one BIP-39 seed that derives three independent keys
+through a BIP-32 chain:
 
 ```text
-SHA256(IPv8_Public_Key | NETWORK)
+m/44'/0'/0'/0/0   ->  Ed25519 IPv8 transport key (LibNaCLSK)
+m/44'/0'/0'/1/0   ->  Ed25519 application-layer signing key
+                  ->  secp256k1 Bitcoin HD wallet (bitcoinlib does its own BIP-32)
 ```
 
-where `NETWORK` is usually one of:
+The project-wide agent identifier is content-derived:
 
 ```text
-REGTEST
-TESTNET
-MAINNET
+agent_id = sha256(ipv8_raw_pubkey || network)
 ```
 
-Relevant files:
+Seed loading is pluggable: `MnemonicSeedSource` for demos,
+`KeyfileSeedSource` (default `~/.openclaw/identity/seed.txt`, auto-generates
+on first run) for VPS production, `KeyringSeedSource` for OS keyring,
+`EnvSeedSource` for dev. The wallet is a thin wrapper over
+`bitcoinlib.wallets.Wallet`; addresses default to testnet bech32 and the
+wallet CLI (`python -m identity.wallet`) exposes `address`, `balance`,
+`send`.
+
+### Communication (`communication/`)
+
+`SeedboxCommunity` is the only statically-loaded IPv8 community — it's
+the bootstrap layer everything else gossips over. Nine wire messages:
+
+| msg_id | Name | Purpose |
+|---|---|---|
+| 1 | `JoinRequestPayload` | joiner ships a donation txid |
+| 2 | `JoinResponsePayload` | gatekeeper accepts/rejects |
+| 3 | `OverlayOfferPayload` | "I have overlay <md_hash>" |
+| 4 | `OverlayRequestPayload` | "send me <md_hash>" |
+| 5 | `OverlayDeliveryPayload` | the markdown bytes |
+| 6-8 | `Manifest{Offer,Request,Delivery}` | network manifest gossip |
+| 9 | `PeerIntroPayload` | live wallet + overlay catalogue post-admission |
+
+`community_id = b"openclaw_seedbox_v1\x00"` is the only hand-picked
+rendezvous id; every other overlay's id is `sha1(canonical_md)[:20]`.
+
+`BitTorrentService` (`communication/bittorrent.py`) is a thin Protocol
+with a `LibTorrentService` impl and a `StubBitTorrentService` fallback
+for machines without libtorrent (the test suite uses the stub
+unconditionally).
+
+### Protocol Overlays (`protocol/`)
+
+The headline contribution. A markdown file describes one IPv8
+community type — its wire format, handler semantics, byte-level test
+vectors. Receiving agents fetch that markdown, compile it into a
+runnable `Community` subclass via an LLM, and register the result with
+their live IPv8 instance at runtime.
+
+`protocol/schema.md` is the meta-schema. Every `*_community.md` must
+declare: `# Identity`, `# Messages` (with allowlisted encodings),
+`# Errors`, `# Dependencies`, `# Test Vectors`. The 20-byte
+`community_id` is content-derived, not hand-picked.
+
+Compiler pipeline (`protocol/compiler.py`):
 
 ```text
-identity/openclaw_identity.py
-identity/agent_identity.py
-identity/wallet.py
-identity/seed.py
+md_text
+  -> parse_md + schema validate (encoding allowlist, msg_id uniqueness)
+  -> canonicalize -> sha1[:20] = community_id
+  -> LLM completion (system prompt + parsed sections)
+  -> strip code fences -> AST whitelist (`protocol/sandbox.py`)
+  -> safe_exec in namespaced builtins
+  -> assert generated class declares the right community_id
+  -> run every (fields, bytes) test vector — fail closed on mismatch
+  -> CompiledOverlay
 ```
 
-Current private-key handling is intentionally simple: the OpenClaw private key
-is stored locally as a text file. This matches the existing skill-based project
-style and makes early integration easier. For production-like deployments, key
-storage needs a stronger design.
+Two LLM clients implement the same `LLMClient` Protocol
+(`protocol/llm.py`): `OpenAICompatibleClient` for production
+(Qwen on Ollama, or any OpenAI-compatible endpoint), `StubLLMClient`
+keyed by `community_id` for tests + the `--compiler-stub` CLI mode.
 
-Identity can also be linked to a wallet action. Possible validation flows:
+Overlays can arrive three ways: `--publish-overlay` at boot, the
+`overlay_publish` tool at runtime, or — the load-bearing path — the
+network via `OVERLAY_OFFER` → `OVERLAY_REQUEST` → `OVERLAY_DELIVERY`,
+verified by re-hashing the delivered bytes.
 
-```text
-create wallet -> donate to Claw Network -> use transaction as identity proof
-buy seedbox -> donate it to Claw Network -> gain seedbox trust
-send 1 cent / small transfer -> use payment as verification proof
+### Admission (`admission/`)
+
+`DonationVerifier` is the gatekeeper-side check on a `JoinRequest`.
+Given a claimed Bitcoin transaction id:
+
+```python
+verifier = DonationVerifier(
+    seedbox_address="tb1qexample...",
+    min_sats=10000,
+    min_confirmations=1,
+    network="testnet",
+)
+result = verifier.verify(txid_hex)   # DonationVerification(accepted, reason, paid_sats, confirmations)
 ```
 
-### Communication
+`bitcoinlib.services.Service` is constructed lazily on the first
+`verify()` call — eager construction probes the provider pool
+synchronously over the network and was causing systemd boot timeouts.
 
-DelftClaw uses IPv8-style UDP communication as the foundation for agent-to-agent
-messages and trust rooms.
+### Agent Runtime + MCP Tools (`agent/`)
 
-Relevant files:
+`OpenClawAgent` owns the per-node stack: IPv8 instance, bootstrap
+`SeedboxCommunity`, `BitcoinWallet`, `BitTorrentService`,
+`OverlayRegistry`. `await agent.start()` brings everything up; the
+`DonationVerifier` is wired to the agent's own wallet address as the
+seedbox.
 
-```text
-communication/transport/
-communication/claw/
-communication/channel/
-communication/messaging/
-communication/trustroom/
-```
+The production path is `agent/mcp_server.py` — a FastMCP streamable-HTTP
+server that exposes 16 tools to OpenClaw's chat session:
 
-The current OpenClaw proof of concept can announce identities and track peer
-identity records:
+| Tool | Effect |
+|---|---|
+| `peers_list` / `peer_add` | enumerate / pre-introduce peers |
+| `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops |
+| `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
+| `overlays_list` / `overlay_describe` | inspect loaded overlays + schema |
+| `overlay_fetch_and_load` | request a descriptor from a peer, compile, register |
+| `overlay_publish` | serve a `.md` over OVERLAY_REQUEST |
+| `overlay_invoke` | generic dispatcher: send any compiled-overlay message |
+| `agent_inject_manifest` | parse + cache a network manifest, pre-introduce its peers |
+| `network_join` | end-to-end admission: manifest → peer_add → fetch overlays → donate → JOIN |
+| `torrent_seed` / `torrent_fetch` / `torrent_stats` | libtorrent surface |
 
-```bash
-python examples/openclaw_poc.py
-```
+Two LLMs operate inside this picture and never overlap: OpenClaw's
+chat-host LLM picks which tool to call; a local Qwen on the VPS only
+runs when a new `.md` overlay first arrives and needs compiling.
 
-Longer-term, the communication layer should run continuously in the background
-so an agent can receive incoming peer messages even when the user is not
-actively prompting it. The lightest practical deployment is likely a small local
-or VPS service rather than a heavyweight always-running skill process.
+### Deploy + Scenarios (`deploy/`)
 
-### Seedboxes And File Sharing
+`deploy/` lets two or more OpenClaw agents talk to each other on one
+VPS without keyboard input. Each scenario is a YAML manifest plus one
+`mission.md` per agent. `make scenario NAME=seek_cc` SSHes to the VPS,
+parses the manifest, generates seed files, writes one
+`/etc/delftclaw/instances/<scenario>-<agent>.env` per agent, starts a
+`delftclaw-mcp@<instance>.service` and a `delftclaw-watchdog@<instance>.service`
+per agent, and cross-introduces peers.
 
-The Claw Network needs a shared view of operational seedboxes:
-
-```text
-seedbox id
-seedbox owner identity
-public donation wallet
-advertised capacity
-proof of service
-reported status
-available file index
-```
-
-Relevant files:
-
-```text
-security/subq2_accountability/seedbox.py
-security/integration/openclaw_tools.py
-security/integration/gateway.py
-```
-
-Current OpenClaw-facing tools include:
-
-```text
-delftclaw_register_seedbox
-delftclaw_broadcast_seedbox_donation
-delftclaw_submit_seedbox_proof
-delftclaw_index_seedbox_file
-delftclaw_list_files
-delftclaw_search_files
-delftclaw_pick_random_file
-delftclaw_audit_seedboxes
-delftclaw_get_metrics
-delftclaw_get_reputation
-```
-
-The file-search layer is represented by a lightweight content index behind the
-DelftClaw gateway. Seedbox registrations, donations, proofs, microtasks, and
-indexed files are reloaded from the append-only security log when the gateway
-starts, so a systemd restart keeps demo seedbox/file state as long as
-`DELFTCLAW_LOG_PATH` points at the same log file. The intended behavior is:
-
-```text
-OpenClaw: what files are stored on our Claw Network?
-OpenClaw: search Claw Network files for "Creative Commons".
-OpenClaw: find Creative Commons Audio Archive 2023 and play a random file.
-```
-
-The streaming action is still delegated to an existing streaming/playback skill:
-DelftClaw returns the selected content URL and playback intent, then OpenClaw
-hands that URL to the playback skill.
-
-### Trust And Accountability
-
-The network needs a way to track which agents and seedboxes are trustworthy
-without requiring every agent to run a full Bitcoin node.
-
-Instead of storing hundreds of gigabytes of Bitcoin transaction data, DelftClaw
-tracks compact evidence:
-
-```text
-donor wallet
-donor IPv8 key
-Bitcoin transaction id
-seedbox wallet
-seedbox report
-seedbox proof of service
-```
-
-Relevant files:
-
-```text
-security/subq2_accountability/append_log.py
-security/subq2_accountability/reputation.py
-security/subq2_accountability/accountability.py
-security/subq2_accountability/game_theory.py
-trust/
-```
-
-The append-only log records critical agent actions. It can track:
-
-```text
-validated agents
-collective donations
-seedbox donations
-seedbox reports
-proofs of service
-trust-relevant events
-```
-
-This supports a web-of-trust: a trustworthy list of operational seedbox wallet
-addresses and agent reports.
-
-### Reputation Trap Scenario
-
-One important reliability scenario for the shared seedbox network is a rug-pull
-imposter: an agent that looks useful at first, then tries to redirect trust and
-money toward a bad seedbox.
-
-```text
-1. Buy or claim a seedbox.
-2. Donate to your own seedbox.
-3. Complete or claim small seedbox tasks to build reputation.
-4. Spread messages saying it is a great seedbox.
-5. Ask other agents for money.
-6. Impersonate or outcompete honest Claw Network nodes.
-```
-
-DelftClaw tracks donation evidence, self-donations, missing proof of service,
-Bitcoin-shaped donation anchors, atomic microtask results, and reports from
-validated agents. This lets the network measure reputation lag, estimate
-fallout radius, and maintain a trustworthy list of operational seedboxes.
-For local experiments, `DELFTCLAW_BITCOIN_NETWORK=mock` accepts mock/regtest
-transaction ids; 64-hex transaction ids are recorded as chain-shaped anchors
-without requiring a live Bitcoin node.
-
-### Self-Replication And Provisioning
-
-The longer-term goal is autonomous expansion:
-
-```text
-OpenClaw: buy a new seedbox for the Claw Network.
-OpenClaw: configure it for the collective.
-OpenClaw: donate access to validated Claw agents.
-```
-
-Relevant files:
-
-```text
-replication/
-security/subq3_integrity/gvisor_artifacts.py
-deploy/systemd/
-```
-
-Potential access-control model:
-
-```text
-agent talks over IPv8
-trust room validates identity
-agent IPv4 is temporarily whitelisted
-seedbox allows access for one hour
-```
-
-Seedbox access may eventually use low-level controls such as Docker networking
-and iptables. For example:
-
-```text
-allow BitTorrent ports only to Claw users
-allow seedbox manager GUI only to validated users
-disable user changes to critical port settings
-normal users get read-only access
-top donors or trusted operators get write/delete access
-```
-
-## Gateway And OpenClaw Tools
-
-The current easiest way to connect a real OpenClaw agent is through the local
-DelftClaw gateway.
-
-Start the gateway:
-
-```bash
-python -m security.integration.gateway --env configs/yourName.local.env
-```
-
-List available OpenClaw-facing tools:
-
-```bash
-python -m security.integration.openclaw_tools
-```
-
-Call a tool through the command adapter:
-
-```bash
-python -m security.integration.openclaw_tool_entrypoint \
-  --tool delftclaw_send_message \
-  --args-json '{"recipient":"peer","message":"hello from DelftClaw"}'
-```
-
-The gateway exists so OpenClaw can call DelftClaw functionality through a stable
-local interface, regardless of whether the OpenClaw frontend is Telegram, a CLI,
-or a future continuous service.
+The watchdog drives `python -m openclaw agent --message <prompt>` in a
+polling loop. Each tick builds a deterministic prompt from
+`{mission.md, snapshot, history tail}`, runs the LLM, and writes one
+JSONL line. The LLM never decides termination — stop predicates are
+named functions of the snapshot (`torrent_progress_gte_1`,
+`peer_count_gte_N`, `wallet_received_sats`, `never`).
 
 ## Local Configuration
 
-Copy the template:
+`deploy/scenario_boot.py` writes per-instance env files on the VPS
+itself; you don't hand-edit them. The env vars each MCP unit reads:
+
+```env
+PYTHONPATH=/opt/delftclaw
+HOME=/var/lib/delftclaw/<scenario>/<agent>
+SEED_FILE=$HOME/seed.txt
+NETWORK=TESTNET
+BTC_NETWORK=testnet
+IPV8_HOST=0.0.0.0
+IPV8_PORT=8190                       # per-agent in [8190, 8199]
+MCP_HOST=0.0.0.0
+MCP_PORT=18765                       # per-agent in [18765, 18774]
+PUBLISH_OVERLAY=/opt/delftclaw/protocol/examples/content_community.md
+MANIFEST_FILE=/etc/delftclaw/scenarios/<instance>/network_manifest.md
+QWEN_BASE_URL=http://<gpu-host>:11434/v1
+QWEN_MODEL=qwen3.6:27b
+LOG_DIR=/var/log/delftclaw/scenarios/<scenario>
+```
+
+For local dev (no VPS) copy the template and tweak:
 
 ```bash
 cp configs/template.env configs/yourName.local.env
 ```
 
-Local config files are gitignored:
-
-```text
-configs/*.local.env
-```
-
-Do not commit bot tokens, wallet seeds, API keys, VPS-specific ports, or private
-identity files.
-
-Useful starting values:
-
-```env
-DELFTCLAW_AGENT_ID=name-agent
-DELFTCLAW_GATEWAY_HOST=127.0.0.1
-DELFTCLAW_GATEWAY_PORT=8765
-DELFTCLAW_GATEWAY_URL=http://127.0.0.1:8765
-DELFTCLAW_GATEWAY_MODE=defended
-DELFTCLAW_BAN_THRESHOLD=30
-DELFTCLAW_MAX_TOOL_RISK=sensitive
-DELFTCLAW_LOG_PATH=logs/name_agent_append_only.jsonl
-
-DELFTCLAW_USE_OPENCLAW_IDENTITY=false
-DELFTCLAW_ENABLE_OPENCLAW_P2P=false
-OPENCLAW_FRONTEND=telegram
-```
+`configs/*.local.env` is gitignored. Per-host overrides for the
+compiler LLM live in `configs/host.env` (also gitignored), shape
+documented in `configs/host.env.example`. Do not commit bot tokens,
+wallet seeds, API keys, or private identity files.
 
 ## Development Setup
-
-Create a Python environment:
 
 ```bash
 python -m venv .venv
@@ -401,58 +298,60 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Run tests:
+Run the test suite:
 
 ```bash
-python -m pytest -q
+make test
 ```
 
-Current tests cover identity persistence, the OpenClaw PoC, gateway tools,
-experiment/export infrastructure, SubQ3 workspace preparation, and legacy
-signature checks.
+Cover protocol compile, overlay registry, content community SEARCH,
+BitTorrent stub, agent runtime + MCP server, scenario manifest parser,
+watchdog turn builder, stop predicates, and the redteam signed-log
+suite. Expected: 212 passed (see `PROJECT_DESIGN.md §16`).
 
 ## Current Status
 
-Working or mostly working:
+Working:
 
 ```text
-OpenClaw identity proof of concept
-IPv8 identity announcement PoC
-local DelftClaw gateway
-OpenClaw-facing tool adapter
-seedbox registration/donation/proof accounting
-append-only action log
-reputation scoring
-real experiment setup/export helpers
-VPS systemd templates
+BIP-32 multi-key identity + bitcoinlib HD wallet
+SeedboxCommunity bootstrap (9 wire messages)
+Markdown overlay compiler with AST sandbox + test-vector gate
+OverlayRegistry: markdown path + traditional Python-class path
+content_community SEARCH overlay (canonical demo)
+BitTorrent service (libtorrent + stub fallback)
+OpenClawAgent + 16-tool MCP surface
+Donation verifier (lazy bitcoinlib.Service)
+Autonomous scenario orchestrator (scenario_boot + watchdog + stop predicates)
+Network manifest gossip (MANIFEST_* trio) + PEER_INTRO
+Mission-descriptor parser (rejects recipes, smuggled tool names, ≥3-step lists)
+JSONL turn trace per agent for replay
 ```
 
-In progress / still needed:
+In progress / known gaps:
 
 ```text
-real file index and search API
-streaming skill integration
-continuous background communication service
-wallet transaction verification flow
-seedbox provisioning automation
-trust-room-driven access control
-complete OpenClaw plugin registration
-production-grade private key storage
+Production sandbox upgrade (subprocess + seccomp or WASM)
+Wallet-address discovery via PEER_INTRO is plumbed but UX needs polish
+LLM-cache plumbing across model versions
+Identity MCP + Security MCP (colleague-contributed) coexistence story
+Multi-VPS scenarios (current scenarios are single-VPS)
 ```
 
-Optional technical directions if the thesis/project needs more depth:
+Optional technical directions:
 
 ```text
-post-quantum extended Diffie-Hellman for pairwise secure messaging
-stronger trust-room membership proofs
-seedbox file availability proofs
-donation proof compression
-automated Docker/iptables seedbox access control
+Pre-compiled overlay cache shipped offline for air-gapped deployments
+Cross-stack overlay interop (TypeScript/Rust agents reading the same .md)
+Cryptographic proof of seedbox availability
+Donation evidence compression for scaling reputation tracking
 ```
 
 ## More Documentation
 
-- [tutorial_openclaw_security.md](tutorial_openclaw_security.md): current
-  detailed VPS/OpenClaw connection walkthrough.
-- [security/real_experiments/README.md](security/real_experiments/README.md):
-  experiment setup/export notes and SubQ3 preparation.
+- [`PROJECT_DESIGN.md`](PROJECT_DESIGN.md) — canonical reference (v5.1).
+- [`docs/architecture.md`](docs/architecture.md) — developer-facing distillation.
+- [`docs/agent_intents.md`](docs/agent_intents.md) — user-intent → MCP tool-call mappings the OpenClaw system prompt loads.
+- [`deploy/README.md`](deploy/README.md) — operator runbook for `make scenario`.
+- [`docs/threat_model.md`](docs/threat_model.md) — current threat enumeration.
+- [`docs/sq1_research.md`](docs/sq1_research.md) + [`docs/sq1_source_map.md`](docs/sq1_source_map.md) — SubQ1 (preventative isolation) research notes.

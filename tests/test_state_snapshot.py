@@ -86,7 +86,7 @@ async def test_snapshot_network_populated_after_load_manifest(started_agent):
     assert isinstance(net["genesis_peers"], list)
     assert len(net["genesis_peers"]) == 1
     assert net["default_overlays"] == [
-        "0b5cafdd65c3e0021949bdc8f071d830ef5ce66f",
+        "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     ]
 
 

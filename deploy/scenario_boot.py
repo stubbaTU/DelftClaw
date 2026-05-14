@@ -156,7 +156,12 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"HOME={state}",
         f"SEED_FILE={seed_file}",
         "NETWORK=TESTNET",
-        "BTC_NETWORK=testnet",
+        # ``mock`` keeps the synthetic wallet + DonationVerifier path so
+        # the demo runs without a funded testnet wallet. Override by
+        # setting ``btc_network`` per-agent in scenario.yaml once the
+        # live-chain admission path is wired back in.
+        "BTC_NETWORK=mock",
+        f"INITIAL_BALANCE_SATS={agent.initial_balance_sats}",
         f"IPV8_HOST=0.0.0.0",
         f"IPV8_PORT={agent.ipv8_port}",
         f"MCP_HOST=0.0.0.0",
@@ -252,9 +257,18 @@ def _stage_scenario_dir(scenario: Scenario, agent: AgentSpec) -> None:
 
 
 def _enable_unit(unit: str) -> None:
+    # ``restart`` not ``enable --now`` so re-running ``make scenario`` after
+    # a code rsync always picks up fresh Python — ``enable --now`` is a
+    # no-op for already-running units and leaves the previous process in
+    # place with the stale code loaded. ``daemon-reload`` re-parses the
+    # unit file (env path may have changed); ``reset-failed`` clears any
+    # prior crash flag so restart isn't rate-limited; ``enable`` is still
+    # needed once for the WantedBy hookup; ``restart`` then guarantees a
+    # fresh process.
     _sudo(["systemctl", "daemon-reload"])
     _sudo(["systemctl", "reset-failed", unit], check=False)
-    _sudo(["systemctl", "enable", "--now", unit])
+    _sudo(["systemctl", "enable", unit])
+    _sudo(["systemctl", "restart", unit])
 
 
 def _stop_unit(unit: str) -> None:
@@ -267,9 +281,15 @@ def _stop_unit(unit: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _await_mcp_up(url: str, timeout_s: float = 60.0) -> None:
-    """Wait until the MCP server at ``url`` answers ``tools/list``."""
+    """Wait until the MCP server at ``url`` answers ``tools/list``.
+
+    Logs the last error every 10s while waiting so a hung MCP unit is
+    diagnosable from the orchestrator side (the unit itself may be
+    silent if it's hung inside agent.start() before the [mcp] log).
+    """
     start = time.monotonic()
     last_err: Exception | None = None
+    last_report = 0.0
     while time.monotonic() - start < timeout_s:
         try:
             async with Client(url) as c:
@@ -277,6 +297,11 @@ async def _await_mcp_up(url: str, timeout_s: float = 60.0) -> None:
                 return
         except Exception as exc:
             last_err = exc
+        elapsed = time.monotonic() - start
+        if elapsed - last_report >= 10.0:
+            c_warn(f"still waiting for {url} after {elapsed:.0f}s; last error: "
+                   f"{type(last_err).__name__}: {last_err}")
+            last_report = elapsed
         await asyncio.sleep(1.0)
     raise TimeoutError(f"MCP at {url} did not come up within {timeout_s}s: {last_err}")
 

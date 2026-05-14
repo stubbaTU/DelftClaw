@@ -211,7 +211,7 @@ A ninth deployment milestone (2026-05-12 → present):
 │ ┌────────────────────────────────────────────────────────────────────┐   │
 │ │  delftclaw-watchdog@<scenario>-<agent>.service (one per agent)     │   │
 │ │   - polls every interval_s seconds                                 │   │
-│ │   - builds turn prompt = persona + goal + state + history          │   │
+│ │   - builds turn prompt = mission + state + history                 │   │
 │ │   - subprocesses `openclaw agent --message <prompt>`               │   │
 │ │   - evaluates stop predicate; exits with meaningful code           │   │
 │ └────────────────────────────────────────────────────────────────────┘   │
@@ -816,7 +816,7 @@ Each tick:
        log({reason: "max_total_turns"}); exit 1
 4. if elapsed >= max_wall_clock_s:
        log({reason: "max_wall_clock_s"}); exit 2
-5. prompt = build_turn_prompt(persona, goal, snapshot, history)
+5. prompt = build_turn_prompt(mission, snapshot, history)
 6. subprocess: openclaw agent --agent <instance> --message <prompt> --json
 7. log_jsonl({turn_n, prompt, response, snapshot, stop_predicate_value})
 8. sleep tick_remaining
@@ -865,8 +865,9 @@ callable in the module's `_REGISTRY` dict.
 1. Parse the manifest (fail-fast on schema errors).
 2. For each agent: create state dirs, generate a deterministic seed
    file if missing, write the per-instance systemd env file at
-   `/etc/delftclaw/instances/<scenario>-<agent>.env`, stage persona +
-   goal under `/etc/delftclaw/scenarios/<scenario>-<agent>/`.
+   `/etc/delftclaw/instances/<scenario>-<agent>.env`, stage the
+   per-agent `mission.md` under
+   `/etc/delftclaw/scenarios/<scenario>-<agent>/`.
 3. `systemctl enable --now delftclaw-mcp@<instance>.service` per agent.
 4. Wait until each MCP server's port answers.
 5. Provision each agent's per-`HOME` OpenClaw workspace:
@@ -888,8 +889,8 @@ registrations (seed files persist so identities survive teardowns).
 Each of these is enforced in code, not by convention:
 
 1. **Zero hidden human input.** Every turn's prompt is built
-   deterministically from {persona.md, goal.md, snapshot, last-N
-   turns}. No keyboard.
+   deterministically from {mission.md, snapshot, last-N turns}. No
+   keyboard.
 2. **Bounded resource use.** Three caps:
    `max_iterations_per_turn` (LLM tool calls per `openclaw agent` run),
    `max_total_turns` (watchdog ticks),
@@ -1051,7 +1052,7 @@ the code.
 | Local LLM unreachable (Ollama outage) | Medium | Cached overlays continue working; new-overlay adoption blocks; fallback to natural-language messaging on the bootstrap community (Agora-style) |
 | Watchdog hangs forever waiting for an LLM response | Low | Three caps; subprocess timeout = `interval_s + 30s` |
 | Bitcoin testnet provider outage | Low | `bitcoinlib.services.Service` rotates providers; `DonationVerifier.verify` catches and returns a typed error |
-| Bob never finds Alice's wallet address in state snapshot | Medium | Known gap — Bob's goal.md explicitly says to wait when address isn't visible. Fixable by plumbing peer wallet addresses into the snapshot (small follow-up) |
+| Bob never finds Alice's wallet address in state snapshot | Medium | Known gap — Bob's `mission.md` explicitly says to wait when the address isn't visible. Fixable by plumbing peer wallet addresses into the snapshot (small follow-up) |
 | `openclaw agent` not on `PATH` for the watchdog | Low | `setup_vps.sh` warns at install; watchdog exits 3 if subprocess fails repeatedly |
 | `qwen2.5-coder:7b` is too small to generate correct overlay code | Medium | Test vectors catch wire-level errors at activation, so failures are loud; can swap to a larger model via `QWEN_MODEL` env var |
 | **Mock-mode admission auto-admits any txid** *(post-merge)* | High in production / acceptable for demo | `DonationVerifier(network="mock")` is the default for v5.1 + the synthetic wallet. Donation gate is ceremonial in mock mode. Flip to `BTC_NETWORK=testnet` in `configs/host.env` for real on-chain verification. |
@@ -1132,13 +1133,10 @@ deploy/                            # autonomous-scenario infrastructure
     delftclaw-gateway.service.template       (colleague's; out of scope)
     delftclaw-seedbox-audit.service.template (colleague's; out of scope)
   scenarios/
-    _shared/personas/
-      seedbox.md
-      content_seeker.md
     seek_cc/
       scenario.yaml
-      alice/{persona,goal}.md
-      bob/{persona,goal}.md
+      alice/mission.md
+      bob/mission.md
 
 examples/                          # runnable demos
   donation_demo.py                 # admission round-trip
@@ -1277,7 +1275,7 @@ Each is a candidate for follow-up work.
 
 1. **Peer wallet addresses are not in the state snapshot.** Bob can see
    Alice's `mid_hex` and `address` (IPv8 endpoint) but not her wallet
-   address. Bob's goal.md says to wait if absent; in practice he stalls
+   address. Bob's `mission.md` says to wait if absent; in practice he stalls
    until a human resolves it. **Fix**: add a `peer_addresses_map` field
    to the snapshot, populated by a new tool that fetches each peer's
    wallet via cross-MCP call.

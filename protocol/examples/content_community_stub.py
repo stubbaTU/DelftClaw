@@ -37,7 +37,7 @@ class SearchResponsePayload(VariablePayload):
 
 
 class GeneratedCommunity(Community, PeerObserver):
-    community_id = bytes.fromhex("0b5cafdd65c3e0021949bdc8f071d830ef5ce66f")
+    community_id = bytes.fromhex("a3455e9cec3b78bc281f1c495b0a08baa733833a")
 
     MAX_RESULTS = 50
 

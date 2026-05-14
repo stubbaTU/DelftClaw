@@ -3,6 +3,7 @@
 - name: content_community
 - version: 1.0.0
 - description: Search the local content index of an admitted seedbox; results are BitTorrent magnet links.
+- lifecycle: peer-observer
 
 # Messages
 
@@ -16,10 +17,11 @@
 
 ### Handler
 
-On receipt of SEARCH_REQUEST, scan the local content index using a
+On receipt of SEARCH_REQUEST, scan ``self.local_index`` using a
 case-insensitive substring match against each entry's ``name`` and any
-free-text tags. Return up to 50 entries via SEARCH_RESPONSE in declared
-order. An empty query returns the full index (truncated to 50 entries).
+free-text tags. Return at most ``MAX_RESULTS`` entries via
+SEARCH_RESPONSE in declared order. An empty query returns the full
+index (truncated to ``MAX_RESULTS``).
 
 ## SEARCH_RESPONSE
 
@@ -32,8 +34,21 @@ order. An empty query returns the full index (truncated to 50 entries).
 ### Handler
 
 On receipt of SEARCH_RESPONSE, decode the msgpack list and append each
-entry to the requester's local search-result cache. The agent runtime
-polls the cache to surface results to the user. No reply is sent.
+entry to ``self.response_cache``. The agent runtime polls
+``response_cache`` to surface results to the user. No reply is sent.
+
+# Runtime State
+
+| name | type | description |
+|------|------|-------------|
+| local_index | list[dict] | Searchable entries this seedbox advertises. Each dict has keys: magnet (str, BitTorrent magnet URI), name (str, human-readable title), size (int, bytes), mime (str, MIME type), tags (list[str], optional free-text tags). |
+| response_cache | list[dict] | Accumulated search results from peer SEARCH_RESPONSE messages. Same dict schema as local_index. Agent runtime polls this list. |
+
+# Constants
+
+| name | type | value | description |
+|------|------|-------|-------------|
+| MAX_RESULTS | int | 50 | Maximum entries returned in a single SEARCH_RESPONSE. If a query matches more than MAX_RESULTS entries, truncate to the first MAX_RESULTS in declared order. |
 
 # Errors
 

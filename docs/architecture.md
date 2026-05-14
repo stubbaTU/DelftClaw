@@ -123,7 +123,7 @@ loaded IPv8 community. It serves two purposes:
 2. Overlay distribution: ship protocol descriptors over the wire so
    other communities can be loaded at runtime.
 
-Wire protocol (5 messages):
+Wire protocol (9 messages — *v5.1: was 5*):
 
 | msg_id | Name | Fields | Direction |
 |---|---|---|---|
@@ -132,8 +132,16 @@ Wire protocol (5 messages):
 | 3 | `OverlayOfferPayload` | `md_hash: 20s` | peer → peer |
 | 4 | `OverlayRequestPayload` | `md_hash: 20s` | peer → peer |
 | 5 | `OverlayDeliveryPayload` | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
+| 6 | `ManifestOfferPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
+| 7 | `ManifestRequestPayload` *(v5.1)* | `md_hash: 20s` | peer → peer |
+| 8 | `ManifestDeliveryPayload` *(v5.1)* | `md_hash: 20s`, `md_text: varlenH` | peer → peer |
+| 9 | `PeerIntroPayload` *(v5.1)* | `wallet_address: varlenH-utf8`, `known_overlays: varlenH-msgpack` | peer → peer (auto-sent on admission accept) |
 
-`community_id = b"openclaw_seedbox_v1\x00"` (exactly 20 bytes).
+`community_id = b"openclaw_seedbox_v1\x00"` (exactly 20 bytes). The
+manifest trio mirrors the overlay trio bit-for-bit; the separate ids
+let a receiver dispatch on intent without parsing the body. The
+`PEER_INTRO` message is auto-sent by both sides of a successful JOIN
+round-trip and provides the live wallet address + overlay catalogue.
 
 Joiner-side helpers return `asyncio.Future`:
 
@@ -447,7 +455,7 @@ implementation in `protocol/examples/content_community_stub.py`
 (`CONTENT_COMMUNITY_SOURCE`).
 
 `community_id = sha1(canonical_md)[:20] =
-0b5cafdd65c3e0021949bdc8f071d830ef5ce66f`.
+a3455e9cec3b78bc281f1c495b0a08baa733833a`.
 
 ## 7. BitTorrent
 
@@ -496,18 +504,22 @@ agent.known_peers()                      # union across all overlays
 
 ### 8.2 Tool surface for the LLM
 
-`agent/tools.py:build_tools(agent)` builds a `ToolRegistry` of 12
-functions the LLM can call:
+`agent/tools.py:build_tools(agent)` builds a `ToolRegistry` of 16
+functions the LLM can call (*v5.1: was 12*):
 
 | Tool | Effect |
 |---|---|
-| `peers_list` | list peers known on any overlay |
+| `peers_list` | list peers verified on any overlay |
+| `peer_add` *(v5.1)* | pre-introduce a peer at runtime |
 | `wallet_address` / `wallet_balance` / `wallet_send` | wallet ops |
 | `seedbox_donate_and_join` | wallet.send → JOIN_REQUEST → await JoinResponse |
-| `overlays_list` | what's compiled + registered locally |
+| `overlays_list` | full per-message field schemas + handler text + errors + dependencies |
+| `overlay_describe` *(v5.1)* | canonical markdown of a loaded overlay (32 KiB cap) |
 | `overlay_fetch_and_load` | OVERLAY_REQUEST from a peer → compile → register |
 | `overlay_publish` | serve a `.md` over OVERLAY_REQUEST |
 | `overlay_invoke` | generic dispatcher: send a message on any compiled overlay |
+| `agent_inject_manifest` *(v5.1)* | parse + cache a network manifest; pre-introduces genesis peers |
+| `network_join` *(v5.1)* | end-to-end admission: manifest → peer_add → fetch overlays → donate → JOIN_REQUEST |
 | `torrent_seed` / `torrent_fetch` / `torrent_stats` | libtorrent surface |
 
 `overlay_invoke` is what closes the loop: once the registry has a

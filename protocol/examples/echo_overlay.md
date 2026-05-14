@@ -3,6 +3,7 @@
 - name: echo
 - version: 1.0.0
 - description: Round-trip echo overlay for compiler testing.
+- lifecycle: peer-observer
 
 # Messages
 
@@ -30,8 +31,15 @@ re-encoded as utf-8 bytes.
 
 ### Handler
 
-On receipt of ECHO_RESPONSE, no-op. The sender side correlates responses
-out-of-band (tests poll the receive queue directly).
+On receipt of ECHO_RESPONSE, append the decoded utf-8 string to
+``self.received_responses``. The sender side correlates responses
+out-of-band (tests poll ``received_responses`` directly).
+
+# Runtime State
+
+| name | type | description |
+|------|------|-------------|
+| received_responses | list[str] | utf-8 strings collected from ECHO_RESPONSE messages, in arrival order. Tests poll this directly. |
 
 # Errors
 

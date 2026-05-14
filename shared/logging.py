@@ -41,18 +41,13 @@ _attached_loggers: set[str] = set()
 # haven't been imported yet at configure_logging() time. Pre-attaching
 # protects them against frameworks (uvicorn, FastMCP) that reconfigure
 # logging after startup. New project loggers should be added here.
-_PROJECT_LOGGER_NAMES = (
-    "admission_gate",
-    "agent_channel",
-    "ipv8_runtime",
-    "mcp_boot",
-    "mcp_tools",
-    "peer_directory",
-    "presenter",
-    "stake_oracle",
-    "trustroom_community",
-    "verifier",
-)
+#
+# Currently empty: redteam.primitives.{signed,peer}_log are the only
+# `shared.logging.get_logger` consumers and they pull their loggers
+# lazily under their own module-derived names. The historical v4.0
+# names (trustroom_community, stake_oracle, agent_channel, ...) were
+# removed when those modules were withdrawn on 2026-05-08.
+_PROJECT_LOGGER_NAMES: tuple[str, ...] = ()
 
 
 class _JsonOnlyFilter(logging.Filter):

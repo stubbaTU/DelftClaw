@@ -39,6 +39,12 @@ class AgentConfig:
     save_dir: Path = Path("./downloads")
     seedbox_min_sats: int = 10_000      # gatekeeper-side: minimum donation to admit
     seedbox_min_confirmations: int = 0  # 0 = accept zero-conf for demos
+    # Initial synthetic balance for this agent's wallet. 0 = legacy
+    # always-zero behaviour. >0 = the wallet exposes a budget the LLM
+    # can spend down via wallet_send; over-spending raises a clean
+    # "insufficient funds" error. Plumbed from scenario.yaml ->
+    # /etc/delftclaw/instances/<instance>.env -> cli.py.
+    initial_balance_sats: int = 0
 
 
 class OpenClawAgent:
@@ -62,6 +68,13 @@ class OpenClawAgent:
             bt_service if bt_service is not None
             else build_default_service(save_dir=self.config.save_dir)
         )
+
+        # Late-bind the per-deploy synthetic balance the LLM will see via
+        # ``wallet_balance``. AgentIdentity.from_seed doesn't take this
+        # (it's deploy-time policy, not identity-time crypto), so we set
+        # it on the constructed wallet here.
+        if self.config.initial_balance_sats > 0:
+            self.wallet.set_initial_balance(self.config.initial_balance_sats)
 
         # IPv8 instance + bootstrap community are populated in start().
         self._ipv8: Optional[IPv8] = None

@@ -76,6 +76,7 @@ class Wallet:
         *,
         path: DerivationPath,
         network: str,
+        initial_balance_sats: int = 0,
     ) -> None:
         self._root = root
         self._child = child
@@ -83,6 +84,14 @@ class Wallet:
         self._network = network
         signing_seed = hashlib.sha256(child.private_byte).digest()
         self.key = Ed25519PrivateKey.from_private_bytes(signing_seed)
+        # Synthetic balance tracking — see ``balance_sats`` / ``send``.
+        # An "initial_balance_sats=0" wallet behaves like the legacy
+        # always-zero mock; an "initial_balance_sats=N" wallet exposes
+        # a per-agent budget the LLM can spend down (capped at zero).
+        if initial_balance_sats < 0:
+            raise ValueError(f"initial_balance_sats must be >= 0; got {initial_balance_sats}")
+        self._initial_balance_sats = initial_balance_sats
+        self._spent_sats = 0
 
     @classmethod
     def from_seed(
@@ -92,13 +101,19 @@ class Wallet:
         network: str = DEFAULT_NETWORK,
         agent_index: int = 0,
         path: DerivationPath | None = None,
+        initial_balance_sats: int = 0,
     ) -> "Wallet":
         """Derive wallet keys at ``m/44'/0'/agent_index'/0/0`` by default."""
         net = _bitcoin_network(network)
         root = HDKey.from_seed(seed.bytes, network=net)
         resolved_path = path or wallet_path(agent_index)
         child = root.subkey_for_path(str(resolved_path))
-        return cls(root, child, path=resolved_path, network=network.strip().upper())
+        return cls(
+            root, child,
+            path=resolved_path,
+            network=network.strip().upper(),
+            initial_balance_sats=initial_balance_sats,
+        )
 
     # ------------------------------------------------------------------
     # Identity / metadata accessors
@@ -136,16 +151,33 @@ class Wallet:
         digest = hashlib.sha256(self.pubkey).hexdigest()
         return f"dclaw1{digest[:40]}"
 
+    def set_initial_balance(self, sats: int) -> None:
+        """Late-binding setter so callers that construct the wallet via
+        ``AgentIdentity.from_seed`` (which doesn't know about per-deploy
+        balance) can populate the synthetic balance after the fact.
+        Reset semantics: setting ``sats`` rewinds the spent counter to 0.
+        """
+        if sats < 0:
+            raise ValueError(f"initial_balance_sats must be >= 0; got {sats}")
+        self._initial_balance_sats = sats
+        self._spent_sats = 0
+
     # ------------------------------------------------------------------
     # Balance + transfer (synthetic)
     # ------------------------------------------------------------------
 
     def balance_sats(self, *, refresh: bool = False) -> int:
-        """Mock balance — always 0. ``refresh`` is accepted for API parity."""
-        return 0
+        """Synthetic balance: ``initial_balance_sats - sum(send amounts)``.
+
+        Floored at 0. ``refresh`` is accepted for API parity with the
+        on-chain path. A wallet constructed with the default
+        ``initial_balance_sats=0`` always returns 0 (legacy mock behaviour).
+        """
+        remaining = self._initial_balance_sats - self._spent_sats
+        return max(0, remaining)
 
     def send(self, to_address: str, sats: int) -> str:
-        """Synthetic send: return a deterministic txid hex; no broadcast.
+        """Synthetic send: deterministic txid hex; no broadcast.
 
         The txid is ``sha256(from || to || sats || nonce)`` where ``nonce``
         is a per-process monotonic counter — so successive identical
@@ -153,13 +185,27 @@ class Wallet:
         ``DonationVerifier(network="mock")`` admits any non-empty txid;
         the donation gate is *ceremonial* in mock mode and provides no
         admission control.
+
+        If the wallet was constructed with a positive
+        ``initial_balance_sats``, an over-spend raises ``ValueError``
+        (so the LLM gets a clean "insufficient funds" surface instead
+        of broadcasting a phantom donation that the verifier could not
+        possibly have observed).
         """
         if sats < 1:
             raise ValueError(f"sats must be >= 1; got {sats}")
         if not isinstance(to_address, str) or not to_address:
             raise ValueError("to_address must be a non-empty string")
+        if self._initial_balance_sats > 0:
+            remaining = self._initial_balance_sats - self._spent_sats
+            if sats > remaining:
+                raise ValueError(
+                    f"insufficient funds: have {remaining} sats, "
+                    f"tried to send {sats}"
+                )
         nonce = next(_SEND_NONCE)
         body = f"{self.address()}|{to_address}|{sats}|{nonce}".encode("utf-8")
+        self._spent_sats += sats
         return hashlib.sha256(body).hexdigest()
 
     # ------------------------------------------------------------------

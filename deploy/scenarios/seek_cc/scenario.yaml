@@ -56,3 +56,9 @@ agents:
     stop_predicate: torrent_progress_gte_1
     peers:
       - alice
+    # Synthetic wallet starts with 50_000 sats so Bob can pay the
+    # 10_000-sat admission donation without needing a funded testnet
+    # address. wallet_balance reflects the running total; an
+    # over-spend raises a clean "insufficient funds" error. Default
+    # for agents that don't declare this key is 0 (legacy mock).
+    initial_balance_sats: 50000

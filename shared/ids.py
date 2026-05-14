@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import secrets
 
 
 class _RawBytes:
@@ -50,44 +49,3 @@ class IdentityHash(_RawBytes):
 
     def __str__(self) -> str:
         return self._raw.hex()
-
-
-class RoomId(_RawBytes):
-    """128-bit opaque identifier for a Trustroom."""
-    _SIZE = 16
-
-    @classmethod
-    def fresh(cls) -> "RoomId":
-        return cls(secrets.token_bytes(cls._SIZE))
-
-    def __str__(self) -> str:
-        return self._raw.hex()
-
-
-class MessageId(_RawBytes):
-    """128-bit per-message id, locally unique to a sending agent."""
-    _SIZE = 16
-
-    @classmethod
-    def fresh(cls) -> "MessageId":
-        return cls(secrets.token_bytes(cls._SIZE))
-
-    def __str__(self) -> str:
-        return self._raw.hex()
-
-
-class Nonce(_RawBytes):
-    """96-bit anti-replay nonce used in admission and AEAD."""
-    _SIZE = 12
-
-    @classmethod
-    def fresh(cls) -> "Nonce":
-        return cls(secrets.token_bytes(cls._SIZE))
-
-
-class Epoch(int):
-    """Room-state epoch counter; monotonically increases when admission state changes."""
-
-
-class CredentialId(str):
-    """Local identifier of a Credential record stored in the TrustStore."""

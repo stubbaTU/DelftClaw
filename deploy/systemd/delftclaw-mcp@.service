@@ -1,8 +1,11 @@
 [Unit]
 Description=DelftClaw MCP server (instance %i)
 After=network-online.target ollama.service
-Wants=network-online.target
-Requires=ollama.service
+# Wants= not Requires=: with --compiler-stub the MCP server doesn't need
+# Ollama at boot (it only compiles a peer-supplied overlay on demand).
+# Hard-Requiring Ollama would also block startup on VPSes that point
+# QWEN_BASE_URL at an external GPU host and don't run local Ollama.
+Wants=network-online.target ollama.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
@@ -20,6 +23,7 @@ ExecStart=/opt/delftclaw/venv/bin/python -m agent \
     --seed-file ${SEED_FILE} \
     --network ${NETWORK} \
     --btc-network ${BTC_NETWORK} \
+    --initial-balance-sats ${INITIAL_BALANCE_SATS} \
     --address ${IPV8_HOST} --port ${IPV8_PORT} \
     --publish-overlay ${PUBLISH_OVERLAY} \
     --compiler-stub \

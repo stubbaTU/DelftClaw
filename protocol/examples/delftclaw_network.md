@@ -18,4 +18,4 @@
 
 # Default Overlays
 
-- sha1: 0b5cafdd65c3e0021949bdc8f071d830ef5ce66f  (content_community v1)
+- sha1: a3455e9cec3b78bc281f1c495b0a08baa733833a  (content_community v1)

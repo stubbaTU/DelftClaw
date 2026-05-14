@@ -1,3 +1,21 @@
+> ## ⚠ Legacy v4.0 document — withdrawn 2026-05-08
+>
+> This walkthrough describes the **pre-pivot DelftClaw gateway + trust
+> room + credential** stack that was removed when the project moved to
+> markdown-overlay protocols + Bitcoin-donation admission. None of the
+> `delftclaw_*` HTTP tools or trust-room concepts described below
+> still exist in the codebase.
+>
+> Kept here for historical reference. For current architecture see
+> [`PROJECT_DESIGN.md`](../../PROJECT_DESIGN.md) and
+> [`docs/architecture.md`](../architecture.md). For the user-intent →
+> tool-call mappings OpenClaw consumes see
+> [`docs/agent_intents.md`](../agent_intents.md). For the current
+> operator workflow see [`deploy/README.md`](../../deploy/README.md)
+> and run `make scenario NAME=seek_cc`.
+
+---
+
 # Connecting OpenClaw To DelftClaw
 
 This document explains how to connect a real OpenClaw agent to DelftClaw for

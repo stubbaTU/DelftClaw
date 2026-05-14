@@ -20,12 +20,13 @@ natural-language messaging on the bootstrap community, Agora-style.
 
 from __future__ import annotations
 
+import ast
 import binascii
 import hashlib
 import json
 import re
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Type
 
 
@@ -45,6 +46,35 @@ class ProtocolCompileError(Exception):
 # ---------------------------------------------------------------------------
 
 REQUIRED_SECTIONS = ("Identity", "Messages", "Errors", "Dependencies", "Test Vectors")
+OPTIONAL_SECTIONS = ("Runtime State", "Constants", "Tasks")
+
+ALLOWED_LIFECYCLES = ("peer-observer", "passive")
+DEFAULT_LIFECYCLE = "peer-observer"
+
+# Type → zero-value Python initialiser the LLM is told to emit for
+# `# Runtime State` slots. Element/inner types in `list[...]`/`dict[...]`
+# are documentation only; the structural check only verifies the slot
+# name is assigned in __init__.
+_RUNTIME_STATE_ZERO_VALUE: dict[str, str] = {
+    "int":   "0",
+    "str":   '""',
+    "bool":  "False",
+    "bytes": 'b""',
+    "list":  "[]",
+    "dict":  "{}",
+    "set":   "set()",
+}
+
+# JSON-decodable Python scalar types accepted in `# Constants` values.
+_CONSTANT_PY_TYPES: dict[str, tuple[type, ...]] = {
+    "int":   (int,),
+    "float": (int, float),
+    "bool":  (bool,),
+    "str":   (str,),
+    "bytes": (str,),       # bytes constants are hex-encoded in the .md
+    "list":  (list,),
+    "dict":  (dict,),
+}
 
 ALLOWED_ENCODINGS: dict[str, str] = {
     "uint8":           "B",
@@ -105,12 +135,44 @@ class TestVector:
 
 
 @dataclass
+class RuntimeStateSlot:
+    """One public mutable attribute the generated class must initialise."""
+    name: str                # snake_case
+    type_str: str            # raw type as written in the .md (e.g. "list[dict]")
+    base_type: str           # collapsed to "list" / "dict" / "int" / ...
+    description: str
+
+
+@dataclass
+class ConstantDef:
+    """One class-level tunable the generated class must declare."""
+    name: str                # SCREAMING_SNAKE_CASE
+    type_str: str
+    base_type: str
+    value: Any               # JSON-decoded literal
+    description: str
+
+
+@dataclass
+class PeriodicTaskDef:
+    """One ``self.register_task(...)`` call the generated class must perform."""
+    name: str                # snake_case task name (first positional arg)
+    interval_s: int          # interval= keyword value
+    handler: str             # snake_case method name on the class
+    description: str
+
+
+@dataclass
 class ParsedOverlay:
     identity: dict[str, str]
     messages: list[MessageDef]
     errors: list[dict[str, str]]
     dependencies: list[str]
     test_vectors: list[TestVector]
+    runtime_state: list[RuntimeStateSlot] = field(default_factory=list)
+    constants: list[ConstantDef] = field(default_factory=list)
+    tasks: list[PeriodicTaskDef] = field(default_factory=list)
+    lifecycle: str = DEFAULT_LIFECYCLE
 
 
 def parse_md(text: str) -> ParsedOverlay:
@@ -118,12 +180,17 @@ def parse_md(text: str) -> ParsedOverlay:
     sections = _split_top_sections(text)
     _check_required_sections(sections)
 
+    identity = _parse_identity(sections["Identity"])
     return ParsedOverlay(
-        identity=_parse_identity(sections["Identity"]),
+        identity=identity,
         messages=_parse_messages(sections["Messages"]),
         errors=_parse_errors(sections["Errors"]),
         dependencies=_parse_dependencies(sections["Dependencies"]),
         test_vectors=_parse_test_vectors(sections["Test Vectors"]),
+        runtime_state=_parse_runtime_state(sections.get("Runtime State", "")),
+        constants=_parse_constants(sections.get("Constants", "")),
+        tasks=_parse_tasks(sections.get("Tasks", "")),
+        lifecycle=identity.get("lifecycle", DEFAULT_LIFECYCLE),
     )
 
 
@@ -169,6 +236,11 @@ def _parse_identity(body: str) -> dict[str, str]:
     for required in ("name", "version", "description"):
         if required not in kv:
             raise ProtocolCompileError(f"# Identity missing key: {required!r}")
+    if "lifecycle" in kv and kv["lifecycle"] not in ALLOWED_LIFECYCLES:
+        raise ProtocolCompileError(
+            f"# Identity lifecycle must be one of {ALLOWED_LIFECYCLES}, "
+            f"got {kv['lifecycle']!r}"
+        )
     return kv
 
 
@@ -289,6 +361,169 @@ def _parse_field_table(table_lines: list[str], message_name: str) -> list[Messag
     return fields
 
 
+_TYPE_BASE_RE = re.compile(r"^\s*([a-z]+)(?:\s*\[.*\])?\s*$")
+
+
+def _base_type(type_str: str) -> str:
+    """Strip generic parameters off a type — ``list[dict]`` → ``list``."""
+    m = _TYPE_BASE_RE.match(type_str)
+    if not m:
+        return type_str.strip()
+    return m.group(1)
+
+
+def _parse_runtime_state(body: str) -> list[RuntimeStateSlot]:
+    """Parse the optional `# Runtime State` table. Empty body → []."""
+    rows = _collect_table_rows(body)
+    if not rows:
+        return []
+    header = [c.lower() for c in rows[0]]
+    if header[:3] != ["name", "type", "description"]:
+        raise ProtocolCompileError(
+            f"# Runtime State table header must be name|type|description, got {header}"
+        )
+    slots: list[RuntimeStateSlot] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        if all(set(c) <= set("- ") for c in row):
+            continue
+        name, type_str, description = row[0], row[1], row[2]
+        if not re.match(r"^[a-z][a-z0-9_]*$", name):
+            raise ProtocolCompileError(
+                f"# Runtime State slot name not snake_case: {name!r}"
+            )
+        if name in seen:
+            raise ProtocolCompileError(
+                f"# Runtime State duplicate slot name: {name!r}"
+            )
+        seen.add(name)
+        base = _base_type(type_str)
+        if base not in _RUNTIME_STATE_ZERO_VALUE:
+            allowed = ", ".join(sorted(_RUNTIME_STATE_ZERO_VALUE))
+            raise ProtocolCompileError(
+                f"# Runtime State slot {name!r} has unsupported type "
+                f"{type_str!r}; allowed bases: {allowed}"
+            )
+        slots.append(RuntimeStateSlot(
+            name=name, type_str=type_str, base_type=base, description=description,
+        ))
+    return slots
+
+
+def _parse_constants(body: str) -> list[ConstantDef]:
+    """Parse the optional `# Constants` table. Empty body → []."""
+    rows = _collect_table_rows(body)
+    if not rows:
+        return []
+    header = [c.lower() for c in rows[0]]
+    if header[:4] != ["name", "type", "value", "description"]:
+        raise ProtocolCompileError(
+            f"# Constants table header must be name|type|value|description, got {header}"
+        )
+    consts: list[ConstantDef] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        if all(set(c) <= set("- ") for c in row):
+            continue
+        name, type_str, value_str, description = row[0], row[1], row[2], row[3]
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", name):
+            raise ProtocolCompileError(
+                f"# Constants name not SCREAMING_SNAKE_CASE: {name!r}"
+            )
+        if name in seen:
+            raise ProtocolCompileError(f"# Constants duplicate name: {name!r}")
+        seen.add(name)
+        base = _base_type(type_str)
+        if base not in _CONSTANT_PY_TYPES:
+            allowed = ", ".join(sorted(_CONSTANT_PY_TYPES))
+            raise ProtocolCompileError(
+                f"# Constants {name!r} has unsupported type {type_str!r}; "
+                f"allowed bases: {allowed}"
+            )
+        try:
+            value = json.loads(value_str)
+        except json.JSONDecodeError as exc:
+            raise ProtocolCompileError(
+                f"# Constants {name!r}: value {value_str!r} is not a JSON literal: {exc}"
+            ) from exc
+        if not isinstance(value, _CONSTANT_PY_TYPES[base]):
+            raise ProtocolCompileError(
+                f"# Constants {name!r}: value {value!r} is not a {base}"
+            )
+        consts.append(ConstantDef(
+            name=name, type_str=type_str, base_type=base,
+            value=value, description=description,
+        ))
+    return consts
+
+
+def _parse_tasks(body: str) -> list[PeriodicTaskDef]:
+    """Parse the optional `# Tasks` table. Empty body → []."""
+    rows = _collect_table_rows(body)
+    if not rows:
+        return []
+    header = [c.lower() for c in rows[0]]
+    if header[:4] != ["name", "interval_s", "handler", "description"]:
+        raise ProtocolCompileError(
+            f"# Tasks table header must be name|interval_s|handler|description, "
+            f"got {header}"
+        )
+    tasks: list[PeriodicTaskDef] = []
+    seen_names: set[str] = set()
+    seen_handlers: set[str] = set()
+    for row in rows[1:]:
+        if all(set(c) <= set("- ") for c in row):
+            continue
+        name, interval_s_str, handler, description = row[0], row[1], row[2], row[3]
+        if not re.match(r"^[a-z][a-z0-9_]*$", name):
+            raise ProtocolCompileError(
+                f"# Tasks task name not snake_case: {name!r}"
+            )
+        if name in seen_names:
+            raise ProtocolCompileError(f"# Tasks duplicate task name: {name!r}")
+        seen_names.add(name)
+        # Handler names follow Python's snake_case method convention,
+        # which permits a single leading underscore for "private" methods
+        # like ``_send_heartbeat`` (a common pattern when the method is
+        # called only from inside the class).
+        if not re.match(r"^_?[a-z][a-z0-9_]*$", handler):
+            raise ProtocolCompileError(
+                f"# Tasks handler name not snake_case: {handler!r}"
+            )
+        if handler in seen_handlers:
+            raise ProtocolCompileError(
+                f"# Tasks duplicate handler {handler!r} — each periodic task "
+                f"needs its own method to avoid interval interference"
+            )
+        seen_handlers.add(handler)
+        try:
+            interval_s = int(interval_s_str)
+        except ValueError as exc:
+            raise ProtocolCompileError(
+                f"# Tasks {name!r} interval_s {interval_s_str!r} is not an int: {exc}"
+            ) from exc
+        if interval_s <= 0:
+            raise ProtocolCompileError(
+                f"# Tasks {name!r} interval_s must be a positive integer (got {interval_s})"
+            )
+        tasks.append(PeriodicTaskDef(
+            name=name, interval_s=interval_s, handler=handler, description=description,
+        ))
+    return tasks
+
+
+def _collect_table_rows(body: str) -> list[list[str]]:
+    """Walk a section body, return every markdown-table row as a cell list."""
+    rows: list[list[str]] = []
+    for line in body.split("\n"):
+        ln = line.strip()
+        if not ln.startswith("|"):
+            continue
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        rows.append(cells)
+    return rows
+
+
 def _parse_errors(body: str) -> list[dict[str, str]]:
     rows = []
     for line in body.split("\n"):
@@ -393,7 +628,7 @@ descriptor, you emit ONE Python module that defines:
 
   * One ``VariablePayload`` subclass per message (name = the message
     SCREAMING_SNAKE_CASE name + "Payload").
-  * One ``GeneratedCommunity(Community, PeerObserver)`` subclass.
+  * One ``GeneratedCommunity`` subclass.
 
 Constraints:
 
@@ -423,9 +658,47 @@ Constraints:
   * For each message described, define a handler method
     ``on_<lowercase_msg_name>`` decorated with ``@lazy_wrapper(<PayloadCls>)``
     that implements the operational semantics from the descriptor.
-  * Implement ``started`` to call ``self.network.add_peer_observer(self)``
-    and define ``on_peer_added``/``on_peer_removed`` as no-ops unless the
-    descriptor says otherwise.
+
+Lifecycle (driven by the descriptor's ``lifecycle`` key in ``# Identity``):
+
+  * ``lifecycle: peer-observer`` (default) — subclass BOTH ``Community``
+    and ``PeerObserver``. Define ``started(self)`` calling
+    ``self.network.add_peer_observer(self)``. Define
+    ``on_peer_added(self, peer)`` and ``on_peer_removed(self, peer)``
+    as no-ops unless the descriptor's handler prose specifies behaviour.
+  * ``lifecycle: passive`` — subclass ``Community`` only; do NOT mix in
+    ``PeerObserver`` and do NOT define peer observer methods.
+
+Runtime State (the descriptor's ``# Runtime State`` table):
+
+  * In ``GeneratedCommunity.__init__`` (after ``super().__init__(...)``),
+    initialise EVERY listed slot via ``self.<name> = <zero-value>`` where
+    the zero-value is decided by the slot's base type:
+        list  -> []           dict  -> {}           set   -> set()
+        int   -> 0            str   -> ""           bool  -> False
+        bytes -> b""
+    Initialise these BEFORE registering message handlers so handlers
+    that fire on the same tick see consistent state. Do not add any
+    runtime-state slot that is not listed in the descriptor.
+
+Constants (the descriptor's ``# Constants`` table):
+
+  * For every listed constant, declare it at class scope (NOT inside
+    ``__init__``) as ``<NAME> = <literal>``. Use the literal value
+    exactly as given. Constants come before ``__init__`` in source
+    order.
+
+Tasks (the descriptor's ``# Tasks`` table):
+
+  * For every listed task, add a call inside ``__init__`` of the exact
+    shape ``self.register_task("<name>", self.<handler>,
+    interval=<interval_s>)``. The task name is a string literal (NOT
+    an f-string, NOT a variable). The handler is a method on this
+    class — define it (as ``def`` or ``async def``, taking ``self``
+    only) somewhere in the class body and let it implement the
+    descriptor's task description prose. ``register_task`` is provided
+    by ``Community`` via its ``TaskManager`` mixin; do NOT import
+    anything new for it.
 """
 
 
@@ -442,13 +715,45 @@ def _build_user_prompt(parsed: ParsedOverlay, community_id: bytes) -> str:
             f"    fields:\n{fields_repr}\n"
             f"    handler_semantics:\n      {m.handler_text}"
         )
-    return (
-        f"community_id_hex={cid_hex}\n"
-        f"name={parsed.identity['name']}\n"
-        f"version={parsed.identity['version']}\n"
-        f"description={parsed.identity['description']}\n\n"
-        f"Messages:\n" + "\n".join(msgs_repr) + "\n"
-    )
+    parts = [
+        f"community_id_hex={cid_hex}",
+        f"name={parsed.identity['name']}",
+        f"version={parsed.identity['version']}",
+        f"description={parsed.identity['description']}",
+        f"lifecycle={parsed.lifecycle}",
+        "",
+        "Messages:",
+        "\n".join(msgs_repr),
+    ]
+    if parsed.constants:
+        const_lines = [
+            f"  * {c.name}: {c.type_str} = {json.dumps(c.value)}  # {c.description}"
+            for c in parsed.constants
+        ]
+        parts.extend(["", "Constants (declare at class scope):", "\n".join(const_lines)])
+    if parsed.runtime_state:
+        state_lines = [
+            f"  * self.{s.name} = {_RUNTIME_STATE_ZERO_VALUE[s.base_type]}  "
+            f"# {s.type_str} — {s.description}"
+            for s in parsed.runtime_state
+        ]
+        parts.extend([
+            "",
+            "Runtime state (initialise in __init__ after super().__init__):",
+            "\n".join(state_lines),
+        ])
+    if parsed.tasks:
+        task_lines = [
+            f'  * self.register_task("{t.name}", self.{t.handler}, '
+            f"interval={t.interval_s})  # {t.description}"
+            for t in parsed.tasks
+        ]
+        parts.extend([
+            "",
+            "Periodic tasks (register in __init__; each handler is a method on the class):",
+            "\n".join(task_lines),
+        ])
+    return "\n".join(parts) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +834,215 @@ def _run_test_vector(payload_cls: Type, tv: TestVector) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Structural check (constants + runtime state + lifecycle)
+# ---------------------------------------------------------------------------
+
+def _init_self_assignments(source: str, class_name: str = "GeneratedCommunity") -> set[str]:
+    """Walk ``source``'s AST, return the set of names ``X`` assigned via
+    ``self.X = ...`` (any kind of assignment) anywhere inside
+    ``<class_name>.__init__``.
+
+    The AST whitelist has already run; this is just structural
+    introspection on trusted-ish source.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ProtocolCompileError(f"cannot AST-parse generated source: {exc}") from exc
+
+    init_body: list[ast.stmt] | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+                    init_body = item.body
+                    break
+            break
+
+    names: set[str] = set()
+    if init_body is None:
+        return names
+
+    def _record(target: ast.AST) -> None:
+        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+            names.add(target.attr)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                _record(elt)
+
+    for stmt in ast.walk(ast.Module(body=init_body, type_ignores=[])):
+        if isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                _record(t)
+        elif isinstance(stmt, (ast.AugAssign, ast.AnnAssign)):
+            _record(stmt.target)
+    return names
+
+
+def _init_register_task_calls(source: str, class_name: str = "GeneratedCommunity") -> list[dict]:
+    """Walk ``source``'s AST, return one record per ``self.register_task(...)``
+    call inside ``<class_name>.__init__``.
+
+    Each record: ``{"name": <str|None>, "handler": <str|None>, "interval_s": <int|None>}``.
+    Fields are ``None`` if they couldn't be statically extracted (e.g. a
+    non-literal task name or a handler that wasn't ``self.<attr>``); the
+    structural check treats missing fields as a no-match.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    init_body: list[ast.stmt] | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+                    init_body = item.body
+                    break
+            break
+    if init_body is None:
+        return []
+
+    out: list[dict] = []
+    for stmt in ast.walk(ast.Module(body=init_body, type_ignores=[])):
+        if not isinstance(stmt, ast.Call):
+            continue
+        # self.register_task(...)
+        fn = stmt.func
+        if not (
+            isinstance(fn, ast.Attribute)
+            and fn.attr == "register_task"
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id == "self"
+        ):
+            continue
+        # First positional arg = task name string literal
+        name_val: str | None = None
+        if stmt.args:
+            first = stmt.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                name_val = first.value
+        # Second positional arg = self.<handler> bound method reference
+        handler_val: str | None = None
+        if len(stmt.args) >= 2:
+            second = stmt.args[1]
+            if (
+                isinstance(second, ast.Attribute)
+                and isinstance(second.value, ast.Name)
+                and second.value.id == "self"
+            ):
+                handler_val = second.attr
+        # interval=<int> keyword
+        interval_val: int | None = None
+        for kw in stmt.keywords:
+            if kw.arg == "interval" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, (int, float)):
+                interval_val = int(kw.value.value)
+                break
+        out.append({"name": name_val, "handler": handler_val, "interval_s": interval_val})
+    return out
+
+
+def _class_bases(source: str, class_name: str = "GeneratedCommunity") -> set[str]:
+    """Return the base-class names referenced by ``class_name``'s definition."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    bases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for b in node.bases:
+                if isinstance(b, ast.Name):
+                    bases.add(b.id)
+                elif isinstance(b, ast.Attribute):
+                    bases.add(b.attr)
+            break
+    return bases
+
+
+def _check_structural_contract(
+    parsed: ParsedOverlay,
+    community_cls: type,
+    source: str,
+) -> None:
+    """Enforce the schema's `# Constants` / `# Runtime State` / lifecycle clauses."""
+
+    # 1. Constants — must exist at class level with the declared value.
+    for c in parsed.constants:
+        if not hasattr(community_cls, c.name):
+            raise ProtocolCompileError(
+                f"generated class is missing constant {c.name!r} "
+                f"(declared in # Constants)"
+            )
+        actual = getattr(community_cls, c.name)
+        if actual != c.value:
+            raise ProtocolCompileError(
+                f"constant {c.name!r} value mismatch: descriptor declares "
+                f"{c.value!r}, generated class has {actual!r}"
+            )
+
+    # 2. Runtime state — every slot must be assigned in __init__.
+    if parsed.runtime_state:
+        assigned = _init_self_assignments(source)
+        missing = [s.name for s in parsed.runtime_state if s.name not in assigned]
+        if missing:
+            raise ProtocolCompileError(
+                f"generated __init__ does not assign these # Runtime State "
+                f"slots: {missing}"
+            )
+
+    # 3. Periodic tasks — every declared task must have a matching
+    # `self.register_task("name", self.handler, interval=N)` in __init__,
+    # and the handler method must exist on the class.
+    if parsed.tasks:
+        registered = _init_register_task_calls(source)
+        for task in parsed.tasks:
+            match = next(
+                (
+                    r for r in registered
+                    if r["name"] == task.name
+                    and r["handler"] == task.handler
+                    and r["interval_s"] == task.interval_s
+                ),
+                None,
+            )
+            if match is None:
+                raise ProtocolCompileError(
+                    f"# Tasks task {task.name!r} has no matching "
+                    f"self.register_task({task.name!r}, self.{task.handler}, "
+                    f"interval={task.interval_s}) call in __init__"
+                )
+            if not callable(getattr(community_cls, task.handler, None)):
+                raise ProtocolCompileError(
+                    f"# Tasks task {task.name!r} references handler "
+                    f"method {task.handler!r} which is not callable on the class"
+                )
+
+    # 4. Lifecycle — peer-observer must subclass PeerObserver and define
+    # the three hooks; passive must NOT subclass PeerObserver.
+    bases = _class_bases(source)
+    if parsed.lifecycle == "peer-observer":
+        if "PeerObserver" not in bases:
+            raise ProtocolCompileError(
+                "lifecycle is peer-observer but generated class does not "
+                "subclass PeerObserver"
+            )
+        for hook in ("started", "on_peer_added", "on_peer_removed"):
+            if not callable(getattr(community_cls, hook, None)):
+                raise ProtocolCompileError(
+                    f"lifecycle is peer-observer but generated class is "
+                    f"missing method {hook!r}"
+                )
+    elif parsed.lifecycle == "passive":
+        if "PeerObserver" in bases:
+            raise ProtocolCompileError(
+                "lifecycle is passive but generated class subclasses "
+                "PeerObserver"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry
 # ---------------------------------------------------------------------------
 
@@ -583,6 +1097,8 @@ def compile_overlay(md_text: str, llm: LLMClient) -> CompiledOverlay:
             f"community_id mismatch: descriptor says {community_id.hex()}, "
             f"generated class says {(declared or b'').hex()}"
         )
+
+    _check_structural_contract(parsed, community_cls, source)
 
     payload_classes: dict[str, Type] = {
         m.name: _payload_class_for(m.name, ns) for m in parsed.messages

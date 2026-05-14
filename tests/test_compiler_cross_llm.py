@@ -48,7 +48,11 @@ VARIANT_A_SOURCE = "```python\n" + CONTENT_COMMUNITY_SOURCE + "```"
 # Variant B — same wire shape, stylistically different. Reorders the
 # payload classes, drops docstrings, swaps the handler implementation
 # to use a different (but functionally equivalent) algorithm, renames
-# local variables, swaps the MAX_RESULTS constant for an inline int.
+# local variables. Both variants honour the descriptor's structural
+# contract (MAX_RESULTS at class scope; local_index / response_cache
+# slots assigned in __init__) — anything that diverges from the
+# contract is caught by the compiler's structural check (see
+# ``VARIANT_C_MISSING_CONSTANT`` below).
 # ---------------------------------------------------------------------------
 
 VARIANT_B_SOURCE = """```python
@@ -77,6 +81,7 @@ class SearchRequestPayload(VariablePayload):
 
 class GeneratedCommunity(Community, PeerObserver):
     community_id = bytes.fromhex(\"""" + COMMUNITY_ID_HEX + """\")
+    MAX_RESULTS = 50
 
     def __init__(self, cfg: CommunitySettings) -> None:
         super().__init__(cfg)
@@ -97,10 +102,9 @@ class GeneratedCommunity(Community, PeerObserver):
     @lazy_wrapper(SearchRequestPayload)
     def on_search_request(self, sender: Peer, msg: SearchRequestPayload) -> None:
         q = msg.query.decode("utf-8").lower()
-        cap = 50
         hits = list()
         i = 0
-        while i < len(self.local_index) and len(hits) < cap:
+        while i < len(self.local_index) and len(hits) < self.MAX_RESULTS:
             row = self.local_index[i]
             tag_str = " ".join(str(t) for t in row.get("tags", []) if t is not None)
             blob = (row.get("name", "") + " " + tag_str).lower()
@@ -115,6 +119,142 @@ class GeneratedCommunity(Community, PeerObserver):
         if isinstance(data, list):
             for item in data:
                 self.response_cache.append(item)
+```
+"""
+
+
+# ---------------------------------------------------------------------------
+# Variant C — non-conforming. Omits the MAX_RESULTS constant required
+# by the descriptor's # Constants table (inlines 50 instead). Wire
+# format is still identical, but the structural check refuses to
+# activate the overlay — this is the brittleness fix the schema
+# upgrade is meant to enforce.
+# ---------------------------------------------------------------------------
+
+VARIANT_C_MISSING_CONSTANT = """```python
+import msgpack
+
+from ipv8.community import Community, CommunitySettings
+from ipv8.lazy_community import lazy_wrapper
+from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
+from ipv8.peer import Peer
+from ipv8.peerdiscovery.network import PeerObserver
+
+
+@vp_compile
+class SearchRequestPayload(VariablePayload):
+    msg_id = 1
+    format_list = ["varlenH"]
+    names = ["query"]
+
+
+@vp_compile
+class SearchResponsePayload(VariablePayload):
+    msg_id = 2
+    format_list = ["varlenH"]
+    names = ["results"]
+
+
+class GeneratedCommunity(Community, PeerObserver):
+    community_id = bytes.fromhex(\"""" + COMMUNITY_ID_HEX + """\")
+
+    def __init__(self, settings: CommunitySettings) -> None:
+        super().__init__(settings)
+        self.local_index = []
+        self.response_cache = []
+        self.add_message_handler(SearchRequestPayload, self.on_search_request)
+        self.add_message_handler(SearchResponsePayload, self.on_search_response)
+
+    def started(self) -> None:
+        self.network.add_peer_observer(self)
+
+    def on_peer_added(self, peer: Peer) -> None:
+        pass
+
+    def on_peer_removed(self, peer: Peer) -> None:
+        pass
+
+    @lazy_wrapper(SearchRequestPayload)
+    def on_search_request(self, peer: Peer, payload: SearchRequestPayload) -> None:
+        query = payload.query.decode("utf-8").lower()
+        results = []
+        for entry in self.local_index:
+            if query in entry.get("name", "").lower():
+                results.append(entry)
+            if len(results) >= 50:
+                break
+        self.ez_send(peer, SearchResponsePayload(msgpack.packb(results, use_bin_type=True)))
+
+    @lazy_wrapper(SearchResponsePayload)
+    def on_search_response(self, peer: Peer, payload: SearchResponsePayload) -> None:
+        decoded = msgpack.unpackb(payload.results, raw=False)
+        if isinstance(decoded, list):
+            self.response_cache.extend(decoded)
+```
+"""
+
+
+# ---------------------------------------------------------------------------
+# Variant D — non-conforming. Renames the runtime-state slot
+# ``response_cache`` to ``responses``. Wire format still identical;
+# structural check rejects.
+# ---------------------------------------------------------------------------
+
+VARIANT_D_RENAMED_SLOT = """```python
+import msgpack
+
+from ipv8.community import Community, CommunitySettings
+from ipv8.lazy_community import lazy_wrapper
+from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
+from ipv8.peer import Peer
+from ipv8.peerdiscovery.network import PeerObserver
+
+
+@vp_compile
+class SearchRequestPayload(VariablePayload):
+    msg_id = 1
+    format_list = ["varlenH"]
+    names = ["query"]
+
+
+@vp_compile
+class SearchResponsePayload(VariablePayload):
+    msg_id = 2
+    format_list = ["varlenH"]
+    names = ["results"]
+
+
+class GeneratedCommunity(Community, PeerObserver):
+    community_id = bytes.fromhex(\"""" + COMMUNITY_ID_HEX + """\")
+    MAX_RESULTS = 50
+
+    def __init__(self, settings: CommunitySettings) -> None:
+        super().__init__(settings)
+        self.local_index = []
+        self.responses = []   # WRONG NAME — schema says response_cache
+        self.add_message_handler(SearchRequestPayload, self.on_search_request)
+        self.add_message_handler(SearchResponsePayload, self.on_search_response)
+
+    def started(self) -> None:
+        self.network.add_peer_observer(self)
+
+    def on_peer_added(self, peer: Peer) -> None:
+        pass
+
+    def on_peer_removed(self, peer: Peer) -> None:
+        pass
+
+    @lazy_wrapper(SearchRequestPayload)
+    def on_search_request(self, peer: Peer, payload: SearchRequestPayload) -> None:
+        query = payload.query.decode("utf-8").lower()
+        hits = [e for e in self.local_index if query in e.get("name", "").lower()][: self.MAX_RESULTS]
+        self.ez_send(peer, SearchResponsePayload(msgpack.packb(hits, use_bin_type=True)))
+
+    @lazy_wrapper(SearchResponsePayload)
+    def on_search_response(self, peer: Peer, payload: SearchResponsePayload) -> None:
+        decoded = msgpack.unpackb(payload.results, raw=False)
+        if isinstance(decoded, list):
+            self.responses.extend(decoded)
 ```
 """
 
@@ -167,3 +307,26 @@ def test_variant_b_actually_differs_from_variant_a():
     # (SearchResponse declared before SearchRequest).
     b_inner = VARIANT_B_SOURCE
     assert b_inner.index("SearchResponsePayload") < b_inner.index("SearchRequestPayload")
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed tests for the structural contract.
+# ---------------------------------------------------------------------------
+
+def test_variant_c_missing_constant_is_rejected():
+    """A wire-compatible LLM output that omits a `# Constants` entry
+    fails activation. This is the brittleness the schema upgrade is
+    designed to catch."""
+    from protocol.compiler import ProtocolCompileError
+    llm = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_C_MISSING_CONSTANT})
+    with pytest.raises(ProtocolCompileError, match="MAX_RESULTS"):
+        compile_overlay(CONTENT_MD, llm)
+
+
+def test_variant_d_renamed_runtime_state_slot_is_rejected():
+    """A wire-compatible LLM output that renames a `# Runtime State`
+    slot (response_cache → responses) fails activation."""
+    from protocol.compiler import ProtocolCompileError
+    llm = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_D_RENAMED_SLOT})
+    with pytest.raises(ProtocolCompileError, match="response_cache"):
+        compile_overlay(CONTENT_MD, llm)

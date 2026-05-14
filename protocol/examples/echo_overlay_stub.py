@@ -37,7 +37,7 @@ class EchoResponsePayload(VariablePayload):
 
 
 class GeneratedCommunity(Community, PeerObserver):
-    community_id = bytes.fromhex("20bb898ba9f9a8468a4be5aab4b8128273edb910")
+    community_id = bytes.fromhex("cb34767cf5594a303df692d0eca46d8cd022a31a")
 
     def __init__(self, settings: CommunitySettings) -> None:
         super().__init__(settings)
