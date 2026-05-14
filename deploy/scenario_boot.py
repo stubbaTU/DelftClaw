@@ -294,6 +294,19 @@ def _stop_unit(unit: str) -> None:
     _sudo(["systemctl", "disable", unit], check=False)
 
 
+def _openclaw_config_set(sudo_env: list[str], path: str, value: object) -> None:
+    """Set one OpenClaw config path using the stable JSON value interface."""
+    subprocess.run(
+        [
+            *sudo_env,
+            "openclaw", "config", "set",
+            path, json.dumps(value),
+            "--json",
+        ],
+        check=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # MCP introspection
 # ---------------------------------------------------------------------------
@@ -377,7 +390,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
 
     sudo_env = ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}"]
 
-    # (1) Patch the agent's openclaw.json so the Ollama provider is registered
+    # (1) Update the agent's openclaw.json so the Ollama provider is registered
     # before any model lookup happens. Without this, ``openclaw agent --local
     # --model ollama/qwen2.5-coder:7b`` can't resolve the model.
     #
@@ -387,48 +400,35 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # always fire on turn 1. Set this generously below the watchdog tick
     # ``interval_s`` so timeouts surface as turn errors rather than truncated
     # responses mid-call.
-    provider_patch = json.dumps({
-        "agents": {
-            "defaults": {
-                "timeoutSeconds": 150,
+    ollama_provider = {
+        "baseUrl": _ollama_base_from(QWEN_BASE_URL),
+        "api": "ollama",
+        # OpenClaw refuses to call any provider without an apiKey,
+        # even Ollama which accepts anything as Bearer. The string
+        # ``OLLAMA_API_KEY`` is resolved at runtime against the
+        # systemd env file (see ``_instance_env_contents``).
+        "apiKey": "OLLAMA_API_KEY",
+        "models": [
+            {
+                "id": QWEN_MODEL,
+                "name": QWEN_MODEL,
+                "reasoning": False,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0,
+                         "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 32768,
+                "maxTokens": 4096,
             },
-        },
-        "models": {
-            "mode": "merge",
-            "providers": {
-                "ollama": {
-                    "baseUrl": _ollama_base_from(QWEN_BASE_URL),
-                    "api": "ollama",
-                    # OpenClaw refuses to call any provider without an apiKey,
-                    # even Ollama which accepts anything as Bearer. The string
-                    # ``OLLAMA_API_KEY`` is resolved at runtime against the
-                    # systemd env file (see ``_instance_env_contents``).
-                    "apiKey": "OLLAMA_API_KEY",
-                    "models": [
-                        {
-                            "id": QWEN_MODEL,
-                            "name": QWEN_MODEL,
-                            "reasoning": False,
-                            "input": ["text"],
-                            "cost": {"input": 0, "output": 0,
-                                     "cacheRead": 0, "cacheWrite": 0},
-                            "contextWindow": 32768,
-                            "maxTokens": 4096,
-                        },
-                    ],
-                },
-            },
-        },
-    })
-    # ``--replace-path models.providers.ollama.models`` so we overwrite the
-    # whole model list each run; openclaw config patch otherwise refuses to
-    # drop existing entries (e.g. a stale qwen2.5-coder:7b from a prior boot).
-    c_info(f"{agent.name}: openclaw config patch (ollama provider)")
-    subprocess.run(
-        [*sudo_env, "openclaw", "config", "patch", "--stdin",
-         "--replace-path", "models.providers.ollama.models"],
-        input=provider_patch, text=True, check=True,
-    )
+        ],
+    }
+    # Assign the provider object directly so re-runs replace the model list
+    # instead of keeping stale models from earlier scenario boots. Use
+    # ``config set`` rather than ``config patch --stdin`` because older
+    # OpenClaw CLIs reject the newer ``--stdin`` flag.
+    c_info(f"{agent.name}: openclaw config set (ollama provider)")
+    _openclaw_config_set(sudo_env, "agents.defaults.timeoutSeconds", 150)
+    _openclaw_config_set(sudo_env, "models.mode", "merge")
+    _openclaw_config_set(sudo_env, "models.providers.ollama", ollama_provider)
 
     # (2) Register the MCP server in this HOME's openclaw.json.
     mcp_value = json.dumps({"url": mcp_url, "transport": "streamable-http"})
