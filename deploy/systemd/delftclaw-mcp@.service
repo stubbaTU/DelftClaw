@@ -29,7 +29,8 @@ ExecStart=/opt/delftclaw/venv/bin/python -m agent \
     --compiler-stub \
     --llm-base-url ${QWEN_BASE_URL} \
     --llm-model ${QWEN_MODEL} \
-    mcp --mcp-host ${MCP_HOST} --mcp-port ${MCP_PORT}
+    mcp --mcp-host ${MCP_HOST} --mcp-port ${MCP_PORT} \
+        --redteam-host ${REDTEAM_HOST} --redteam-port ${REDTEAM_PORT}
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30

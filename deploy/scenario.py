@@ -100,6 +100,11 @@ class AgentSpec:
     # Default 0 keeps legacy "always-zero" mock behaviour; set >0 for
     # agents that need to make donations (e.g. seek_cc's bob).
     initial_balance_sats: int = 0
+    # Phase 6: per-agent FastAPI port for the redteam community-log
+    # server. 0 disables (legacy single-agent / no-replication mode).
+    # When set, scenario_boot cross-wires every other agent's pull
+    # loop to fetch from http://127.0.0.1:<redteam_port>.
+    redteam_port: int = 0
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,7 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
     agents: dict[str, AgentSpec] = {}
     seen_ipv8_ports: dict[int, str] = {}
     seen_mcp_ports: dict[int, str] = {}
+    seen_redteam_ports: dict[int, str] = {}
 
     for agent_name, agent_raw in agents_raw.items():
         if not isinstance(agent_raw, dict):
@@ -169,6 +175,18 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
             raise ScenarioError(
                 f"agent {agent.name!r}: ipv8_port and mcp_port must differ"
             )
+        if agent.redteam_port != 0:
+            if agent.redteam_port in seen_redteam_ports:
+                raise ScenarioError(
+                    f"redteam_port {agent.redteam_port} clashes between agents "
+                    f"{seen_redteam_ports[agent.redteam_port]!r} and {agent.name!r}"
+                )
+            if agent.redteam_port in (agent.ipv8_port, agent.mcp_port):
+                raise ScenarioError(
+                    f"agent {agent.name!r}: redteam_port must differ from "
+                    f"ipv8_port and mcp_port"
+                )
+            seen_redteam_ports[agent.redteam_port] = agent.name
         seen_ipv8_ports[agent.ipv8_port] = agent.name
         seen_mcp_ports[agent.mcp_port] = agent.name
 
@@ -272,6 +290,12 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
             f"agent {name!r}: initial_balance_sats must be >= 0 (got {initial_balance_sats})"
         )
 
+    redteam_port_raw = d.get("redteam_port", 0)
+    if redteam_port_raw == 0:
+        redteam_port = 0
+    else:
+        redteam_port = _port(redteam_port_raw, f"agent {name}.redteam_port")
+
     return AgentSpec(
         name=name,
         ipv8_port=ipv8_port,
@@ -282,6 +306,7 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         peers=peers,
         seed_content=seed_content,
         initial_balance_sats=initial_balance_sats,
+        redteam_port=redteam_port,
     )
 
 

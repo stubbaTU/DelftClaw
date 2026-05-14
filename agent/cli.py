@@ -298,6 +298,47 @@ async def _serve_loop(
         print(answer, flush=True)
 
 
+async def _start_redteam_server(
+    agent, *, host: str, port: int,
+) -> tuple[asyncio.Task, object]:
+    """Spawn a uvicorn-hosted redteam FastAPI server in the agent's event loop.
+
+    Built via ``redteam.integration.server.build_app`` against the
+    agent's own ``OpenClawIdentity`` (so the served entries' identity
+    binding matches) + the agent's ``community_log_path`` /
+    ``peer_log_dir``. Returns the asyncio task running uvicorn and the
+    ``uvicorn.Server`` instance (caller sets ``.should_exit`` for clean
+    shutdown).
+
+    Important: the FastAPI server's ``SignedAppendOnlyLog`` and
+    ``PeerLog`` instances are NEW objects sharing the same on-disk
+    files as the agent's. Two writers in one process would race on
+    ``SignedAppendOnlyLog._lock``; we mitigate this by passing
+    ``peers=[]`` so the FastAPI server's own pull loop stays disabled
+    (the agent's runtime owns the pull loop). Reads (GET /head, GET
+    /entries) are race-free because they snapshot the file under their
+    own lock.
+    """
+    import uvicorn
+    from redteam.integration.server import build_app
+    from identity.openclaw_identity import OpenClawIdentity
+
+    oc_identity = OpenClawIdentity.from_agent_identity(agent.identity)
+    log_path = agent.config.community_log_path or (agent.config.save_dir / "community.log")
+    peer_log_dir = agent.config.peer_log_dir or (agent.config.save_dir / "peer_logs")
+
+    app = build_app(
+        identity=oc_identity,
+        log_path=str(log_path),
+        peer_log_dir=str(peer_log_dir),
+        peers=[],                     # we run the pull loop ourselves, not in FastAPI
+    )
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(), name=f"redteam_server:{port}")
+    return task, server
+
+
 async def _run(args: argparse.Namespace) -> int:
     # Boot-path progress logs flush to journalctl so a hang between
     # systemd-Started and serve_mcp_async() is localisable. Each `[boot]`
@@ -311,6 +352,20 @@ async def _run(args: argparse.Namespace) -> int:
 
     print("[boot] building compiler LLM client", flush=True)
     compiler_llm = _build_compiler_llm(args)
+    # Phase 6 env-var fallbacks. Systemd templated units can't easily
+    # build repeated --peer-log-url flags from a single env var, so we
+    # also read PEER_LOG_URLS (space-separated), COMMUNITY_LOG_PATH,
+    # and PEER_LOG_DIR from the environment when the CLI flags aren't
+    # given. The CLI flag always wins when both are set.
+    import os as _os
+    peer_log_urls: list[str] = list(args.peer_log_url or [])
+    if not peer_log_urls:
+        env_urls = _os.environ.get("PEER_LOG_URLS", "").strip()
+        if env_urls:
+            peer_log_urls = env_urls.split()
+    community_log_path = args.community_log_path or _os.environ.get("COMMUNITY_LOG_PATH")
+    peer_log_dir = args.peer_log_dir or _os.environ.get("PEER_LOG_DIR")
+
     config = AgentConfig(
         port=args.port,
         address=args.address,
@@ -319,6 +374,11 @@ async def _run(args: argparse.Namespace) -> int:
         seedbox_min_sats=args.seedbox_min_sats,
         seedbox_min_confirmations=args.seedbox_min_confirmations,
         initial_balance_sats=args.initial_balance_sats,
+        community_log_path=Path(community_log_path) if community_log_path else None,
+        peer_log_dir=Path(peer_log_dir) if peer_log_dir else None,
+        peer_log_urls=tuple(peer_log_urls),
+        pull_interval_s=args.pull_interval_s,
+        pull_batch=args.pull_batch,
     )
     print(f"[boot] constructing agent (port={args.port}, btc={args.btc_network})", flush=True)
     agent = OpenClawAgent(identity=identity, llm=compiler_llm, config=config)
@@ -427,7 +487,31 @@ async def _run(args: argparse.Namespace) -> int:
                 f"point OpenClaw at http://{args.mcp_host}:{args.mcp_port}/mcp",
                 flush=True,
             )
-            await serve_mcp_async(agent, host=args.mcp_host, port=args.mcp_port)
+            # Phase 6: spawn a redteam FastAPI sub-server when requested,
+            # so peers running their own pull loops can fetch our
+            # community-log entries. Shares the same on-disk files as
+            # the agent's own SignedAppendOnlyLog / PeerLog; the
+            # FastAPI uvicorn task is cancelled in ``finally``.
+            redteam_task = None
+            redteam_server = None
+            if getattr(args, "redteam_port", 0):
+                redteam_task, redteam_server = await _start_redteam_server(
+                    agent, host=args.redteam_host, port=args.redteam_port,
+                )
+                print(
+                    f"[redteam] serving signed-log on "
+                    f"http://{args.redteam_host}:{args.redteam_port}",
+                    flush=True,
+                )
+            try:
+                await serve_mcp_async(agent, host=args.mcp_host, port=args.mcp_port)
+            finally:
+                if redteam_server is not None and redteam_task is not None:
+                    redteam_server.should_exit = True
+                    try:
+                        await asyncio.wait_for(redteam_task, timeout=5.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                        redteam_task.cancel()
             return 0
 
         sys.stderr.write(f"unknown cmd: {args.cmd}\n")
@@ -461,6 +545,22 @@ def main() -> int:
     parser.add_argument("--initial-balance-sats", type=int, default=0,
                         help="synthetic per-agent wallet balance the LLM sees via "
                              "wallet_balance; 0 disables (legacy always-zero mock)")
+    parser.add_argument("--peer-log-url", action="append", metavar="URL",
+                        default=[],
+                        help="repeatable; full base URL (http(s)://host:port) of a peer's "
+                             "redteam.integration.server. The agent pulls community-log "
+                             "entries from each URL in a background asyncio task. "
+                             "Empty list disables the pull loop entirely.")
+    parser.add_argument("--pull-interval-s", type=float, default=5.0,
+                        help="seconds between pull-loop iterations per peer (default 5.0)")
+    parser.add_argument("--pull-batch", type=int, default=100,
+                        help="max entries per pull request (default 100)")
+    parser.add_argument("--community-log-path", default=None,
+                        help="path to this agent's signed community-log file "
+                             "(default <save_dir>/community.log)")
+    parser.add_argument("--peer-log-dir", default=None,
+                        help="path to this agent's peer-log cache directory "
+                             "(default <save_dir>/peer_logs)")
 
     # Per-agent zero-shot config.
     parser.add_argument("--publish-overlay", action="append", metavar="PATH",
@@ -507,6 +607,12 @@ def main() -> int:
                        help="bind host for the MCP server (use 0.0.0.0 on a VPS)")
     mcp_p.add_argument("--mcp-port", type=int, default=8765,
                        help="bind port for the MCP server")
+    mcp_p.add_argument("--redteam-host", default="127.0.0.1",
+                       help="bind host for the redteam FastAPI server hosting our "
+                            "community signed log (peers' pull loops fetch from here)")
+    mcp_p.add_argument("--redteam-port", type=int, default=0,
+                       help="bind port for the redteam FastAPI server; 0 disables "
+                            "(then peers can't pull this agent's log)")
     run_p = sub.add_parser(
         "run",
         help="(offline-test) execute one query through the internal LLM tool-call loop",

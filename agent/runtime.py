@@ -52,6 +52,16 @@ class AgentConfig:
     # /var/lib/delftclaw/<scenario>/<agent>/{community.log, peer_logs/}.
     community_log_path: Optional[Path] = None
     peer_log_dir: Optional[Path] = None
+    # Phase 6: redteam-server (FastAPI) URLs this agent should pull
+    # community-log entries from. Each entry is a full base URL like
+    # ``http://127.0.0.1:28765``. Empty list disables the pull loop —
+    # ``OpenClawAgent`` will not start the background task, the test
+    # suite default. ``scenario_boot`` populates this cross-wise.
+    peer_log_urls: tuple[str, ...] = ()
+    # Pull-loop cadence + batch size. Defaults to the same values the
+    # redteam pull-sync demo uses, so behaviour is consistent.
+    pull_interval_s: float = 5.0
+    pull_batch: int = 100
 
 
 class OpenClawAgent:
@@ -101,6 +111,14 @@ class OpenClawAgent:
         self._community_log = None  # type: ignore[assignment]
         self._peer_log = None  # type: ignore[assignment]
 
+        # Phase 6: pull-loop background task + transport handle (httpx
+        # AsyncClient). Both populated by ``start()`` when
+        # ``config.peer_log_urls`` is non-empty; ``stop()`` cancels the
+        # task and aclose()-s the client.
+        self._pull_task: Optional[asyncio.Task] = None
+        self._pull_stop_event: Optional[asyncio.Event] = None
+        self._pull_transport_handle: Any = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -145,7 +163,76 @@ class OpenClawAgent:
         )
         self._registry = OverlayRegistry(self._ipv8, self.llm)
 
+        # Phase 6: start the pull loop iff peer URLs were declared.
+        # Empty list (the default) → no background task; pure read-only
+        # community state from the local log only.
+        if self.config.peer_log_urls:
+            await self._start_pull_loop()
+
+    async def _start_pull_loop(self) -> None:
+        """Spawn the redteam pull-loop task pointed at ``config.peer_log_urls``.
+
+        Lazy imports keep ``import agent.runtime`` cheap on tests that
+        don't exercise the pull layer. Uses the agent's own ``peer_log``
+        (which is built from the same directory ``redteam.integration.server``
+        uses if the operator runs it for outbound serving — fine to
+        share via filesystem, each ``PeerLog`` instance owns its own
+        in-process lock and ``accept_entry`` is idempotent on entry_hash).
+        """
+        import httpx
+        from redteam.integration.peer_transport import HttpPeerTransport
+        from redteam.integration.pull_loop import run_pull_loop
+
+        self._pull_stop_event = asyncio.Event()
+        self._pull_transport_handle = httpx.AsyncClient(timeout=10.0)
+        transport = HttpPeerTransport(self._pull_transport_handle)
+        # Touch ``peer_log`` so its dir exists before the loop runs.
+        _ = self.peer_log
+        self._pull_task = asyncio.create_task(
+            run_pull_loop(
+                transport=transport,
+                peer_urls=list(self.config.peer_log_urls),
+                peer_log=self.peer_log,
+                interval=self.config.pull_interval_s,
+                batch=self.config.pull_batch,
+                stop_event=self._pull_stop_event,
+            ),
+            name=f"pull_loop:{self.pubkey_hex[:16]}",
+        )
+
+    async def _stop_pull_loop(self) -> None:
+        """Cancel the pull loop + close the httpx transport.
+
+        Signals via ``stop_event`` (drives a clean exit within one
+        ``pull_interval_s``); falls back to ``task.cancel()`` if the loop
+        doesn't honour the signal within 5s. Always closes the
+        httpx.AsyncClient.
+        """
+        if self._pull_task is not None and self._pull_stop_event is not None:
+            self._pull_stop_event.set()
+            try:
+                await asyncio.wait_for(self._pull_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self._pull_task.cancel()
+                try:
+                    await self._pull_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._pull_task = None
+        self._pull_stop_event = None
+        if self._pull_transport_handle is not None:
+            try:
+                await self._pull_transport_handle.aclose()
+            except Exception:
+                pass
+            self._pull_transport_handle = None
+
     async def stop(self) -> None:
+        # Stop the pull loop FIRST so we're not pulling after the
+        # signed-log writes have stopped.
+        await self._stop_pull_loop()
         if self._ipv8 is not None:
             await self._ipv8.stop()
             self._ipv8 = None
