@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from identity.openclaw_identity import OpenClawIdentity
+from identity.agent_identity import AgentIdentity
+from identity.seed import KeyfileSeedSource
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 
 # This import will fail in the red phase — PeerLog does not exist yet.
@@ -45,9 +46,10 @@ def _make_identity(
     tmp_path: Path,
     name: str = "test_key.pem",
     network: str = "MAINNET",
-) -> OpenClawIdentity:
-    """Create a fresh OpenClawIdentity backed by a key file in tmp_path."""
-    return OpenClawIdentity(network=network, key_path=str(tmp_path / name))
+) -> AgentIdentity:
+    """Create a fresh AgentIdentity backed by a seed file in tmp_path."""
+    seed = KeyfileSeedSource(str(tmp_path / name)).load()
+    return AgentIdentity.from_seed(seed, network=network)
 
 
 def _canonical(payload: dict) -> bytes:
@@ -59,7 +61,7 @@ def _stable_hash_hex(payload: dict) -> str:
 
 
 def _make_subject_claim(
-    identity: OpenClawIdentity,
+    identity: AgentIdentity,
     action: str,
     details: dict,
     *,
@@ -70,18 +72,18 @@ def _make_subject_claim(
     claim = {
         "kind": "claim",
         "version": 1,
-        "subject_id": str(identity.identity_hash),
+        "subject_id": str(identity.network_hash),
         "action": action,
         "details_hash": _stable_hash_hex(details),
         "claim_timestamp": claim_timestamp,
         "nonce": nonce_hex,
     }
-    sig = identity.sign(_canonical(claim))
-    return claim, identity.public_key, sig
+    sig = identity.ipv8.sign(_canonical(claim))
+    return claim, identity.ipv8.raw_pubkey, sig
 
 
 def _recompute_reporter_sig_and_hash(
-    entry: dict, identity: OpenClawIdentity
+    entry: dict, identity: AgentIdentity
 ) -> dict:
     """Re-sign + re-hash so the entry's chain hash is internally consistent.
 
@@ -91,7 +93,7 @@ def _recompute_reporter_sig_and_hash(
     payload = dict(entry)
     payload.pop("entry_hash", None)
     payload.pop("signature", None)
-    sig = identity.sign(_canonical(payload)).hex()
+    sig = identity.ipv8.sign(_canonical(payload)).hex()
     entry["signature"] = sig
     hashable = dict(entry)
     hashable.pop("entry_hash", None)
@@ -107,14 +109,14 @@ def _foreign_self_entry(
     network: str = "MAINNET",
     action: str = "foreign_action",
     details: dict | None = None,
-) -> tuple[OpenClawIdentity, dict]:
+) -> tuple[AgentIdentity, dict]:
     """Create a foreign identity + log, append one self entry, return entry dict."""
     identity = _make_identity(tmp_path, name, network=network)
     log_path = str(tmp_path / f"{name}.log")
     wrapper = SignedAppendOnlyLog(identity, log_path)
     wrapper.append_event(
-        reporter_id=str(identity.identity_hash),
-        subject_id=str(identity.identity_hash),
+        reporter_id=str(identity.network_hash),
+        subject_id=str(identity.network_hash),
         action=action,
         details=details if details is not None else {"k": "v"},
     )
@@ -132,7 +134,7 @@ def _foreign_witness_entry(
     action: str = "observed_action",
     details: dict | None = None,
     nonce_hex: str = "55" * 16,
-) -> tuple[OpenClawIdentity, OpenClawIdentity, dict]:
+) -> tuple[AgentIdentity, AgentIdentity, dict]:
     """Create two foreign identities, append a witness entry, return entry dict."""
     subject = _make_identity(tmp_path, subject_name, network=network)
     reporter = _make_identity(tmp_path, reporter_name, network=network)
@@ -145,8 +147,8 @@ def _foreign_witness_entry(
     log_path = str(tmp_path / f"{reporter_name}.log")
     wrapper = SignedAppendOnlyLog(reporter, log_path)
     wrapper.append_witness_event(
-        reporter_id=str(reporter.identity_hash),
-        subject_id=str(subject.identity_hash),
+        reporter_id=str(reporter.network_hash),
+        subject_id=str(subject.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -184,14 +186,14 @@ def test_accept_valid_self_entry_from_other_identity_stores(tmp_path: Path) -> N
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, source_id, errors, duplicate = peer_log.accept_entry(entry)
 
     assert stored is True, errors
     assert errors == []
     assert duplicate is False
-    assert source_id == str(foreign_identity.identity_hash)
+    assert source_id == str(foreign_identity.network_hash)
 
 
 def test_accept_valid_witness_entry_from_other_identity_stores(tmp_path: Path) -> None:
@@ -203,14 +205,14 @@ def test_accept_valid_witness_entry_from_other_identity_stores(tmp_path: Path) -
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, source_id, errors, duplicate = peer_log.accept_entry(entry)
 
     assert stored is True, errors
     assert errors == []
     assert duplicate is False
-    assert source_id == str(reporter.identity_hash)
+    assert source_id == str(reporter.network_hash)
 
 
 def test_accept_writes_one_jsonl_line_per_entry(tmp_path: Path) -> None:
@@ -222,7 +224,7 @@ def test_accept_writes_one_jsonl_line_per_entry(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, source_id, _errors, _dup = peer_log.accept_entry(entry)
     assert stored is True
@@ -249,11 +251,11 @@ def test_accept_creates_per_source_file_named_by_reporter_id(tmp_path: Path) -> 
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     peer_log.accept_entry(entry)
 
-    expected = peer_log_dir / f"{foreign_identity.identity_hash}.jsonl"
+    expected = peer_log_dir / f"{foreign_identity.network_hash}.jsonl"
     assert expected.exists()
 
 
@@ -265,11 +267,11 @@ def test_accept_returns_correct_source_id(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(tmp_path / "peer_logs"),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     _stored, source_id, _errors, _dup = peer_log.accept_entry(entry)
     assert source_id == entry["reporter_id"]
-    assert source_id == str(foreign_identity.identity_hash)
+    assert source_id == str(foreign_identity.network_hash)
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +289,7 @@ def test_accept_rejects_malformed_entry_missing_pubkey(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, source_id, errors, duplicate = peer_log.accept_entry(entry)
 
@@ -310,7 +312,7 @@ def test_accept_rejects_bad_signature(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -332,7 +334,7 @@ def test_accept_rejects_wrong_identity_binding(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -352,7 +354,7 @@ def test_accept_rejects_unsupported_version(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -371,7 +373,7 @@ def test_accept_rejects_cross_network_entry(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -388,8 +390,8 @@ def test_accept_rejects_same_identity_submission(tmp_path: Path) -> None:
     own_log = str(tmp_path / "own.log")
     wrapper = SignedAppendOnlyLog(own, own_log)
     wrapper.append_event(
-        reporter_id=str(own.identity_hash),
-        subject_id=str(own.identity_hash),
+        reporter_id=str(own.network_hash),
+        subject_id=str(own.network_hash),
         action="self_action",
         details={"a": 1},
     )
@@ -399,7 +401,7 @@ def test_accept_rejects_same_identity_submission(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -435,7 +437,7 @@ def test_accept_rejects_post_signing_tamper_axes(
         # Replace reporter_pubkey with another valid 32-byte pubkey. Reporter
         # signature now fails (was signed by original key).
         other = _make_identity(tmp_path, "tamper_other.pem")
-        entry["reporter_pubkey"] = other.public_key.hex()
+        entry["reporter_pubkey"] = other.ipv8.raw_pubkey.hex()
     elif tamper == "swap_action":
         entry["action"] = "evil_action"
     elif tamper == "swap_details":
@@ -455,7 +457,7 @@ def test_accept_rejects_post_signing_tamper_axes(
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -482,7 +484,7 @@ def test_accept_rejects_witness_with_invalid_subject_signature(tmp_path: Path) -
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -502,7 +504,7 @@ def test_accept_rejects_witness_with_subject_id_mismatch(tmp_path: Path) -> None
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -525,7 +527,7 @@ def test_accept_rejects_self_entry_smuggling_subject_fields(tmp_path: Path) -> N
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _source_id, errors, _dup = peer_log.accept_entry(entry)
 
@@ -548,7 +550,7 @@ def test_accept_idempotent_on_duplicate_returns_duplicate_true(tmp_path: Path) -
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
 
     # First call — stored.
@@ -581,13 +583,13 @@ def test_accept_two_distinct_sources_creates_two_files(tmp_path: Path) -> None:
     id1, entry1 = _foreign_self_entry(tmp_path, name="src1.pem")
     id2, entry2 = _foreign_self_entry(tmp_path, name="src2.pem", action="other")
 
-    assert id1.identity_hash != id2.identity_hash
+    assert id1.network_hash != id2.network_hash
 
     peer_log_dir = tmp_path / "peer_logs"
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     s1, sid1, e1, d1 = peer_log.accept_entry(entry1)
     s2, sid2, e2, d2 = peer_log.accept_entry(entry2)
@@ -612,8 +614,8 @@ def test_read_entries_for_returns_in_insertion_order(tmp_path: Path) -> None:
     wrapper = SignedAppendOnlyLog(foreign, log_path)
     for index in range(3):
         wrapper.append_event(
-            reporter_id=str(foreign.identity_hash),
-            subject_id=str(foreign.identity_hash),
+            reporter_id=str(foreign.network_hash),
+            subject_id=str(foreign.network_hash),
             action=f"action_{index}",
             details={"i": index},
         )
@@ -623,13 +625,13 @@ def test_read_entries_for_returns_in_insertion_order(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(tmp_path / "peer_logs"),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     for entry in entries:
         stored, _sid, errs, _dup = peer_log.accept_entry(entry)
         assert stored is True, errs
 
-    out = peer_log.read_entries_for(str(foreign.identity_hash))
+    out = peer_log.read_entries_for(str(foreign.network_hash))
     assert out == entries
 
 
@@ -648,13 +650,13 @@ def test_list_sources_returns_all_known(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(tmp_path / "peer_logs"),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     peer_log.accept_entry(entry1)
     peer_log.accept_entry(entry2)
 
     sources = set(peer_log.list_sources())
-    assert sources == {str(id1.identity_hash), str(id2.identity_hash)}
+    assert sources == {str(id1.network_hash), str(id2.network_hash)}
 
 
 # ---------------------------------------------------------------------------
@@ -675,14 +677,14 @@ def test_concurrent_accept_two_threads_same_source_both_succeed(tmp_path: Path) 
     wrapper = SignedAppendOnlyLog(foreign, log_path)
 
     wrapper.append_event(
-        reporter_id=str(foreign.identity_hash),
-        subject_id=str(foreign.identity_hash),
+        reporter_id=str(foreign.network_hash),
+        subject_id=str(foreign.network_hash),
         action="a1",
         details={"i": 1},
     )
     wrapper.append_event(
-        reporter_id=str(foreign.identity_hash),
-        subject_id=str(foreign.identity_hash),
+        reporter_id=str(foreign.network_hash),
+        subject_id=str(foreign.network_hash),
         action="a2",
         details={"i": 2},
     )
@@ -693,7 +695,7 @@ def test_concurrent_accept_two_threads_same_source_both_succeed(tmp_path: Path) 
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
 
     barrier = threading.Barrier(2)
@@ -726,7 +728,7 @@ def test_concurrent_accept_two_threads_same_source_both_succeed(tmp_path: Path) 
     assert stored1 is True, errs1
     assert dup0 is False and dup1 is False
 
-    source_file = peer_log_dir / f"{foreign.identity_hash}.jsonl"
+    source_file = peer_log_dir / f"{foreign.network_hash}.jsonl"
     text = source_file.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line]
     assert len(lines) == 2
@@ -754,7 +756,7 @@ def test_accept_rejects_unknown_kind(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -773,7 +775,7 @@ def test_accept_rejects_missing_entry_hash(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -792,7 +794,7 @@ def test_accept_rejects_missing_version(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -817,7 +819,7 @@ def test_peer_log_dir_created_if_missing(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     assert peer_log_dir.exists() and peer_log_dir.is_dir()
 
@@ -852,7 +854,7 @@ def test_accept_rejects_witness_with_subject_pubkey_length_mismatch(
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -874,7 +876,7 @@ def test_accept_rejects_witness_with_subject_signature_length_mismatch(
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -894,7 +896,7 @@ def test_accept_rejects_witness_with_inconsistent_action(tmp_path: Path) -> None
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -916,7 +918,7 @@ def test_accept_rejects_witness_with_inconsistent_details_hash(
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -944,8 +946,8 @@ def test_accept_witness_where_subject_equals_receiver_stored(tmp_path: Path) -> 
     log_path = str(tmp_path / "fr.log")
     wrapper = SignedAppendOnlyLog(reporter, log_path)
     wrapper.append_witness_event(
-        reporter_id=str(reporter.identity_hash),
-        subject_id=str(own.identity_hash),
+        reporter_id=str(reporter.network_hash),
+        subject_id=str(own.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -958,12 +960,12 @@ def test_accept_witness_where_subject_equals_receiver_stored(tmp_path: Path) -> 
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, source_id, errors, _dup = peer_log.accept_entry(entry)
     assert stored is True, errors
-    assert source_id == str(reporter.identity_hash)
-    assert (peer_log_dir / f"{reporter.identity_hash}.jsonl").exists()
+    assert source_id == str(reporter.network_hash)
+    assert (peer_log_dir / f"{reporter.network_hash}.jsonl").exists()
 
 
 def test_accept_rejects_uppercase_reporter_id(tmp_path: Path) -> None:
@@ -977,7 +979,7 @@ def test_accept_rejects_uppercase_reporter_id(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     stored, _sid, errors, _dup = peer_log.accept_entry(entry)
 
@@ -1000,7 +1002,7 @@ def test_accept_handles_corrupt_jsonl_line_in_existing_file(tmp_path: Path) -> N
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
 
     # Pre-write a corrupt line under the source's filename. The dir now
@@ -1026,7 +1028,7 @@ def test_list_sources_ignores_non_jsonl_files(tmp_path: Path) -> None:
     peer_log = PeerLog(
         str(peer_log_dir),
         network="MAINNET",
-        own_id=str(own.identity_hash),
+        own_id=str(own.network_hash),
     )
     # Pre-write a .txt file in the dir.
     (peer_log_dir / "stray.txt").write_text("not a peer file", encoding="utf-8")
@@ -1038,4 +1040,4 @@ def test_list_sources_ignores_non_jsonl_files(tmp_path: Path) -> None:
 
     sources = peer_log.list_sources()
     assert "stray" not in sources
-    assert str(foreign_identity.identity_hash) in sources
+    assert str(foreign_identity.network_hash) in sources

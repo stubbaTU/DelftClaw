@@ -29,8 +29,8 @@ def handle_agentic_request(text: str, client: DelftClawClient | None = None) -> 
     Translate common user-facing Claw Network requests into DelftClaw tool calls.
 
     This is intentionally small and deterministic. OpenClaw should prefer the
-    tool manifest and protocol.md, but this adapter gives agents a simple bridge
-    when they receive natural language over Telegram.
+    MCP tool manifest and docs/agent_intents.md, but this adapter gives agents
+    a simple bridge when they receive natural language over Telegram.
     """
 
     client = client or DelftClawClient()

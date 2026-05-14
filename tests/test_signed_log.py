@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from identity.openclaw_identity import OpenClawIdentity
+from identity.agent_identity import AgentIdentity
+from identity.seed import KeyfileSeedSource
 from security.subq2_accountability.append_log import AppendOnlyLog
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 
@@ -27,9 +28,10 @@ from redteam.primitives.signed_log import SignedAppendOnlyLog
 # ---------------------------------------------------------------------------
 
 
-def _make_identity(tmp_path: Path, name: str = "test_key.pem") -> OpenClawIdentity:
-    """Create a fresh OpenClawIdentity backed by a key file in tmp_path."""
-    return OpenClawIdentity(network="MAINNET", key_path=str(tmp_path / name))
+def _make_identity(tmp_path: Path, name: str = "test_key.pem") -> AgentIdentity:
+    """Create a fresh AgentIdentity backed by a seed file in tmp_path."""
+    seed = KeyfileSeedSource(str(tmp_path / name)).load()
+    return AgentIdentity.from_seed(seed, network="MAINNET")
 
 
 def _canonical(payload: dict) -> bytes:
@@ -42,7 +44,7 @@ def _stable_hash_hex(payload: dict) -> str:
 
 
 def _make_subject_claim(
-    identity: OpenClawIdentity,
+    identity: AgentIdentity,
     action: str,
     details: dict,
     *,
@@ -58,18 +60,18 @@ def _make_subject_claim(
     claim = {
         "kind": "claim",
         "version": 1,
-        "subject_id": str(identity.identity_hash),
+        "subject_id": str(identity.network_hash),
         "action": action,
         "details_hash": _stable_hash_hex(details),
         "claim_timestamp": claim_timestamp,
         "nonce": nonce_hex,
     }
-    sig = identity.sign(_canonical(claim))
-    return claim, identity.public_key, sig
+    sig = identity.ipv8.sign(_canonical(claim))
+    return claim, identity.ipv8.raw_pubkey, sig
 
 
 def _recompute_reporter_sig_and_hash(
-    entry: dict, identity: OpenClawIdentity
+    entry: dict, identity: AgentIdentity
 ) -> dict:
     """Re-sign and re-hash an entry so the chain stays internally consistent.
 
@@ -80,7 +82,7 @@ def _recompute_reporter_sig_and_hash(
     payload = dict(entry)
     payload.pop("entry_hash", None)
     payload.pop("signature", None)
-    sig = identity.sign(_canonical(payload)).hex()
+    sig = identity.ipv8.sign(_canonical(payload)).hex()
     entry["signature"] = sig
     hashable = dict(entry)
     hashable.pop("entry_hash", None)
@@ -93,9 +95,9 @@ def _recompute_reporter_sig_and_hash(
     return entry
 
 
-def _append_three(wrapper: SignedAppendOnlyLog, identity: OpenClawIdentity) -> None:
+def _append_three(wrapper: SignedAppendOnlyLog, identity: AgentIdentity) -> None:
     """Write three deterministic entries through the signed wrapper."""
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     for index in range(3):
         wrapper.append_event(
             reporter_id=reporter,
@@ -193,8 +195,8 @@ def test_witness_entry_round_trip(tmp_path: Path) -> None:
     )
 
     entry = wrapper.append_witness_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=subject_pubkey,
         subject_claim=claim,
         subject_signature=subject_sig,
@@ -203,8 +205,8 @@ def test_witness_entry_round_trip(tmp_path: Path) -> None:
     )
 
     assert entry["kind"] == "witness"
-    assert entry["reporter_id"] == str(identity_b.identity_hash)
-    assert entry["subject_id"] == str(identity_a.identity_hash)
+    assert entry["reporter_id"] == str(identity_b.network_hash)
+    assert entry["subject_id"] == str(identity_a.network_hash)
     assert entry["action"] == "observed_action"
     assert entry["details"] == details
     assert entry["details_hash"] == _stable_hash_hex(details)
@@ -212,7 +214,7 @@ def test_witness_entry_round_trip(tmp_path: Path) -> None:
     assert entry["subject_signature"] == subject_sig.hex()
     assert entry["subject_claim"] == claim
     # Reporter signing key is B's, not A's.
-    assert entry["reporter_pubkey"] == identity_b.public_key.hex()
+    assert entry["reporter_pubkey"] == identity_b.ipv8.raw_pubkey.hex()
 
     ok, errors = wrapper.verify_integrity()
     assert ok is True, errors
@@ -228,8 +230,8 @@ def test_mixed_self_and_witness_chain(tmp_path: Path) -> None:
 
     # B writes one self entry first.
     wrapper.append_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_b.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_b.network_hash),
         action="b_self_action",
         details={"step": 1},
     )
@@ -240,8 +242,8 @@ def test_mixed_self_and_witness_chain(tmp_path: Path) -> None:
         identity_a, "a_action", details, nonce_hex="11" * 16
     )
     wrapper.append_witness_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -251,8 +253,8 @@ def test_mixed_self_and_witness_chain(tmp_path: Path) -> None:
 
     # B writes another self entry after.
     wrapper.append_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_b.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_b.network_hash),
         action="b_self_action_2",
         details={"step": 3},
     )
@@ -284,8 +286,8 @@ def test_one_subject_claim_carried_by_two_witnesses(tmp_path: Path) -> None:
     log_b = str(tmp_path / "log_b.jsonl")
     wrapper_b = SignedAppendOnlyLog(identity_b, log_b)
     wrapper_b.append_witness_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -296,8 +298,8 @@ def test_one_subject_claim_carried_by_two_witnesses(tmp_path: Path) -> None:
     log_c = str(tmp_path / "log_c.jsonl")
     wrapper_c = SignedAppendOnlyLog(identity_c, log_c)
     wrapper_c.append_witness_event(
-        reporter_id=str(identity_c.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_c.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -313,8 +315,8 @@ def test_one_subject_claim_carried_by_two_witnesses(tmp_path: Path) -> None:
     # Each entry's reporter_id is the *witness's* id, not A's.
     entries_b = wrapper_b.read_entries()
     entries_c = wrapper_c.read_entries()
-    assert entries_b[0]["reporter_id"] == str(identity_b.identity_hash)
-    assert entries_c[0]["reporter_id"] == str(identity_c.identity_hash)
+    assert entries_b[0]["reporter_id"] == str(identity_b.network_hash)
+    assert entries_c[0]["reporter_id"] == str(identity_c.network_hash)
     # But both bind the same subject claim verbatim.
     assert entries_b[0]["subject_claim"] == entries_c[0]["subject_claim"]
     assert entries_b[0]["subject_signature"] == entries_c[0]["subject_signature"]
@@ -326,8 +328,8 @@ def test_one_subject_claim_carried_by_two_witnesses(tmp_path: Path) -> None:
 
 
 def _witness_kwargs(
-    identity_a: OpenClawIdentity,
-    identity_b: OpenClawIdentity,
+    identity_a: AgentIdentity,
+    identity_b: AgentIdentity,
     *,
     action: str = "act",
     details: dict | None = None,
@@ -339,8 +341,8 @@ def _witness_kwargs(
         identity_a, action, details, nonce_hex=nonce_hex
     )
     return {
-        "reporter_id": str(identity_b.identity_hash),
-        "subject_id": str(identity_a.identity_hash),
+        "reporter_id": str(identity_b.network_hash),
+        "subject_id": str(identity_a.network_hash),
         "subject_pubkey": pk,
         "subject_claim": claim,
         "subject_signature": sig,
@@ -501,7 +503,7 @@ def test_witness_rejects_short_nonce(tmp_path: Path) -> None:
 
 def _setup_witness_log(
     tmp_path: Path, *, name: str = "log.jsonl"
-) -> tuple[OpenClawIdentity, OpenClawIdentity, SignedAppendOnlyLog, str]:
+) -> tuple[AgentIdentity, AgentIdentity, SignedAppendOnlyLog, str]:
     identity_a = _make_identity(tmp_path, "key_a.pem")
     identity_b = _make_identity(tmp_path, "key_b.pem")
     log_path = str(tmp_path / name)
@@ -512,8 +514,8 @@ def _setup_witness_log(
         identity_a, "obs", details, nonce_hex="44" * 16
     )
     wrapper.append_witness_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -527,7 +529,7 @@ def _mutate_and_repair(
     log_path: str,
     entry_index: int,
     mutation,
-    reporter_identity: OpenClawIdentity,
+    reporter_identity: AgentIdentity,
 ) -> None:
     """Apply ``mutation`` then recompute reporter sig + entry_hash."""
 
@@ -559,7 +561,7 @@ def test_witness_tamper_subject_pubkey_swap_binding_fires(tmp_path: Path) -> Non
 
     _mutate_and_repair(
         log_path, 1,
-        lambda e: e.update(subject_pubkey=other.public_key.hex()),
+        lambda e: e.update(subject_pubkey=other.ipv8.raw_pubkey.hex()),
         identity_b,
     )
 
@@ -574,12 +576,12 @@ def test_witness_tamper_consistent_pubkey_and_id_swap(tmp_path: Path) -> None:
     other = _make_identity(tmp_path, "other.pem")
 
     def _swap(entry: dict) -> None:
-        entry["subject_pubkey"] = other.public_key.hex()
-        entry["subject_id"] = str(other.identity_hash)
+        entry["subject_pubkey"] = other.ipv8.raw_pubkey.hex()
+        entry["subject_id"] = str(other.network_hash)
         # Also patch the claim's subject_id so claim consistency stays
         # internally aligned — this isolates the *signature* failure.
         entry["subject_claim"] = dict(entry["subject_claim"])
-        entry["subject_claim"]["subject_id"] = str(other.identity_hash)
+        entry["subject_claim"]["subject_id"] = str(other.network_hash)
 
     _mutate_and_repair(log_path, 1, _swap, identity_b)
 
@@ -817,8 +819,8 @@ def test_cli_verifies_clean_witness_round_trip(tmp_path: Path) -> None:
 
     # Mixed chain: self, witness, self.
     wrapper.append_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_b.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_b.network_hash),
         action="b1",
         details={"i": 0},
     )
@@ -827,8 +829,8 @@ def test_cli_verifies_clean_witness_round_trip(tmp_path: Path) -> None:
         identity_a, "wact", details, nonce_hex="55" * 16
     )
     wrapper.append_witness_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_a.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_a.network_hash),
         subject_pubkey=pk,
         subject_claim=claim,
         subject_signature=sig,
@@ -836,8 +838,8 @@ def test_cli_verifies_clean_witness_round_trip(tmp_path: Path) -> None:
         details=details,
     )
     wrapper.append_event(
-        reporter_id=str(identity_b.identity_hash),
-        subject_id=str(identity_b.identity_hash),
+        reporter_id=str(identity_b.network_hash),
+        subject_id=str(identity_b.network_hash),
         action="b2",
         details={"i": 2},
     )
@@ -864,7 +866,7 @@ def test_cli_detects_witness_pubkey_swap_binding(tmp_path: Path) -> None:
     other = _make_identity(tmp_path, "other.pem")
     _mutate_and_repair(
         log_path, 1,
-        lambda e: e.update(subject_pubkey=other.public_key.hex()),
+        lambda e: e.update(subject_pubkey=other.ipv8.raw_pubkey.hex()),
         identity_b,
     )
     result = _run_cli_verify(log_path)
@@ -953,10 +955,10 @@ def test_cli_detects_witness_consistent_pubkey_and_id_swap(tmp_path: Path) -> No
     other = _make_identity(tmp_path, "other.pem")
 
     def _swap(entry: dict) -> None:
-        entry["subject_pubkey"] = other.public_key.hex()
-        entry["subject_id"] = str(other.identity_hash)
+        entry["subject_pubkey"] = other.ipv8.raw_pubkey.hex()
+        entry["subject_id"] = str(other.network_hash)
         entry["subject_claim"] = dict(entry["subject_claim"])
-        entry["subject_claim"]["subject_id"] = str(other.identity_hash)
+        entry["subject_claim"]["subject_id"] = str(other.network_hash)
 
     _mutate_and_repair(log_path, 1, _swap, identity_b)
 
@@ -1100,13 +1102,13 @@ def test_pubkey_swap_defeated(tmp_path: Path) -> None:
     _append_three(wrapper, identity_a)
 
     identity_b = _make_identity(tmp_path, "key_b.pem")
-    assert identity_a.public_key != identity_b.public_key
+    assert identity_a.ipv8.raw_pubkey != identity_b.ipv8.raw_pubkey
 
     lines = _load_lines(log_path)
     entry_indices = _entry_line_indices(lines)
     first_entry_line = entry_indices[0]
     entry = json.loads(lines[first_entry_line])
-    entry["reporter_pubkey"] = identity_b.public_key.hex()
+    entry["reporter_pubkey"] = identity_b.ipv8.raw_pubkey.hex()
     lines[first_entry_line] = json.dumps(entry) + "\n"
     _dump_lines(log_path, lines)
 
@@ -1145,7 +1147,7 @@ def test_identity_used_correctly(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity_a, log_path)
 
-    reporter = str(identity_a.identity_hash)
+    reporter = str(identity_a.network_hash)
     for index in range(2):
         wrapper.append_event(
             reporter_id=reporter,
@@ -1156,7 +1158,7 @@ def test_identity_used_correctly(tmp_path: Path) -> None:
 
     entries = wrapper.read_entries()
     assert len(entries) == 2
-    expected_pubkey_hex = identity_a.public_key.hex()
+    expected_pubkey_hex = identity_a.ipv8.raw_pubkey.hex()
     for entry in entries:
         assert entry["reporter_pubkey"] == expected_pubkey_hex
 
@@ -1224,7 +1226,7 @@ def test_real_signature_for_different_message(tmp_path: Path) -> None:
 
     # Sign different bytes with the producer's real key — same length, valid hex,
     # valid Ed25519 signature, just over the wrong message.
-    forged_sig = identity.sign(b"different message").hex()
+    forged_sig = identity.ipv8.sign(b"different message").hex()
 
     _mutate_entry(log_path, 1, lambda e: e.update(signature=forged_sig))
 
@@ -1328,8 +1330,8 @@ def test_inserted_fabricated_entry_detected(tmp_path: Path) -> None:
     fabricated = {
         "version": 2,
         "timestamp": "2025-01-01T00:00:00+00:00",
-        "reporter_id": str(identity_b.identity_hash),
-        "subject_id": str(identity_b.identity_hash),
+        "reporter_id": str(identity_b.network_hash),
+        "subject_id": str(identity_b.network_hash),
         "action": "fabricated",
         "severity": 0,
         "details": {"forged": True},
@@ -1341,12 +1343,12 @@ def test_inserted_fabricated_entry_detected(tmp_path: Path) -> None:
             json.dumps({}, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
         "previous_hash": second_entry["entry_hash"],
-        "reporter_pubkey": identity_b.public_key.hex(),
+        "reporter_pubkey": identity_b.ipv8.raw_pubkey.hex(),
     }
     canonical = json.dumps(
         fabricated, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    fabricated["signature"] = identity_b.sign(canonical).hex()
+    fabricated["signature"] = identity_b.ipv8.sign(canonical).hex()
     hashable = dict(fabricated)
     hashable.pop("entry_hash", None)
     hashable.pop("signature", None)
@@ -1486,8 +1488,8 @@ def test_pubkey_id_consistent_swap_detected(tmp_path: Path) -> None:
     identity_b = _make_identity(tmp_path, "key_b.pem")
 
     def _swap(entry: dict) -> None:
-        entry["reporter_pubkey"] = identity_b.public_key.hex()
-        entry["reporter_id"] = str(identity_b.identity_hash)
+        entry["reporter_pubkey"] = identity_b.ipv8.raw_pubkey.hex()
+        entry["reporter_id"] = str(identity_b.network_hash)
 
     _mutate_entry(log_path, 1, _swap)
 
@@ -1511,7 +1513,7 @@ def test_reopening_existing_log_continues_chain(tmp_path: Path) -> None:
     del wrapper_a
 
     wrapper_b = SignedAppendOnlyLog(identity, log_path)
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     for index in range(2):
         wrapper_b.append_event(
             reporter_id=reporter,
@@ -1541,7 +1543,7 @@ def test_severity_field_signed(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     wrapper.append_event(
         reporter_id=reporter,
         subject_id=reporter,
@@ -1564,7 +1566,7 @@ def test_evidence_field_signed(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     wrapper.append_event(
         reporter_id=reporter,
         subject_id=reporter,
@@ -1591,7 +1593,7 @@ def test_empty_details_works(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     wrapper.append_event(
         reporter_id=reporter, subject_id=reporter, action="empty", details={}
     )
@@ -1608,7 +1610,7 @@ def test_unicode_details_works(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     payload = {"key": "héllo wörld 🌍", "中文": "测试"}
     wrapper.append_event(
         reporter_id=reporter, subject_id=reporter, action="unicode", details=payload
@@ -1626,7 +1628,7 @@ def test_nested_details_works(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     payload = {"nested": {"deep": [1, 2, 3]}}
     wrapper.append_event(
         reporter_id=reporter, subject_id=reporter, action="nested", details=payload
@@ -1644,7 +1646,7 @@ def test_none_in_details_works(tmp_path: Path) -> None:
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     payload = {"key": None}
     wrapper.append_event(
         reporter_id=reporter, subject_id=reporter, action="nullish", details=payload
@@ -1677,7 +1679,7 @@ def test_constructor_accepts_pathlib_path(tmp_path: Path) -> None:
     identity = _make_identity(tmp_path)
     wrapper = SignedAppendOnlyLog(identity, tmp_path / "log.jsonl")
 
-    reporter = str(identity.identity_hash)
+    reporter = str(identity.network_hash)
     wrapper.append_event(
         reporter_id=reporter,
         subject_id=reporter,
@@ -1709,7 +1711,7 @@ def test_pubkey_swap_on_entry_2_detected(tmp_path: Path) -> None:
     _mutate_entry(
         log_path,
         2,
-        lambda e: e.update(reporter_pubkey=identity_b.public_key.hex()),
+        lambda e: e.update(reporter_pubkey=identity_b.ipv8.raw_pubkey.hex()),
     )
 
     ok, errors = wrapper.verify_integrity()
@@ -1718,14 +1720,14 @@ def test_pubkey_swap_on_entry_2_detected(tmp_path: Path) -> None:
 
 
 def test_reporter_id_assertion_in_identity_test(tmp_path: Path) -> None:
-    """Each entry's reporter_id must equal str(identity.identity_hash)."""
+    """Each entry's reporter_id must equal str(identity.network_hash)."""
     identity = _make_identity(tmp_path)
     log_path = str(tmp_path / "log.jsonl")
     wrapper = SignedAppendOnlyLog(identity, log_path)
 
     _append_three(wrapper, identity)
 
-    expected_id = str(identity.identity_hash)
+    expected_id = str(identity.network_hash)
     entries = wrapper.read_entries()
     assert len(entries) == 3
     for entry in entries:

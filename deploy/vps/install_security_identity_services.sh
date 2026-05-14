@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# Install + enable the colleagues' non-templated gateway + seedbox-audit
+# systemd units.
+#
+# The identity-mcp and security-mcp services are NO LONGER installed here.
+# They have been migrated to the templated form
+# (``delftclaw-identity-mcp@<instance>.service`` and
+# ``delftclaw-security-mcp@<instance>.service``) and are now installed by
+# ``deploy/setup_vps.sh:step_systemd_templates`` alongside the rest of the
+# DelftClaw templated units. To enable a templated instance:
+#
+#   sudo systemctl enable --now delftclaw-identity-mcp@<instance>.service
+#   sudo systemctl enable --now delftclaw-security-mcp@<instance>.service
+#
+# with ``/etc/delftclaw/instances/<instance>.env`` providing NETWORK,
+# IDENTITY_MCP_PORT, IDENTITY_PATH, SECURITY_MCP_PORT, PYTHONPATH, etc.
+
 set -Eeuo pipefail
 
 REPO_DIR="${DELFTCLAW_REPO_DIR:-/root/DelftClaw}"
@@ -10,26 +26,33 @@ fi
 
 cd "$REPO_DIR"
 
-echo "Installing systemd service files"
-cp deploy/systemd/delftclaw-identity-mcp.service.template /etc/systemd/system/delftclaw-identity-mcp.service
-cp deploy/systemd/delftclaw-gateway.service.template /etc/systemd/system/delftclaw-gateway.service
-cp deploy/systemd/delftclaw-security-mcp.service.template /etc/systemd/system/delftclaw-security-mcp.service
+echo "Installing gateway + seedbox-audit systemd unit files (templated DelftClaw MCPs install via setup_vps.sh)"
+if [[ -f deploy/systemd/delftclaw-gateway.service.template ]]; then
+  cp deploy/systemd/delftclaw-gateway.service.template /etc/systemd/system/delftclaw-gateway.service
+fi
+if [[ -f deploy/systemd/delftclaw-seedbox-audit.service.template ]]; then
+  cp deploy/systemd/delftclaw-seedbox-audit.service.template /etc/systemd/system/delftclaw-seedbox-audit.service
+fi
 
 echo "Reloading systemd"
 systemctl daemon-reload
 
-echo "Enabling and starting services"
-systemctl enable --now delftclaw-identity-mcp
-systemctl enable --now delftclaw-gateway
-systemctl enable --now delftclaw-security-mcp
+if [[ -f /etc/systemd/system/delftclaw-gateway.service ]]; then
+  echo "Enabling and starting delftclaw-gateway.service"
+  systemctl enable --now delftclaw-gateway.service
+fi
 
-echo
-echo "Status commands:"
-echo "  systemctl status delftclaw-identity-mcp --no-pager"
-echo "  systemctl status delftclaw-gateway --no-pager"
-echo "  systemctl status delftclaw-security-mcp --no-pager"
-echo
-echo "Logs:"
-echo "  journalctl -u delftclaw-identity-mcp -f"
-echo "  journalctl -u delftclaw-gateway -f"
-echo "  journalctl -u delftclaw-security-mcp -f"
+cat <<EOF
+
+Done. Status / logs:
+
+  systemctl status delftclaw-gateway --no-pager
+  journalctl -u delftclaw-gateway -f
+
+To bring up identity-mcp + security-mcp as templated instances:
+
+  sudo systemctl enable --now delftclaw-identity-mcp@<instance>.service
+  sudo systemctl enable --now delftclaw-security-mcp@<instance>.service
+
+(<instance> picks the env-file at /etc/delftclaw/instances/<instance>.env.)
+EOF

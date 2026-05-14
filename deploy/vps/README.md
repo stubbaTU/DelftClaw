@@ -1,57 +1,72 @@
 # DelftClaw VPS Security + Identity Runbook
 
-This runbook starts the shared identity MCP, the DelftClaw security gateway, and
-the security MCP facade used by OpenClaw.
+This runbook brings up the templated identity + security MCP units for a
+single VPS instance. As of v5.1, identity-mcp and security-mcp are
+**templated** like the rest of the DelftClaw fleet — they run as the
+`delftclaw` system user from `/opt/delftclaw`, read a per-instance env
+file from `/etc/delftclaw/instances/<instance>.env`, and are started
+with `systemctl enable --now delftclaw-{identity,security}-mcp@<instance>`.
 
-## Fresh clone
+The colleagues' non-templated gateway + seedbox-audit units are still
+shipped as `*.service.template` for now; they are independent of the
+two MCPs and stay where they are.
 
-```bash
-cd /root
-rm -rf DelftClaw
-git clone <YOUR_REPO_URL> DelftClaw
-cd /root/DelftClaw
+## Prerequisites
+
+`deploy/setup_vps.sh` has already run on this VPS. That created the
+`delftclaw` user, `/opt/delftclaw` venv, and installed all four
+templated systemd units:
+
 ```
-
-If you need a specific branch:
-
-```bash
-git checkout <BRANCH_NAME>
+delftclaw-mcp@.service
+delftclaw-watchdog@.service
+delftclaw-identity-mcp@.service     # new in v5.1
+delftclaw-security-mcp@.service     # new in v5.1
 ```
 
 ## Bootstrap
 
 ```bash
-bash deploy/vps/bootstrap_security_identity.sh
+sudo bash deploy/vps/bootstrap_security_identity.sh
 ```
 
 What it does:
 
-- creates `.venv`
-- installs `requirements.txt`
-- creates `configs/vuk.local.env` if missing
-- creates the shared identity file at `identity/agent_identity.json`
-- creates `/root/delftclaw_real_experiment`
-- creates canary files for security experiments
-- writes `configs/openclaw_security_identity_mcp_config.json`
+- creates the persistent identity JSON at
+  `/var/lib/delftclaw/identity/agent_identity.json`
+- writes the per-instance env file
+  `/etc/delftclaw/instances/<instance>.env` (consumed by both templated
+  MCP units)
+- prepares the canary experiment workspace under
+  `/var/lib/delftclaw/experiments`
+- writes the OpenClaw MCP-config JSON pointing at the two MCPs at
+  `/opt/delftclaw/configs/openclaw_security_identity_mcp_config.json`
 
-## Run manually
+`<instance>` defaults to `hostname -s`; override with
+`INSTANCE=my-vps sudo bash deploy/vps/bootstrap_security_identity.sh`.
+
+## Start
 
 ```bash
-bash deploy/vps/run_security_identity_stack.sh
+sudo bash deploy/vps/run_security_identity_stack.sh
 ```
 
-What it starts:
+This is a thin `systemctl` wrapper. It enables and starts the two
+templated MCP units for `<instance>` plus the colleagues' optional
+gateway / seedbox-audit units (when their non-templated unit files are
+installed).
+
+Endpoints:
 
 - identity MCP on `http://127.0.0.1:7701/mcp`
-- DelftClaw gateway on `http://127.0.0.1:8765`
 - security MCP on `http://127.0.0.1:7702/mcp`
+- gateway       on `http://127.0.0.1:8765` (when the legacy unit is up)
 
-Logs are written to:
+Tail logs:
 
-```text
-logs/identity_mcp.log
-logs/gateway.log
-logs/security_mcp.log
+```bash
+journalctl -u 'delftclaw-identity-mcp@<instance>' -f
+journalctl -u 'delftclaw-security-mcp@<instance>' -f
 ```
 
 ## Smoke test
@@ -59,9 +74,11 @@ logs/security_mcp.log
 In another SSH session:
 
 ```bash
-cd /root/DelftClaw
 bash deploy/vps/smoke_test_security_identity.sh
 ```
+
+The smoke test reads ports + endpoints from the same per-instance env
+file. Set `INSTANCE=<name>` if it differs from `hostname -s`.
 
 What it checks:
 
@@ -69,57 +86,33 @@ What it checks:
 - identity MCP health
 - security MCP health
 - identity tool call
-- seedbox registration
-- file indexing
-- file listing
-- gateway metrics
+- identity ↔ security agent-id consistency
+- seedbox registration / file indexing / listing / metrics
 
 ## OpenClaw MCP config
 
-Use this generated file in OpenClaw:
+`configs/openclaw_security_identity_mcp_config.json` registers:
 
-```text
-configs/openclaw_security_identity_mcp_config.json
 ```
-
-It registers:
-
-```text
 agent-identity    -> http://127.0.0.1:7701/mcp
 delftclaw-security -> http://127.0.0.1:7702/mcp
 ```
 
-## Optional systemd install
-
-After the manual smoke test passes:
+## Stop / disable
 
 ```bash
-cd /root/DelftClaw
-bash deploy/vps/install_security_identity_services.sh
+sudo systemctl disable --now delftclaw-identity-mcp@<instance>.service
+sudo systemctl disable --now delftclaw-security-mcp@<instance>.service
 ```
 
-What it does:
+## Migrating from the pre-v5.1 layout
 
-- installs identity MCP, gateway, and security MCP as systemd services
-- enables them at boot
-- starts them immediately
+If your VPS still has the old non-templated units installed
+(`delftclaw-identity-mcp.service`, `delftclaw-security-mcp.service`),
+`deploy/setup_vps.sh:step_systemd_templates` automatically stops and
+removes them when re-run; the new templated unit files take over.
 
-Check:
-
-```bash
-systemctl status delftclaw-identity-mcp --no-pager
-systemctl status delftclaw-gateway --no-pager
-systemctl status delftclaw-security-mcp --no-pager
-```
-
-Stop:
-
-```bash
-systemctl stop delftclaw-security-mcp delftclaw-gateway delftclaw-identity-mcp
-```
-
-Disable autostart:
-
-```bash
-systemctl disable delftclaw-security-mcp delftclaw-gateway delftclaw-identity-mcp
-```
+The colleagues' non-templated gateway + seedbox-audit units are
+unchanged and are still installed by
+`deploy/vps/install_security_identity_services.sh` (which no longer
+touches identity-mcp/security-mcp).

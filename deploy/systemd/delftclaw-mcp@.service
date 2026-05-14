@@ -1,0 +1,40 @@
+[Unit]
+Description=DelftClaw MCP server (instance %i)
+After=network-online.target ollama.service
+# Wants= not Requires=: with --compiler-stub the MCP server doesn't need
+# Ollama at boot (it only compiles a peer-supplied overlay on demand).
+# Hard-Requiring Ollama would also block startup on VPSes that point
+# QWEN_BASE_URL at an external GPU host and don't run local Ollama.
+Wants=network-online.target ollama.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=delftclaw
+Group=delftclaw
+WorkingDirectory=/opt/delftclaw
+# Every per-instance value (seed file path, ports, HOME, publish-overlay
+# args) is supplied by the env file deploy/scenario_boot.py drops at
+# /etc/delftclaw/instances/<scenario>-<agent>.env. PYTHONPATH must be set
+# in the env file too — systemd's templated units don't inherit it.
+EnvironmentFile=/etc/delftclaw/instances/%i.env
+ExecStart=/opt/delftclaw/venv/bin/python -m agent \
+    --seed-file ${SEED_FILE} \
+    --network ${NETWORK} \
+    --btc-network ${BTC_NETWORK} \
+    --initial-balance-sats ${INITIAL_BALANCE_SATS} \
+    --address ${IPV8_HOST} --port ${IPV8_PORT} \
+    --publish-overlay ${PUBLISH_OVERLAY} \
+    --compiler-stub \
+    --llm-base-url ${QWEN_BASE_URL} \
+    --llm-model ${QWEN_MODEL} \
+    mcp --mcp-host ${MCP_HOST} --mcp-port ${MCP_PORT} \
+        --redteam-host ${REDTEAM_HOST} --redteam-port ${REDTEAM_PORT}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
