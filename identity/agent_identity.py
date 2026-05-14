@@ -116,8 +116,8 @@ class AgentIdentity:
 
     @property
     def identity_hash_bytes(self) -> bytes:
-        """SHA256(ipv8_public_key_bytes || network_tag)."""
-        return hashlib.sha256(self._ipv8.public_key_bytes + _NETWORK_TAGS[self._network]).digest()
+        """SHA256(raw Ed25519 IPv8 public key || network_tag)."""
+        return hashlib.sha256(self._ipv8.raw_pubkey + _NETWORK_TAGS[self._network]).digest()
 
     @property
     def identity_hash(self) -> str:

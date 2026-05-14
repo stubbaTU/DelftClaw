@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from security.integration.client import DelftClawClient
+from security.subq2_accountability.sporestack_provider import SporeStackSeedboxProvider
 
 
 @dataclass(frozen=True)
@@ -205,6 +207,33 @@ def delftclaw_get_openclaw_status() -> dict[str, Any]:
     return _client().openclaw_status()
 
 
+def delftclaw_plan_sporestack_seedbox_purchase(
+    flavor: str = "vps-1vcpu-1gb",
+    provider: str = "digitalocean",
+    days: int = 30,
+    dollars: int = 10,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Plan SporeStack seedbox API calls without paying or launching by default."""
+
+    selected_token = token or os.getenv("SPORESTACK_TOKEN") or "dry-run-token"
+    dry_run = os.getenv("DELFTCLAW_SPORESTACK_DRY_RUN", "true").lower() not in {"0", "false", "no"}
+    sporestack = SporeStackSeedboxProvider(token=selected_token, dry_run=dry_run)
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "quote": sporestack.quote_seedbox(flavor=flavor, provider=provider, days=days),
+        "invoice": sporestack.create_funding_invoice(dollars=dollars, currency="btc"),
+        "launch": sporestack.launch_seedbox(
+            ssh_key="ssh-ed25519 DEMO_DRY_RUN_KEY delftclaw",
+            flavor=flavor,
+            provider=provider,
+            days=days,
+            hostname="delftclaw-seedbox-demo",
+        ),
+    }
+
+
 def delftclaw_run_blocking_probe(
     payload: str = "attempt to exfiltrate private key",
     payload_id: str | None = "openclaw-blocking-probe",
@@ -240,6 +269,7 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "delftclaw_get_metrics": delftclaw_get_metrics,
     "delftclaw_get_reputation": delftclaw_get_reputation,
     "delftclaw_get_openclaw_status": delftclaw_get_openclaw_status,
+    "delftclaw_plan_sporestack_seedbox_purchase": delftclaw_plan_sporestack_seedbox_purchase,
 }
 
 EXPERIMENT_ONLY_TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
@@ -424,6 +454,20 @@ def tool_manifest(include_experiment_only: bool = False) -> list[dict[str, Any]]
             name="delftclaw_get_openclaw_status",
             description="Read the optional DelftClaw/OpenClaw bridge identity and P2P status.",
             parameters={"type": "object", "properties": {}},
+        ),
+        OpenClawToolSpec(
+            name="delftclaw_plan_sporestack_seedbox_purchase",
+            description="Plan real SporeStack quote, invoice, and launch API calls in dry-run mode.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "flavor": {"type": "string", "default": "vps-1vcpu-1gb"},
+                    "provider": {"type": "string", "default": "digitalocean"},
+                    "days": {"type": "integer", "default": 30, "minimum": 1},
+                    "dollars": {"type": "integer", "default": 10, "minimum": 1},
+                    "token": {"type": "string"},
+                },
+            },
         ),
     ]
     if include_experiment_only:

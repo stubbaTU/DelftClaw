@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from security.results import write_csv, write_json
-from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.log_reader import open_accountability_log
 
 DEFAULT_DETECTION_THRESHOLD = 30
 MALICIOUS_ACTIONS = {
@@ -28,8 +28,14 @@ def export_evidence(
     output_dir: str | Path,
     canary_manifest: str | Path | None = None,
     responses_dir: str | Path | None = None,
+    openclaw_network: str = "REGTEST",
+    openclaw_key_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    log = AppendOnlyLog(str(log_path))
+    log = open_accountability_log(
+        log_path,
+        network=openclaw_network,
+        key_path=openclaw_key_path,
+    )
     entries = log.read_entries()
     integrity_ok, integrity_errors = log.verify_integrity()
     canaries = _load_canaries(canary_manifest)
@@ -299,6 +305,8 @@ def main() -> None:
     parser.add_argument("--output-dir", default="results/real_gateway", help="Output directory for CSV/JSON evidence.")
     parser.add_argument("--canary-manifest", help="Optional canary manifest from setup_canaries.py.")
     parser.add_argument("--responses-dir", help="Optional directory containing saved Telegram/OpenClaw responses.")
+    parser.add_argument("--openclaw-network", default="REGTEST", help="Network label used for signed-log verification.")
+    parser.add_argument("--openclaw-key-path", help="Optional OpenClaw identity key path for signed-log inspection.")
     args = parser.parse_args()
 
     summary = export_evidence(
@@ -306,6 +314,8 @@ def main() -> None:
         output_dir=args.output_dir,
         canary_manifest=args.canary_manifest,
         responses_dir=args.responses_dir,
+        openclaw_network=args.openclaw_network,
+        openclaw_key_path=args.openclaw_key_path,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
 

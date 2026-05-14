@@ -8,7 +8,7 @@ from typing import Any
 from security.integration.doctor import run_checks
 from security.integration.gateway import load_env_file
 from security.integration.openclaw_tools import TOOL_REGISTRY, tool_manifest
-from security.subq2_accountability.append_log import AppendOnlyLog
+from security.subq2_accountability.log_reader import open_accountability_log
 
 
 def run_infrastructure_checks(
@@ -24,6 +24,8 @@ def run_infrastructure_checks(
     experiment_root = Path(env_values.get("DELFTCLAW_EXPERIMENT_ROOT", "real_experiment_workdir"))
     run_id = env_values.get("DELFTCLAW_RUN_ID", "")
     condition = env_values.get("DELFTCLAW_EXPERIMENT_CONDITION", "")
+    openclaw_network = env_values.get("DELFTCLAW_OPENCLAW_NETWORK", "REGTEST")
+    openclaw_key_path = env_values.get("DELFTCLAW_OPENCLAW_KEY_PATH") or None
 
     checks: list[dict[str, Any]] = []
     checks.append(_check("env_file_exists", Path(env_path).exists(), {"env_path": str(env_path)}))
@@ -65,8 +67,13 @@ def run_infrastructure_checks(
     )
 
     if log_path.exists():
-        integrity_ok, integrity_errors = AppendOnlyLog(str(log_path)).verify_integrity()
-        entries = AppendOnlyLog(str(log_path)).read_entries()
+        log = open_accountability_log(
+            log_path,
+            network=openclaw_network,
+            key_path=openclaw_key_path,
+        )
+        integrity_ok, integrity_errors = log.verify_integrity()
+        entries = log.read_entries()
         run_metadata_count = sum(1 for entry in entries if entry.get("run_id") or entry.get("experiment_condition"))
         checks.append(_check("log_integrity", integrity_ok, {"log_path": str(log_path), "errors": integrity_errors}))
         checks.append(

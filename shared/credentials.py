@@ -8,6 +8,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from shared.ids import AgentId, Nonce
 
 if TYPE_CHECKING:
@@ -59,7 +61,7 @@ def issue_credential(identity: "AgentIdentity", claims: dict[str, Any]) -> dict[
     """Issue a minimal VC dict signed by this identity's IPv8 key."""
     payload = {
         "issuer_id": identity.get_identity_hash(),
-        "issuer_pubkey": identity.ipv8.public_key_bytes.hex(),
+        "issuer_pubkey": identity.ipv8.raw_pubkey.hex(),
         "claims": dict(claims),
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "network": identity.network,
@@ -96,10 +98,8 @@ def verify_credential(vc: dict[str, Any], expected_issuer_id: str) -> bool:
         }
         canonical = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-        from ipv8.keyvault.crypto import default_eccrypto
-
-        pub = default_eccrypto.key_from_public_bin(issuer_pubkey)
         sig = bytes.fromhex(str(vc["signature"]))
-        return bool(pub.verify(sig, canonical))
+        Ed25519PublicKey.from_public_bytes(issuer_pubkey).verify(sig, canonical)
+        return True
     except Exception:
         return False
