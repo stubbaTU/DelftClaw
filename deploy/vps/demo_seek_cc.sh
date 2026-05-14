@@ -8,6 +8,7 @@
 #   bash deploy/vps/demo_seek_cc.sh logs
 #   bash deploy/vps/demo_seek_cc.sh mcp-config
 #   bash deploy/vps/demo_seek_cc.sh probe
+#   bash deploy/vps/demo_seek_cc.sh paper-demo
 #   bash deploy/vps/demo_seek_cc.sh stop
 
 set -Eeuo pipefail
@@ -112,6 +113,14 @@ probe_demo() {
   done
 }
 
+paper_demo() {
+  local root="${PAPER_DEMO_ROOT:-/var/lib/delftclaw/paper_demo}"
+  local provider="${PAPER_DEMO_PROVIDER:-mock}"
+  echo "[demo] running full Paper - Demo.txt checklist"
+  echo "[demo] provider=${provider} root=${root}"
+  "$PYTHON" -m deploy.paper_demo --provider "$provider" --root "$root" --reset
+}
+
 stop_demo() {
   echo "[demo] stopping ${SCENARIO}"
   "$PYTHON" -m deploy.scenario_boot "$SCENARIO" --teardown
@@ -124,6 +133,7 @@ case "${1:-}" in
   logs) logs_demo ;;
   mcp-config) ports_json ;;
   probe) probe_demo ;;
+  paper-demo) paper_demo ;;
   stop) stop_demo ;;
   *) usage; exit 2 ;;
 esac

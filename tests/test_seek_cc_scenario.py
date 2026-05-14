@@ -15,7 +15,7 @@ import pytest
 
 from deploy.scenario import parse_scenario
 from deploy import scenario_boot
-from deploy.scenario_boot import _instance_env_contents
+from deploy.scenario_boot import _build_manifest_md, _instance_env_contents
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,6 +72,24 @@ def test_seek_cc_joiners_have_seeker_role(scenario):
         mission = parse_mission((SEEK_CC / joiner / "mission.md").read_text())
         assert mission.role == "seeker"
         assert mission.name == joiner
+
+
+def test_seek_cc_generated_manifest_enables_seedbox_growth(scenario):
+    manifest_md = _build_manifest_md(
+        scenario=scenario,
+        genesis_name="alice",
+        genesis_coords={
+            "wallet_address": "dclaw1demo",
+            "host": "127.0.0.1",
+            "port": 8190,
+            "pubkey_hex": "aa" * 37,
+        },
+        default_overlay_hashes=["b" * 40],
+    )
+
+    assert "- bootstrap_cap_sats: 100000" in manifest_md
+    assert "- max_agents_per_seedbox: 3" in manifest_md
+    assert "- seedbox_cost_sats: 20000" in manifest_md
 
 
 # ---------------------------------------------------------------------------

@@ -513,6 +513,9 @@ def _build_manifest_md(
     default_overlay_hashes: list[str],
     min_sats: int = 10_000,
     min_confirmations: int = 0,
+    bootstrap_cap_sats: int = 100_000,
+    max_agents_per_seedbox: int = 3,
+    seedbox_cost_sats: int = 20_000,
 ) -> str:
     """Render a network manifest .md from the genesis agent's runtime coords."""
     if default_overlay_hashes:
@@ -531,6 +534,9 @@ def _build_manifest_md(
         f"- gatekeeper_address: {genesis_coords['wallet_address']}\n"
         f"- min_sats: {min_sats}\n"
         f"- min_confirmations: {min_confirmations}\n"
+        f"- bootstrap_cap_sats: {bootstrap_cap_sats}\n"
+        f"- max_agents_per_seedbox: {max_agents_per_seedbox}\n"
+        f"- seedbox_cost_sats: {seedbox_cost_sats}\n"
         "\n"
         "# Genesis Peers\n"
         "| host | port | pubkey_hex |\n"

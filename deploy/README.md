@@ -29,6 +29,9 @@ make scenario NAME=seek_cc      # launch the seek_cc scenario
 make watch    NAME=seek_cc      # tail every agent's journal
 make stop     NAME=seek_cc      # stop and teardown
 make scenarios                  # list active scenarios
+python -m deploy.paper_demo --provider mock --reset
+                                # run the full Paper - Demo.txt checklist locally
+make paper-demo                  # run that checklist on the VPS
 ```
 
 ## Makefile targets
@@ -42,8 +45,32 @@ make scenarios                  # list active scenarios
 | `make scenarios` | `systemctl list-units 'delftclaw-{mcp,watchdog}@*.service'` |
 | `make watch NAME=…` | `journalctl -fu 'delftclaw-{mcp,watchdog}@NAME-*'` |
 | `make stop NAME=…` | `python -m deploy.scenario_boot NAME --teardown` |
+| `make paper-demo` | `python -m deploy.paper_demo --provider mock --root /var/lib/delftclaw/paper_demo --reset` |
 | `make ssh` | Open an interactive shell on the VPS |
 | `make test` | Run the project pytest suite locally |
+
+## Paper demo checklist
+
+`deploy.paper_demo` is the single-command version of `Paper - Demo.txt`.
+It uses mock/local infrastructure but exercises the real project
+subsystems: community state, seedbox providers, signed community audit
+log, CSV file catalog, defended gateway, reputation/expulsion, and log
+integrity checks.
+
+```bash
+python -m deploy.paper_demo --provider mock --root paper_demo_state --reset
+```
+
+On the VPS, the helper exposes the same path:
+
+```bash
+make paper-demo
+bash deploy/vps/demo_seek_cc.sh paper-demo
+```
+
+The command exits non-zero if any checklist item fails and prints a JSON
+report with the generated goal files, signed logs, catalog, security
+evidence, and integrity/tamper results.
 
 Override `VPS_HOST` / `VPS_USER` / `VPS_ROOT` on the command line:
 
