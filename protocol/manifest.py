@@ -37,6 +37,22 @@ class AdmissionPolicy:
     gatekeeper_address: str
     min_sats: int
     min_confirmations: int
+    # Community-treasury / seedbox-growth fields. All three default to
+    # zero / fallback when absent so pre-v5.2 manifests still parse.
+    # See protocol/network_schema.md for semantics.
+    bootstrap_cap_sats: int = 0           # 0 → defaults to 10 * min_sats at use time
+    max_agents_per_seedbox: int = 0       # 0 → seedbox-growth feature disabled
+    seedbox_cost_sats: int = 0            # 0 → seedbox-growth feature disabled
+
+    @property
+    def effective_bootstrap_cap_sats(self) -> int:
+        """Resolved bootstrap cap: declared value or 10 × min_sats fallback."""
+        return self.bootstrap_cap_sats if self.bootstrap_cap_sats > 0 else 10 * self.min_sats
+
+    @property
+    def seedbox_growth_enabled(self) -> bool:
+        """True iff the manifest declared a non-zero growth threshold + cost."""
+        return self.max_agents_per_seedbox > 0 and self.seedbox_cost_sats > 0
 
 
 @dataclass(frozen=True)
@@ -178,11 +194,51 @@ def _parse_admission(body: str) -> AdmissionPolicy:
         raise ManifestParseError(
             f"# Admission min_confirmations must be in [0, 65535]; got {min_confs}"
         )
+
+    bootstrap_cap_sats = _parse_optional_uint(
+        kv, "bootstrap_cap_sats", default=0, max_value=2**64 - 1,
+    )
+    if bootstrap_cap_sats != 0 and bootstrap_cap_sats < min_sats:
+        raise ManifestParseError(
+            f"# Admission bootstrap_cap_sats {bootstrap_cap_sats} must be >= min_sats {min_sats}"
+        )
+    max_agents_per_seedbox = _parse_optional_uint(
+        kv, "max_agents_per_seedbox", default=0, max_value=65535,
+    )
+    seedbox_cost_sats = _parse_optional_uint(
+        kv, "seedbox_cost_sats", default=0, max_value=2**64 - 1,
+    )
+
     return AdmissionPolicy(
         gatekeeper_address=addr,
         min_sats=min_sats,
         min_confirmations=min_confs,
+        bootstrap_cap_sats=bootstrap_cap_sats,
+        max_agents_per_seedbox=max_agents_per_seedbox,
+        seedbox_cost_sats=seedbox_cost_sats,
     )
+
+
+def _parse_optional_uint(
+    kv: dict[str, str], key: str, *, default: int, max_value: int,
+) -> int:
+    """Parse an optional uint admission field; absence → default; range-check."""
+    raw = kv.get(key)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ManifestParseError(
+            f"# Admission {key} not an integer: {raw!r}"
+        ) from exc
+    if value < 0:
+        raise ManifestParseError(f"# Admission {key} must be >= 0; got {value}")
+    if value > max_value:
+        raise ManifestParseError(
+            f"# Admission {key} must be <= {max_value}; got {value}"
+        )
+    return value
 
 
 def _parse_genesis_peers(body: str) -> tuple[GenesisPeer, ...]:

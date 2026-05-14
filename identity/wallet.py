@@ -162,6 +162,37 @@ class Wallet:
         self._initial_balance_sats = sats
         self._spent_sats = 0
 
+    def sign(self, data: bytes) -> bytes:
+        """Sign arbitrary bytes with the wallet's Ed25519 key.
+
+        Used by the community-shared-log layer to sign ``donation_intent``
+        and ``seedbox_purchase_intent`` entries before they're appended.
+        Verification by peers uses the wallet's ``pubkey`` (the public
+        side of the same Ed25519 key) — see ``Wallet.verify`` and
+        ``cryptography.hazmat.primitives.asymmetric.ed25519.Ed25519PublicKey.verify``.
+        """
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError(f"sign expects bytes; got {type(data).__name__}")
+        return self.key.sign(bytes(data))
+
+    @staticmethod
+    def verify(pubkey: bytes, data: bytes, signature: bytes) -> bool:
+        """Verify ``signature`` over ``data`` using a wallet's raw Ed25519 ``pubkey``.
+
+        Static so a replay-time verifier doesn't need to materialise the
+        signer's Wallet — only their public key. Returns ``True`` iff
+        the signature is valid; never raises (invalid → False).
+        """
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        try:
+            Ed25519PublicKey.from_public_bytes(bytes(pubkey)).verify(
+                bytes(signature), bytes(data),
+            )
+            return True
+        except (InvalidSignature, ValueError):
+            return False
+
     # ------------------------------------------------------------------
     # Balance + transfer (synthetic)
     # ------------------------------------------------------------------

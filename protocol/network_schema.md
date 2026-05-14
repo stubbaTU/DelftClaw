@@ -51,19 +51,28 @@ derived as `sha1(canonicalize_md(text))[:20]`.
 
 Required key/value list. One per line, formatted `- key: value`.
 
-| Key | Type | Notes |
-|---|---|---|
-| `gatekeeper_address` | bech32 string | Bitcoin address joiners donate to. |
-| `min_sats` | uint64 | Minimum donation in satoshis. |
-| `min_confirmations` | uint16 | Minimum on-chain confirmations before a joiner is admitted. |
+| Key | Type | Required | Notes |
+|---|---|---|---|
+| `gatekeeper_address` | bech32 string | required | Address joiners donate to (mock-mode uses `dclaw1...`). |
+| `min_sats` | uint64 | required | Minimum donation in satoshis. |
+| `min_confirmations` | uint16 | required | Minimum on-chain confirmations before a joiner is admitted. |
+| `bootstrap_cap_sats` | uint64 | optional | Ceiling on donor #1's donation. Subsequent donors are capped at the **current running average** of accepted donations (a community-treasury rule, see ``agent/community_state.py``). Absent or 0 → defaults to `10 × min_sats` at use time. |
+| `max_agents_per_seedbox` | uint16 | optional | Membership threshold per active seedbox. When member-count exceeds `max_agents_per_seedbox × existing_seedboxes`, any admitted member may write a `seedbox_purchase_intent` to the community log; first valid one wins. Absent or 0 → seedbox-growth feature disabled. |
+| `seedbox_cost_sats` | uint64 | optional | Treasury deduction when a `seedbox_purchase_intent` is accepted. Absent or 0 → seedbox-growth feature disabled. |
 
 The parser enforces:
-- `gatekeeper_address` starts with `tb1` (testnet bech32) or `bc1`
-  (mainnet bech32). Other prefixes are rejected; the project's BTC
-  layer only supports segwit.
+- `gatekeeper_address` starts with `tb1` (testnet bech32), `bc1`
+  (mainnet bech32), or `dclaw1` (synthetic mock-mode address). Other
+  prefixes are rejected; the project's BTC layer only supports segwit
+  or the synthetic mock equivalent.
 - `min_sats >= 1`.
 - `min_confirmations` in `[0, 65535]`. Zero is legal (for demos);
   the verifier-side `DonationVerifier.min_confirmations` enforces it.
+- `bootstrap_cap_sats`, when present and non-zero, must be `>= min_sats`.
+- `max_agents_per_seedbox` in `[0, 65535]`.
+- Both `max_agents_per_seedbox` and `seedbox_cost_sats` must be set to
+  non-zero values together for the seedbox-growth feature to activate;
+  setting only one of the two is treated as "disabled".
 
 ## `# Genesis Peers`
 

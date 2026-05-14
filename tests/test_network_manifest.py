@@ -178,6 +178,106 @@ def test_admission_min_confirmations_must_be_in_range():
 
 
 # ---------------------------------------------------------------------------
+# # Admission — community-treasury / seedbox-growth optional fields
+# ---------------------------------------------------------------------------
+
+def test_admission_optional_fields_default_to_zero():
+    """Pre-v5.2 manifests (without the 3 new fields) still parse; defaults are 0."""
+    manifest = parse_manifest(GOOD_MANIFEST)
+    assert manifest.admission.bootstrap_cap_sats == 0
+    assert manifest.admission.max_agents_per_seedbox == 0
+    assert manifest.admission.seedbox_cost_sats == 0
+
+
+def test_admission_bootstrap_cap_falls_back_to_10x_min_sats_when_omitted():
+    """The default bootstrap cap is 10 * min_sats when the field is absent or 0."""
+    manifest = parse_manifest(GOOD_MANIFEST)
+    assert manifest.admission.effective_bootstrap_cap_sats == 10 * 10000
+
+
+def test_admission_seedbox_growth_disabled_when_either_field_zero():
+    """Both max_agents_per_seedbox AND seedbox_cost_sats must be > 0 to enable growth."""
+    manifest = parse_manifest(GOOD_MANIFEST)
+    assert manifest.admission.seedbox_growth_enabled is False
+
+
+def test_admission_parses_all_three_new_fields():
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n"
+        "- bootstrap_cap_sats: 100000\n"
+        "- max_agents_per_seedbox: 3\n"
+        "- seedbox_cost_sats: 50000",
+    )
+    manifest = parse_manifest(text)
+    assert manifest.admission.bootstrap_cap_sats == 100000
+    assert manifest.admission.effective_bootstrap_cap_sats == 100000
+    assert manifest.admission.max_agents_per_seedbox == 3
+    assert manifest.admission.seedbox_cost_sats == 50000
+    assert manifest.admission.seedbox_growth_enabled is True
+
+
+def test_admission_bootstrap_cap_below_min_sats_rejected():
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n- bootstrap_cap_sats: 5000",  # min_sats is 10_000
+    )
+    with pytest.raises(ManifestParseError, match=">= min_sats"):
+        parse_manifest(text)
+
+
+def test_admission_negative_bootstrap_cap_rejected():
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n- bootstrap_cap_sats: -1",
+    )
+    with pytest.raises(ManifestParseError, match=">= 0"):
+        parse_manifest(text)
+
+
+def test_admission_non_int_max_agents_per_seedbox_rejected():
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n- max_agents_per_seedbox: many",
+    )
+    with pytest.raises(ManifestParseError, match="max_agents_per_seedbox"):
+        parse_manifest(text)
+
+
+def test_admission_max_agents_per_seedbox_out_of_range_rejected():
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n- max_agents_per_seedbox: 70000",
+    )
+    with pytest.raises(ManifestParseError, match="<= 65535"):
+        parse_manifest(text)
+
+
+def test_admission_only_one_of_two_growth_fields_set_means_disabled():
+    """Setting max_agents_per_seedbox without seedbox_cost_sats keeps growth off."""
+    text = GOOD_MANIFEST.replace(
+        "- min_confirmations: 0",
+        "- min_confirmations: 0\n- max_agents_per_seedbox: 3",
+    )
+    manifest = parse_manifest(text)
+    assert manifest.admission.max_agents_per_seedbox == 3
+    assert manifest.admission.seedbox_cost_sats == 0
+    assert manifest.admission.seedbox_growth_enabled is False
+
+
+def test_bundled_example_manifest_parses_with_growth_enabled():
+    """The seek_cc example manifest now declares the growth fields."""
+    text = (REPO_ROOT / "protocol" / "examples" / "delftclaw_network.md").read_text(
+        encoding="utf-8"
+    )
+    manifest = parse_manifest(text)
+    assert manifest.admission.bootstrap_cap_sats == 100000
+    assert manifest.admission.max_agents_per_seedbox == 3
+    assert manifest.admission.seedbox_cost_sats == 50000
+    assert manifest.admission.seedbox_growth_enabled is True
+
+
+# ---------------------------------------------------------------------------
 # # Genesis Peers validation
 # ---------------------------------------------------------------------------
 
