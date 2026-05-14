@@ -52,12 +52,63 @@ ETC_INSTANCES = Path("/etc/delftclaw/instances")
 ETC_SCENARIOS = Path("/etc/delftclaw/scenarios")
 STATE_ROOT = Path("/var/lib/delftclaw")
 SERVICE_USER = "delftclaw"
+HOST_ENV_FILE = REPO_ROOT / "configs" / "host.env"
 
-# Default to the supervisor's GPU box reached over Tailscale (CGNAT 100.x.x.x).
-# Override with QWEN_BASE_URL / QWEN_MODEL env vars when invoking scenario_boot
-# (e.g. for a local-Ollama fallback or a different model tag).
-QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "http://100.73.168.12:11434/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3.6:27b")
+
+def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
+    """Parse ``configs/host.env`` as KEY=VALUE pairs. Missing file → empty dict.
+
+    Lines starting with ``#`` and blank lines are ignored; ``KEY=`` with
+    no value is also ignored (treated as "unset, fall through to default").
+    Quoting and shell-style escapes are NOT honoured — this file is a
+    simple env table, not a shell script. The dotenv-light implementation
+    keeps the dependency surface flat (no python-dotenv requirement).
+    """
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            continue
+        out[key] = value
+    return out
+
+
+DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
+DEFAULT_QWEN_MODEL = "qwen3.6:27b"
+
+
+def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str]:
+    """Resolve QWEN_BASE_URL + QWEN_MODEL.
+
+    Order: process env var → configs/host.env (if present) →
+    hard-coded default. Exposed as a function so tests can stub the
+    file path without re-executing the whole module body.
+    """
+    host_env = _load_host_env(host_env_file)
+    base = os.environ.get(
+        "QWEN_BASE_URL",
+        host_env.get("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL),
+    )
+    model = os.environ.get(
+        "QWEN_MODEL",
+        host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
+    )
+    return base, model
+
+
+# Module-level constants used by `_instance_env_contents` and the
+# OpenClaw provider patch. Tests that need to vary these stub
+# ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
+QWEN_BASE_URL, QWEN_MODEL = _resolve_qwen()
 
 
 def _ollama_base_from(qwen_base_url: str) -> str:

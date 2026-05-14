@@ -47,3 +47,6 @@ logs/
 
 # Local per-agent DelftClaw/OpenClaw configs
 configs/*.local.env
+# Per-host overrides (Tailscale IPs, QWEN_BASE_URL/MODEL, BTC_NETWORK).
+# Tracked example lives at configs/host.env.example.
+configs/host.env
