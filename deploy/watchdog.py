@@ -146,14 +146,13 @@ def _invoke_openclaw_agent(
     instance: str,
     prompt: str,
     timeout_s: int,
-    model: str,
 ) -> tuple[bool, str, str]:
-    """Run ``openclaw agent --local --model <model> --agent <instance> --message <prompt>``.
+    """Run ``openclaw agent --local --agent <instance> --message <prompt>``.
 
     ``--local`` skips OpenClaw's WebSocket gateway daemon (which we don't
-    run on the VPS) and uses the embedded agent path instead. ``--model``
-    routes inference through the Ollama provider registered in this
-    agent's per-HOME openclaw.json by ``scenario_boot.py``.
+    run on the VPS) and uses the embedded agent path instead. The model
+    is configured when ``scenario_boot.py`` registers the OpenClaw agent
+    with ``openclaw agents add --model ...``.
 
     Returns ``(ok, stdout, stderr)``. ``ok`` is True iff the subprocess
     exited 0 within timeout.
@@ -170,7 +169,6 @@ def _invoke_openclaw_agent(
     cmd = [
         "openclaw", "agent",
         "--local",
-        "--model", model,
         "--agent", instance,
         "--message", prompt,
         "--json",
@@ -327,7 +325,6 @@ async def _drive(
             instance=instance,
             prompt=prompt,
             timeout_s=scenario.watchdog.interval_s,
-            model=f"ollama/{os.environ.get('QWEN_MODEL', 'qwen2.5-coder:7b')}",
         )
 
         record = {
