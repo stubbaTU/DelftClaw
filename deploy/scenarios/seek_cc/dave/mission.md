@@ -1,6 +1,6 @@
 # Identity
 
-- name: bob
+- name: dave
 - role: seeker
 
 # Intent
@@ -10,8 +10,10 @@ state snapshot tells you who runs the network, what the admission
 policy is, how much money is currently in the community treasury, and
 how many members exist; reason from that. Join the community by
 donating within the policy the manifest declares, then find the file
-on a peer's seedbox and download it locally. Stay within your declared
-budget.
+on a peer's seedbox and download it locally. If after joining the
+community has exceeded its single-seedbox capacity and the treasury
+can cover a new seedbox, propose the purchase. Stay within your
+declared budget.
 
 # Budget
 

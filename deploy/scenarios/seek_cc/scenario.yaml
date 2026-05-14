@@ -1,20 +1,37 @@
 # Scenario: seek_cc
 #
-# Two autonomous agents on a single VPS. Alice is a long-running
-# seedbox that publishes the content_community overlay and seeds one
-# Creative Commons audio file. Bob is a one-shot content seeker — donate,
-# join, search, download.
+# Four autonomous agents on a single VPS — the canonical demo for the
+# v5.2 no-treasurer community model:
 #
-# Stop condition: bob.torrent_stats reports progress >= 1.0; the watchdog
-# exits 0. Alice never stops (operator tears down via scenario_boot
-# --teardown).
+#   alice    founder. Donates first; runs the only seedbox at start;
+#            never stops. Her donation seeds the treasury.
+#   bob      joiner. Donates, then searches + downloads CC audio.
+#   charlie  joiner. Same shape as bob.
+#   dave     joiner. Tipping the member-count past the threshold
+#            (max_agents_per_seedbox=3, seedbox_count=1) authorises a
+#            seedbox purchase intent — the first member to write one
+#            wins.
 #
-# Ports: scenario "seek_cc" uses the 8190-8199 IPv8 UDP range and the
-# 18765-18774 MCP TCP range. Future scenarios should claim disjoint
-# windows (see deploy/README.md).
+# Treasury: signed community log replicated across every agent's
+# redteam FastAPI server via the pull loop. Balance is computed by
+# replay (no keys, no custodian). Thresholds + caps come from the
+# network manifest's # Admission section (see protocol/network_schema.md).
+#
+# Stop conditions: bob + charlie + dave on torrent_progress_gte_1
+# (the file landed locally). Alice never stops.
+#
+# Port windows (per-scenario, must not clash with other scenarios):
+#   IPv8 UDP    8190-8193
+#   MCP TCP     18765-18768
+#   Redteam TCP 28765-28768  (FastAPI signed-log server for pull-loop)
+#
+# Future scenarios should claim disjoint windows (see deploy/README.md).
 
 name: seek_cc
-description: Bob finds and downloads a Creative Commons file from Alice's seedbox.
+description: >-
+  Four-agent community: alice founds + seeds CC audio; bob/charlie/dave
+  donate to join, search, download. dave's join trips the threshold so
+  a second seedbox is authorised.
 
 watchdog:
   # interval_s is also passed to ``openclaw agent --timeout`` and is the
@@ -26,8 +43,10 @@ watchdog:
   # watchdog 180s of headroom per tick.
   interval_s: 600
   max_iterations_per_turn: 12
-  max_total_turns: 20
-  max_wall_clock_s: 7200
+  # 4 agents x more steps each (donate -> wait for pull-loop sync ->
+  # fetch overlay -> SEARCH -> torrent_fetch). Bumped from 20.
+  max_total_turns: 30
+  max_wall_clock_s: 10800
 
 observability:
   log_dir: /var/log/delftclaw/scenarios/seek_cc
@@ -37,6 +56,7 @@ agents:
   alice:
     ipv8_port: 8190
     mcp_port: 18765
+    redteam_port: 28765
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
@@ -47,18 +67,45 @@ agents:
         size: 4200000
         mime: audio/mpeg
         tags: [cc, audio]
+    # Alice's wallet holds the founder donation that bootstraps the
+    # treasury (caps subsequent donors at the running average) plus
+    # headroom for the seedbox-purchase spend if she's the first
+    # member to propose it.
+    initial_balance_sats: 200000
 
   bob:
     ipv8_port: 8191
     mcp_port: 18766
+    redteam_port: 28766
     publish_overlays: []
     mission_file: bob/mission.md
     stop_predicate: torrent_progress_gte_1
     peers:
       - alice
-    # Synthetic wallet starts with 50_000 sats so Bob can pay the
-    # 10_000-sat admission donation without needing a funded testnet
-    # address. wallet_balance reflects the running total; an
-    # over-spend raises a clean "insufficient funds" error. Default
-    # for agents that don't declare this key is 0 (legacy mock).
-    initial_balance_sats: 50000
+    # Enough headroom for a donation up to the bootstrap cap
+    # (manifest's bootstrap_cap_sats = 100_000) and to bear the
+    # cost of a seedbox purchase if bob ends up being the first
+    # to propose it once the threshold trips.
+    initial_balance_sats: 100000
+
+  charlie:
+    ipv8_port: 8192
+    mcp_port: 18767
+    redteam_port: 28767
+    publish_overlays: []
+    mission_file: charlie/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - alice
+    initial_balance_sats: 100000
+
+  dave:
+    ipv8_port: 8193
+    mcp_port: 18768
+    redteam_port: 28768
+    publish_overlays: []
+    mission_file: dave/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - alice
+    initial_balance_sats: 100000

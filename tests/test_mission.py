@@ -64,7 +64,7 @@ def test_parse_good_mission():
 
 def test_parse_bundled_seek_cc_missions():
     """The mission.md files the repo ships parse cleanly."""
-    for agent in ("alice", "bob"):
+    for agent in ("alice", "bob", "charlie", "dave"):
         path = REPO_ROOT / "deploy" / "scenarios" / "seek_cc" / agent / "mission.md"
         m = parse_mission(path.read_text(encoding="utf-8"))
         assert m.name == agent

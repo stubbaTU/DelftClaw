@@ -1,6 +1,6 @@
 # Identity
 
-- name: bob
+- name: charlie
 - role: seeker
 
 # Intent
