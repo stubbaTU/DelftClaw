@@ -75,15 +75,43 @@ PAPER_DEMO_TOOL_ALLOWLIST = {
     "community_treasury_balance",
     "community_member_count",
     "community_donate_and_join",
-    "community_join_via_peer",
     "network_join",
     "overlays_list",
-    "overlay_invoke",
     "seedbox_purchase_propose",
     "seedbox_provisioned",
     "torrent_fetch",
     "torrent_stats",
 }
+
+
+def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Trim prompt-only state for low request-size providers.
+
+    Stop predicates and JSONL still receive the full snapshot; this is only
+    what the LLM sees. The paper demo's normal flow can reason from the
+    manifest/admission, wallet, community summary, peers, and torrent status
+    without embedding every overlay message schema on every turn.
+    """
+    agent = snapshot.get("agent") or {}
+    return {
+        "ts": snapshot.get("ts"),
+        "agent": {
+            "agent_id": agent.get("agent_id"),
+            "wallet_address": agent.get("wallet_address"),
+        },
+        "network": snapshot.get("network"),
+        "wallet": snapshot.get("wallet"),
+        "community": snapshot.get("community"),
+        "peers": snapshot.get("peers"),
+        "torrents": snapshot.get("torrents"),
+        "overlays_loaded": [
+            {
+                "community_id_hex": item.get("community_id_hex"),
+                "name": item.get("name"),
+            }
+            for item in snapshot.get("overlays") or []
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -417,8 +445,10 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        prompt = build_turn_prompt(mission_text, snapshot, history)
-        if os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower() == "direct":
+        driver = os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower()
+        prompt_snapshot = _compact_snapshot(snapshot) if driver == "direct" else snapshot
+        prompt = build_turn_prompt(mission_text, prompt_snapshot, history)
+        if driver == "direct":
             ok, stdout, stderr = await _invoke_direct_tool_loop(
                 agent=agent,
                 prompt=prompt,
