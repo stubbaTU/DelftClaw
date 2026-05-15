@@ -14,6 +14,9 @@ lives in the LLM loop's reasoning, not in glue code.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -22,6 +25,22 @@ from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
 from communication.community import overlay_id
+
+
+# Tool-dispatch logger — one line per LLM tool invocation, paired with
+# the IPv8 wire log from ``communication.community._log_wire``. Surfaces
+# in ``journalctl`` (basicConfig wired in ``agent/cli.py``). Grep:
+#   make watch NAME=… | grep TOOL
+_tool_logger = logging.getLogger("delftclaw.agent.tools")
+
+
+def _short(value: Any, n: int = 80) -> str:
+    """Render a tool arg/result compactly for a single log line."""
+    try:
+        s = json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        s = str(value)
+    return s if len(s) <= n else (s[: n - 1] + "…")
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +79,23 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> Any:
+        t0 = time.monotonic()
+        _tool_logger.info("TOOL call name=%s args=%s", name, _short(args))
         if name not in self._tools:
+            _tool_logger.warning("TOOL miss name=%s (unknown)", name)
             return {"error": f"unknown_tool:{name}"}
         try:
-            return await self._tools[name].fn(**args)
+            result = await self._tools[name].fn(**args)
+            _tool_logger.info(
+                "TOOL ok   name=%s elapsed=%.3fs result=%s",
+                name, time.monotonic() - t0, _short(result),
+            )
+            return result
         except Exception as exc:
+            _tool_logger.warning(
+                "TOOL fail name=%s elapsed=%.3fs error=%s: %s",
+                name, time.monotonic() - t0, type(exc).__name__, exc,
+            )
             return {"error": f"{type(exc).__name__}: {exc}"}
 
 

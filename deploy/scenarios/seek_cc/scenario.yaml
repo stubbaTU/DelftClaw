@@ -35,13 +35,11 @@ description: >-
 
 watchdog:
   # interval_s is also passed to ``openclaw agent --timeout`` and is the
-  # subprocess soft cap. The v5.1 canonical compiler-LLM target is an
-  # external GPU-host OpenAI-compatible endpoint reached via QWEN_BASE_URL
-  # (a 27B-class model is typical there); local Ollama is the dev/CI
-  # fallback. Round-trips with a ~3KB tool-spec prompt typically want
-  # 30-90s per turn (first turn longer for GPU cold-load), so we give the
-  # watchdog 180s of headroom per tick.
-  interval_s: 600
+  # subprocess soft cap. The 14B coder model on a laptop CPU/iGPU takes
+  # ~60-150s for one chat completion against the 23-tool prompt; 180s
+  # leaves room without making demo iteration painful. Bump back up if
+  # the model runs cold or you switch to a 27B/larger target.
+  interval_s: 180
   max_iterations_per_turn: 12
   # 4 agents x more steps each (donate -> wait for pull-loop sync ->
   # fetch overlay -> SEARCH -> torrent_fetch). Bumped from 20.
