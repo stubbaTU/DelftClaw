@@ -67,6 +67,24 @@ EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
 
+PAPER_DEMO_TOOL_ALLOWLIST = {
+    "peers_list",
+    "wallet_address",
+    "wallet_balance",
+    "community_log_list_recent",
+    "community_treasury_balance",
+    "community_member_count",
+    "community_donate_and_join",
+    "community_join_via_peer",
+    "network_join",
+    "overlays_list",
+    "overlay_invoke",
+    "seedbox_purchase_propose",
+    "seedbox_provisioned",
+    "torrent_fetch",
+    "torrent_stats",
+}
+
 
 # ---------------------------------------------------------------------------
 # Boot
@@ -223,6 +241,12 @@ async def _invoke_direct_tool_loop(
         timeout_s=max(30, timeout_s - 15),
     )
     tools = build_tools(agent)
+    if os.environ.get("DIRECT_TOOL_ALLOWLIST", "paper_demo").strip().lower() == "paper_demo":
+        tools._tools = {  # type: ignore[attr-defined]
+            name: tool
+            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
+            if name in PAPER_DEMO_TOOL_ALLOWLIST
+        }
     try:
         text = await asyncio.wait_for(
             run_tool_loop(

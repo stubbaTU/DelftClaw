@@ -98,8 +98,17 @@ class OpenAICompatibleToolLLM:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            raise RuntimeError(
+                f"HTTP {exc.code} from {url}: {body[:1000]}"
+            ) from exc
         return {"message": payload["choices"][0]["message"]}
 
 
