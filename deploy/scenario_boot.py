@@ -127,7 +127,7 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
     ).strip()
     api = os.environ.get("OPENCLAW_API", host_env.get("OPENCLAW_API", "")).strip().lower()
     if not api:
-        api = "ollama" if provider == "ollama" else "openai"
+        api = "ollama" if provider == "ollama" else "openai-completions"
     api_key_env = os.environ.get(
         "OPENCLAW_API_KEY_ENV",
         host_env.get("OPENCLAW_API_KEY_ENV", "OLLAMA_API_KEY" if provider == "ollama" else "GEMINI_API_KEY"),
