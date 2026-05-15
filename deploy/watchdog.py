@@ -178,6 +178,9 @@ def _invoke_openclaw_agent(
     ]
     env = os.environ.copy()
     env.setdefault("OLLAMA_API_KEY", "ollama")
+    api_key_env = env.get("OPENCLAW_API_KEY_ENV")
+    if api_key_env and api_key_env in os.environ:
+        env[api_key_env] = os.environ[api_key_env]
     env["PATH"] = env.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     env.setdefault("OPENCLAW_DISABLE_TELEMETRY", "1")
     try:
