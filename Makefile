@@ -5,7 +5,9 @@
 #     make deploy                  # rsync repo to VPS + run setup_vps.sh
 #     make scenario NAME=seek_cc   # launch a scenario on the VPS
 #     make scenarios               # list scenarios + their agents on the VPS
-#     make watch    NAME=seek_cc   # tail all agent journals for a scenario
+#     make watch    NAME=seek_cc   # tail the full journal (every line)
+#     make watch-ipv8 NAME=seek_cc # tail only IPv8 wire events + errors
+#     make trace    NAME=seek_cc   # one-shot snapshot per agent
 #     make stop     NAME=seek_cc   # stop a scenario
 #     make ssh                     # interactive shell on the VPS
 #     make test                    # run the local pytest suite
@@ -26,7 +28,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
              --exclude=.pytest_cache --exclude='*.pyc' --exclude='*.pem' \
              --exclude='*.key' --exclude='ec*.pem' --exclude=.venv
 
-.PHONY: help deploy push bootstrap scenario scenarios watch stop \
+.PHONY: help deploy push bootstrap scenario scenarios watch watch-ipv8 trace stop \
         ssh test clean check-name
 
 help:
@@ -63,10 +65,22 @@ scenarios: ## List active scenarios + agents on the VPS
 		echo; \
 		systemctl list-units 'delftclaw-watchdog@*.service' --no-pager"
 
-watch: check-name ## Tail every agent's journal for scenario NAME (Ctrl-C to stop)
+watch: check-name ## Tail the full journal (every line — Ctrl-C to stop)
 	$(SSH) "journalctl --no-pager -f \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service'"
+
+watch-ipv8: check-name ## Tail only IPv8 wire events + errors (filtered)
+	$(SSH) "journalctl --no-pager -f \
+		-u 'delftclaw-mcp@$(NAME)-*.service' \
+		-u 'delftclaw-watchdog@$(NAME)-*.service' \
+		| grep --line-buffered -E \
+		  'IPv8|delftclaw\\.|TOOL |turn |openclaw|ERROR|WARN|FAIL|Traceback' \
+		| grep --line-buffered -vE \
+		  'GET /head|GET /entries|GET /entry/'"
+
+trace: check-name ## Snapshot per-agent demo state (turns, tools, IPv8 events, community)
+	$(SSH) "PYTHONPATH=$(VPS_ROOT) $(VPS_ROOT)/venv/bin/python -m deploy.trace $(NAME)"
 
 stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \

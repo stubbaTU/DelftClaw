@@ -84,10 +84,11 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
 
 DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_QWEN_MODEL = "qwen3.6:27b"
+DEFAULT_OLLAMA_API_KEY = "ollama"
 
 
-def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str]:
-    """Resolve QWEN_BASE_URL + QWEN_MODEL.
+def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
+    """Resolve QWEN_BASE_URL + QWEN_MODEL + OLLAMA_API_KEY.
 
     Order: process env var → configs/host.env (if present) →
     hard-coded default. Exposed as a function so tests can stub the
@@ -102,13 +103,17 @@ def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str]:
         "QWEN_MODEL",
         host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
     )
-    return base, model
+    api_key = os.environ.get(
+        "OLLAMA_API_KEY",
+        host_env.get("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY),
+    )
+    return base, model, api_key
 
 
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
 # ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
-QWEN_BASE_URL, QWEN_MODEL = _resolve_qwen()
+QWEN_BASE_URL, QWEN_MODEL, OLLAMA_API_KEY = _resolve_qwen()
 
 
 def _ollama_base_from(qwen_base_url: str) -> str:
@@ -192,10 +197,10 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"MANIFEST_FILE={_manifest_file_path(scenario, agent)}",
         f"QWEN_BASE_URL={QWEN_BASE_URL}",
         f"QWEN_MODEL={QWEN_MODEL}",
-        # Ollama doesn't authenticate, but OpenClaw demands a value for any
-        # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
-        # config resolves to this env var; any non-empty string works.
-        "OLLAMA_API_KEY=ollama",
+        # Mirror of the literal ``apiKey`` written into openclaw.json. Kept
+        # here too so any code path that reads the env var (rather than the
+        # openclaw config) sees the same value.
+        f"OLLAMA_API_KEY={OLLAMA_API_KEY}",
         f"LOG_DIR={scenario.log_dir}",
     ]
     return "\n".join(lines) + "\n"
@@ -399,11 +404,11 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
                 "ollama": {
                     "baseUrl": _ollama_base_from(QWEN_BASE_URL),
                     "api": "ollama",
-                    # OpenClaw refuses to call any provider without an apiKey,
-                    # even Ollama which accepts anything as Bearer. The string
-                    # ``OLLAMA_API_KEY`` is resolved at runtime against the
-                    # systemd env file (see ``_instance_env_contents``).
-                    "apiKey": "OLLAMA_API_KEY",
+                    # OpenClaw refuses to register a provider without an
+                    # apiKey. Ollama accepts anything as Bearer; we write a
+                    # literal value here rather than relying on openclaw to
+                    # interpolate an env var into this field (it doesn't).
+                    "apiKey": OLLAMA_API_KEY,
                     "models": [
                         {
                             "id": QWEN_MODEL,
