@@ -374,6 +374,15 @@ async def _drive(
             consecutive_llm_errors += 1
             _log.error("openclaw agent failed (consecutive=%d): %s",
                        consecutive_llm_errors, stderr[:200])
+            history.append(TurnRecord(
+                turn_n=turn_n,
+                prompt=prompt,
+                response_text=(
+                    "OpenClaw subprocess failed before completing a bounded "
+                    f"turn. stderr: {stderr[:600]}"
+                ),
+                stop_predicate_value=stop_value,
+            ))
             if consecutive_llm_errors >= MAX_CONSECUTIVE_LLM_ERRORS:
                 sink.append({
                     "event": "stop", "reason": "llm_errors",
