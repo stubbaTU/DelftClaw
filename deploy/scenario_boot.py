@@ -84,10 +84,11 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
 
 DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_QWEN_MODEL = "qwen3.6:27b"
+DEFAULT_OLLAMA_API_KEY = "ollama"
 DEFAULT_OPENCLAW_PROVIDER = "ollama"
 
 
-def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str]:
+def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
     """Resolve QWEN_BASE_URL + QWEN_MODEL.
 
     Order: process env var → configs/host.env (if present) →
@@ -103,7 +104,11 @@ def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str]:
         "QWEN_MODEL",
         host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
     )
-    return base, model
+    api_key = os.environ.get(
+        "OLLAMA_API_KEY",
+        host_env.get("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY),
+    )
+    return base, model, api_key
 
 
 def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str, str]:
@@ -154,7 +159,7 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
 # ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
-QWEN_BASE_URL, QWEN_MODEL = _resolve_qwen()
+QWEN_BASE_URL, QWEN_MODEL, OLLAMA_API_KEY = _resolve_qwen()
 OPENCLAW_LLM = _resolve_openclaw_provider()
 
 
@@ -271,7 +276,7 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
         # config resolves to this env var; any non-empty string works.
-        "OLLAMA_API_KEY=ollama",
+        f"OLLAMA_API_KEY={OLLAMA_API_KEY}",
         *(
             [f"{OPENCLAW_LLM['api_key_env']}={openclaw_api_key_value}"]
             if openclaw_api_key_value else []
