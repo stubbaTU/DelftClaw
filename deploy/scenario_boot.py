@@ -568,11 +568,11 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # ``openclaw agent --local --model <provider>/<model>`` can't resolve.
     #
     # ``agents.defaults.timeoutSeconds`` is the *inner* LLM call timeout (the
-    # subprocess-level timeout we pass via --timeout is unrelated). qwen3.6:27b
-    # cold-starts ~30s on the GPU host; the OpenClaw default of 30s would
-    # always fire on turn 1. Set this generously below the watchdog tick
-    # ``interval_s`` so timeouts surface as turn errors rather than truncated
-    # responses mid-call.
+    # subprocess-level timeout we pass via --timeout is unrelated). Keep it
+    # below the watchdog's subprocess budget (interval_s + 30) so provider
+    # failures surface inside OpenClaw instead of being truncated by the
+    # watchdog. Gemini free-tier calls can be slow under load, so cap this
+    # high enough for first-turn cold starts.
     provider_id = OPENCLAW_LLM["provider"]
     provider_api = OPENCLAW_LLM["api"]
     provider_model = OPENCLAW_LLM["model"]
@@ -601,7 +601,8 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # ``config set`` rather than ``config patch --stdin`` because older
     # OpenClaw CLIs reject the newer ``--stdin`` flag.
     c_info(f"{agent.name}: openclaw config set ({provider_id} provider)")
-    _openclaw_config_set(sudo_env, "agents.defaults.timeoutSeconds", 150)
+    inner_timeout_s = max(60, min(210, scenario.watchdog.interval_s - 15))
+    _openclaw_config_set(sudo_env, "agents.defaults.timeoutSeconds", inner_timeout_s)
     _openclaw_config_set(sudo_env, "models.mode", "merge")
     _openclaw_config_set(sudo_env, f"models.providers.{provider_id}", provider_config)
 
