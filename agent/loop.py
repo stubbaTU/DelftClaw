@@ -94,6 +94,8 @@ class OpenAICompatibleToolLLM:
             data=body,
             headers={
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "DelftClaw/1.0 (+https://github.com/delftclaw)",
                 **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
             },
             method="POST",
