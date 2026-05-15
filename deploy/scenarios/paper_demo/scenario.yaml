@@ -12,7 +12,7 @@ description: >-
   once the capacity threshold is active.
 
 watchdog:
-  interval_s: 600
+  interval_s: 90
   max_iterations_per_turn: 12
   max_total_turns: 36
   max_wall_clock_s: 10800

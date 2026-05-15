@@ -66,6 +66,20 @@ def build_turn_prompt(
     inside the snapshot).
     """
     sections: list[str] = ["MISSION:", mission_text.rstrip(), ""]
+    sections.append("TURN CONTRACT:")
+    sections.append(
+        "- Make at most one purposeful DelftClaw MCP tool call for this turn, "
+        "then stop and summarize the result."
+    )
+    sections.append(
+        "- Do not try to finish the whole mission in one subprocess run; the "
+        "watchdog will call you again with fresh state."
+    )
+    sections.append(
+        "- If no safe tool call is possible from the current state, return a "
+        "short explanation instead of waiting."
+    )
+    sections.append("")
     sections.append("CURRENT STATE:")
     sections.append("```json")
     sections.append(json.dumps(snapshot, indent=2, sort_keys=True))
@@ -78,7 +92,7 @@ def build_turn_prompt(
     else:
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
     sections.append("")
-    sections.append("Now decide what tool to call.")
+    sections.append("Now perform one bounded action for this turn.")
     return "\n".join(sections)
 
 

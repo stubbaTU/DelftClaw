@@ -342,16 +342,35 @@ def _stop_unit(unit: str) -> None:
     _sudo(["systemctl", "disable", unit], check=False)
 
 
+def _openclaw_run(
+    sudo_env: list[str],
+    args: list[str],
+    *,
+    timeout_s: int = 60,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run an OpenClaw CLI command with a hard timeout.
+
+    A hung OpenClaw process used to make scenario boot or teardown appear
+    successful while leaving stopped sudo children behind. Fail fast here so
+    the operator sees an actionable error before watchdog turn 1.
+    """
+    return subprocess.run(
+        [*sudo_env, "openclaw", *args],
+        check=check,
+        capture_output=capture,
+        text=True,
+        timeout=timeout_s,
+    )
+
+
 def _openclaw_config_set(sudo_env: list[str], path: str, value: object) -> None:
     """Set one OpenClaw config path using the stable JSON value interface."""
-    subprocess.run(
-        [
-            *sudo_env,
-            "openclaw", "config", "set",
-            path, json.dumps(value),
-            "--json",
-        ],
-        check=True,
+    _openclaw_run(
+        sudo_env,
+        ["config", "set", path, json.dumps(value), "--json"],
+        timeout_s=30,
     )
 
 
@@ -436,7 +455,13 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER,
            "-m", "0750", str(agent_dir)])
 
-    sudo_env = ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}"]
+    sudo_env = [
+        "sudo", "-u", SERVICE_USER, "env",
+        f"HOME={state}",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "OLLAMA_API_KEY=ollama",
+        "OPENCLAW_DISABLE_TELEMETRY=1",
+    ]
 
     # (1) Update the agent's openclaw.json so the Ollama provider is registered
     # before any model lookup happens. Without this, ``openclaw agent --local
@@ -481,16 +506,20 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # (2) Register the MCP server in this HOME's openclaw.json.
     mcp_value = json.dumps({"url": mcp_url, "transport": "streamable-http"})
     c_info(f"{agent.name}: openclaw mcp set {instance} -> {mcp_url}")
-    subprocess.run(
-        [*sudo_env, "openclaw", "mcp", "set", instance, mcp_value],
-        check=True,
+    _openclaw_run(
+        sudo_env,
+        ["mcp", "set", instance, mcp_value],
+        timeout_s=30,
     )
 
     # (3) Register the agent. ``openclaw agents add`` errors if already
     # present, so we list-and-skip when re-running.
-    proc = subprocess.run(
-        [*sudo_env, "openclaw", "agents", "list", "--json"],
-        check=False, capture_output=True, text=True,
+    proc = _openclaw_run(
+        sudo_env,
+        ["agents", "list", "--json"],
+        timeout_s=30,
+        capture=True,
+        check=False,
     )
     existing: list[str] = []
     if proc.returncode == 0:
@@ -507,13 +536,14 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         c_info(f"{agent.name}: openclaw agent {instance!r} already registered")
     else:
         c_info(f"{agent.name}: openclaw agents add {instance}")
-        subprocess.run(
-            [*sudo_env, "openclaw", "agents", "add", instance,
+        _openclaw_run(
+            sudo_env,
+            ["agents", "add", instance,
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
              "--model", f"ollama/{QWEN_MODEL}"],
-            check=True,
+            timeout_s=60,
         )
 
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
@@ -761,9 +791,15 @@ def _teardown(scenario: Scenario, dry_run: bool) -> int:
         _stop_unit(f"delftclaw-mcp@{instance}.service")
         # Unregister the per-agent OpenClaw workspace; don't fail teardown if
         # it was never created (re-runs after partial boots).
-        subprocess.run(
-            ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}",
-             "openclaw", "agents", "delete", instance, "--force"],
+        _openclaw_run(
+            [
+                "sudo", "-u", SERVICE_USER, "env",
+                f"HOME={state}",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "OPENCLAW_DISABLE_TELEMETRY=1",
+            ],
+            ["agents", "delete", instance, "--force"],
+            timeout_s=30,
             check=False,
         )
         env_path = _instance_env_path(scenario, agent)

@@ -53,6 +53,7 @@ from deploy.turn_builder import (
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
 from protocol.llm import OpenAICompatibleClient
+from agent.cli import _apply_seed_content, _publish_overlays
 
 
 _log = logging.getLogger("watchdog")
@@ -175,12 +176,17 @@ def _invoke_openclaw_agent(
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
+    env = os.environ.copy()
+    env.setdefault("OLLAMA_API_KEY", "ollama")
+    env["PATH"] = env.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    env.setdefault("OPENCLAW_DISABLE_TELEMETRY", "1")
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s + 30,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
@@ -235,6 +241,23 @@ async def _run_loop(args: argparse.Namespace) -> int:
         bt_service=build_default_service(save_dir=save_dir),
     )
     await agent.start()
+
+    # The watchdog uses a separate in-process OpenClawAgent for read-only
+    # snapshots. Mirror the bootstrapped MCP agent enough that turn-1 state
+    # describes the real service OpenClaw is about to operate through.
+    publish_overlay = os.environ.get("PUBLISH_OVERLAY")
+    overlay_paths = [str(path) for path in spec.publish_overlays]
+    if publish_overlay and publish_overlay not in overlay_paths:
+        overlay_paths.append(publish_overlay)
+    if overlay_paths:
+        try:
+            _publish_overlays(agent, overlay_paths)
+        except Exception as exc:
+            _log.warning("failed to mirror published overlays in snapshot agent: %s", exc)
+    try:
+        _apply_seed_content(agent, os.environ.get("SEED_CONTENT_FILE"))
+    except Exception as exc:
+        _log.warning("failed to mirror seed content in snapshot agent: %s", exc)
 
     # Load the network manifest scenario_boot wrote to disk so this
     # snapshot agent reports state.network alongside the MCP-process
