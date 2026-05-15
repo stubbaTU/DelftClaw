@@ -37,13 +37,27 @@ def test_history_empty_initially():
     assert h.tail() == []
 
 
-def test_summary_truncates_long_responses():
-    r = TurnRecord(turn_n=7, prompt="p", response_text="x" * 1000,
+def test_summary_drops_response_text():
+    # The hallucination-feedback fix (2026-05-15): summary does NOT
+    # echo the assistant's free-text reply back into the next turn's
+    # RECENT TURNS, because the LLM treated its own past prose as
+    # ground truth and doubled down on hallucinated success.
+    r = TurnRecord(turn_n=7, prompt="p",
+                   response_text="MISSION COMPLETE — torrent at 100%",
                    stop_predicate_value=False)
     s = r.summary()
     assert s.startswith("[turn 7]")
-    assert s.endswith("...")
-    assert len(s) < 700
+    assert "MISSION COMPLETE" not in s
+    assert "stop_predicate=False" in s
+
+
+def test_summary_reflects_stop_predicate_value():
+    r_pending = TurnRecord(turn_n=3, prompt="p", response_text="anything",
+                           stop_predicate_value=False)
+    r_done = TurnRecord(turn_n=4, prompt="p", response_text="anything",
+                        stop_predicate_value=True)
+    assert "stop_predicate=False" in r_pending.summary()
+    assert "stop_predicate=True" in r_done.summary()
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +103,16 @@ def test_prompt_lists_recent_turns_when_history_present():
     h.append(TurnRecord(turn_n=1, prompt="p", response_text="first turn happened",
                         stop_predicate_value=False))
     h.append(TurnRecord(turn_n=2, prompt="p", response_text="second turn happened",
-                        stop_predicate_value=False))
+                        stop_predicate_value=True))
     out = build_turn_prompt("m", {}, h)
     assert "[turn 1]" in out
     assert "[turn 2]" in out
-    assert "first turn happened" in out
-    assert "second turn happened" in out
+    # response_text is intentionally NOT echoed (hallucination-feedback fix).
+    assert "first turn happened" not in out
+    assert "second turn happened" not in out
+    # stop_predicate value IS echoed.
+    assert "stop_predicate=False" in out
+    assert "stop_predicate=True" in out
 
 
 def test_prompt_says_none_yet_on_first_turn():
