@@ -54,6 +54,8 @@ from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
 from protocol.llm import OpenAICompatibleClient
 from agent.cli import _apply_seed_content, _publish_overlays
+from agent.loop import OpenAICompatibleToolLLM, run_tool_loop
+from agent.tools import build_tools
 
 
 _log = logging.getLogger("watchdog")
@@ -194,6 +196,46 @@ def _invoke_openclaw_agent(
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
     return proc.returncode == 0, proc.stdout, proc.stderr
+
+
+async def _invoke_direct_tool_loop(
+    *,
+    agent: OpenClawAgent,
+    prompt: str,
+    timeout_s: int,
+    max_iterations: int,
+) -> tuple[bool, str, str]:
+    """Drive DelftClaw's native tool loop directly.
+
+    This avoids OpenClaw's large built-in tool bundle. Gemini's
+    OpenAI-compatible endpoint rejects that bundle's schema before a turn can
+    start, while DelftClaw's own tool surface is smaller and is all the paper
+    demo needs.
+    """
+    api_key_env = os.environ.get("OPENCLAW_API_KEY_ENV", "GEMINI_API_KEY")
+    api_key = os.environ.get(api_key_env, "")
+    llm = OpenAICompatibleToolLLM(
+        base_url=os.environ.get("OPENCLAW_BASE_URL")
+        or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
+        model_id=os.environ.get("OPENCLAW_MODEL")
+        or os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
+        api_key=api_key,
+        timeout_s=max(30, timeout_s - 15),
+    )
+    tools = build_tools(agent)
+    try:
+        text = await asyncio.wait_for(
+            run_tool_loop(
+                prompt,
+                llm,
+                tools,
+                max_iterations=max_iterations,
+            ),
+            timeout=timeout_s,
+        )
+    except Exception as exc:
+        return False, "", f"{type(exc).__name__}: {exc}"
+    return True, text, ""
 
 
 # ---------------------------------------------------------------------------
@@ -352,12 +394,20 @@ async def _drive(
             return EXIT_WALL_CLOCK
 
         prompt = build_turn_prompt(mission_text, snapshot, history)
-        ok, stdout, stderr = await asyncio.to_thread(
-            _invoke_openclaw_agent,
-            instance=instance,
-            prompt=prompt,
-            timeout_s=scenario.watchdog.interval_s,
-        )
+        if os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower() == "direct":
+            ok, stdout, stderr = await _invoke_direct_tool_loop(
+                agent=agent,
+                prompt=prompt,
+                timeout_s=scenario.watchdog.interval_s + 30,
+                max_iterations=scenario.watchdog.max_iterations_per_turn,
+            )
+        else:
+            ok, stdout, stderr = await asyncio.to_thread(
+                _invoke_openclaw_agent,
+                instance=instance,
+                prompt=prompt,
+                timeout_s=scenario.watchdog.interval_s,
+            )
 
         record = {
             "event": "turn",

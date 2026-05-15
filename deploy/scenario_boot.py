@@ -145,6 +145,10 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
     api_keys = [part.strip() for part in api_keys_raw.split(",") if part.strip()]
     if not api_keys and api_key_value:
         api_keys = [api_key_value]
+    watchdog_driver = os.environ.get(
+        "WATCHDOG_DRIVER",
+        host_env.get("WATCHDOG_DRIVER", "direct" if provider == "gemini" else "openclaw"),
+    ).strip().lower()
     return {
         "provider": provider,
         "api": api,
@@ -153,6 +157,7 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
         "api_key_env": api_key_env,
         "api_key_value": api_key_value,
         "api_keys": "\n".join(api_keys),
+        "watchdog_driver": watchdog_driver,
     }
 
 
@@ -273,6 +278,7 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
         f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
         f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
+        f"WATCHDOG_DRIVER={OPENCLAW_LLM['watchdog_driver']}",
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
         # config resolves to this env var; any non-empty string works.

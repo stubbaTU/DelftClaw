@@ -191,13 +191,13 @@ def _tool_histogram(scenario: str) -> dict[str, collections.Counter]:
     record individual tool calls.
     """
     per_agent: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    # Each agent's MCP unit name is "delftclaw-mcp@<scenario>-<agent>".
-    # journalctl with -u <glob> still tags every line with its unit, so
-    # we can attribute lines back to the agent.
+    # Tool calls can be made by the MCP service when OpenClaw talks over MCP,
+    # or directly by the watchdog when WATCHDOG_DRIVER=direct.
     out = subprocess.run(
         ["journalctl", "--no-pager", "-o", "short-iso",
          "--output-fields=UNIT,MESSAGE", "--all",
-         f"-u", f"delftclaw-mcp@{scenario}-*.service"],
+         f"-u", f"delftclaw-mcp@{scenario}-*.service",
+         f"-u", f"delftclaw-watchdog@{scenario}-*.service"],
         capture_output=True, text=True,
     )
     current_unit = ""
@@ -214,7 +214,7 @@ def _tool_histogram(scenario: str) -> dict[str, collections.Counter]:
         # Try to find the unit name in the line:
         agent = "?"
         for piece in line.split():
-            if piece.startswith("delftclaw-mcp@") and ".service" in piece:
+            if piece.startswith(("delftclaw-mcp@", "delftclaw-watchdog@")) and ".service" in piece:
                 tag = piece.split("@", 1)[1].split(".service")[0]
                 # tag is "<scenario>-<agent>"
                 if "-" in tag:
