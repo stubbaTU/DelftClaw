@@ -133,6 +133,13 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
         host_env.get("OPENCLAW_API_KEY_ENV", "OLLAMA_API_KEY" if provider == "ollama" else "GEMINI_API_KEY"),
     ).strip()
     api_key_value = os.environ.get(api_key_env, host_env.get(api_key_env, "")).strip()
+    api_keys_raw = os.environ.get(
+        "OPENCLAW_API_KEYS",
+        host_env.get("OPENCLAW_API_KEYS", host_env.get("GEMINI_API_KEYS", "")),
+    )
+    api_keys = [part.strip() for part in api_keys_raw.split(",") if part.strip()]
+    if not api_keys and api_key_value:
+        api_keys = [api_key_value]
     return {
         "provider": provider,
         "api": api,
@@ -140,6 +147,7 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
         "model": model,
         "api_key_env": api_key_env,
         "api_key_value": api_key_value,
+        "api_keys": "\n".join(api_keys),
     }
 
 
@@ -159,6 +167,18 @@ def _normalise_openclaw_base_url(provider: str, base_url: str) -> str:
     if provider == "ollama":
         return _ollama_base_from(base_url)
     return base_url.rstrip("/") + "/"
+
+
+def _openclaw_api_key_for_agent(scenario: Scenario, agent: AgentSpec) -> str:
+    keys = [part for part in OPENCLAW_LLM.get("api_keys", "").splitlines() if part]
+    if not keys:
+        return OPENCLAW_LLM.get("api_key_value", "")
+    names = list(scenario.agents)
+    try:
+        idx = names.index(agent.name)
+    except ValueError:
+        idx = 0
+    return keys[idx % len(keys)]
 
 
 def c_info(msg: str) -> None: print(f"\033[1;36m[boot]\033[0m {msg}", flush=True)
@@ -196,6 +216,7 @@ def _seed_content_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
+    openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
     overlay = agent.publish_overlays[0] if agent.publish_overlays else (
         REPO_ROOT / "protocol" / "examples" / "content_community.md"
     )
@@ -252,12 +273,29 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # config resolves to this env var; any non-empty string works.
         "OLLAMA_API_KEY=ollama",
         *(
-            [f"{OPENCLAW_LLM['api_key_env']}={OPENCLAW_LLM['api_key_value']}"]
-            if OPENCLAW_LLM["api_key_value"] else []
+            [f"{OPENCLAW_LLM['api_key_env']}={openclaw_api_key_value}"]
+            if openclaw_api_key_value else []
         ),
         f"LOG_DIR={scenario.log_dir}",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _redact_env_for_log(body: str) -> str:
+    secret_keys = {
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        OPENCLAW_LLM.get("api_key_env", ""),
+    }
+    redacted: list[str] = []
+    for line in body.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in secret_keys and value:
+            redacted.append(f"{key}=<redacted>")
+        else:
+            redacted.append(line)
+    return "\n".join(redacted) + ("\n" if body.endswith("\n") else "")
 
 
 # ---------------------------------------------------------------------------
@@ -516,8 +554,9 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         "OLLAMA_API_KEY=ollama",
         "OPENCLAW_DISABLE_TELEMETRY=1",
     ]
-    if OPENCLAW_LLM["api_key_value"]:
-        sudo_env.append(f"{OPENCLAW_LLM['api_key_env']}={OPENCLAW_LLM['api_key_value']}")
+    openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
+    if openclaw_api_key_value:
+        sudo_env.append(f"{OPENCLAW_LLM['api_key_env']}={openclaw_api_key_value}")
 
     # (1) Update the agent's openclaw.json so the reasoning provider is
     # registered before any model lookup happens. Without this,
@@ -712,7 +751,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     for agent in scenario.agents.values():
         if dry_run:
             c_dry(f"{agent.name}: would seed + write env at {_instance_env_path(scenario, agent)}")
-            c_dry(f"  env body:\n{_instance_env_contents(scenario, agent)}")
+            c_dry(f"  env body:\n{_redact_env_for_log(_instance_env_contents(scenario, agent))}")
             continue
         _seed_for_agent(scenario, agent)
         _stage_scenario_dir(scenario, agent)
