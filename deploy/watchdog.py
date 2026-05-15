@@ -260,6 +260,7 @@ async def _invoke_direct_tool_loop(
     """
     api_key_env = os.environ.get("OPENCLAW_API_KEY_ENV", "GEMINI_API_KEY")
     api_key = os.environ.get(api_key_env, "")
+    provider = os.environ.get("OPENCLAW_PROVIDER", "").strip().lower()
     llm = OpenAICompatibleToolLLM(
         base_url=os.environ.get("OPENCLAW_BASE_URL")
         or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
@@ -267,6 +268,7 @@ async def _invoke_direct_tool_loop(
         or os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
         api_key=api_key,
         timeout_s=max(30, timeout_s - 15),
+        extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
     )
     tools = build_tools(agent)
     if os.environ.get("DIRECT_TOOL_ALLOWLIST", "paper_demo").strip().lower() == "paper_demo":

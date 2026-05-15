@@ -16,7 +16,7 @@ responses keyed by turn count, mirroring the production protocol.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
 from agent.tools import ToolRegistry
@@ -71,6 +71,7 @@ class OpenAICompatibleToolLLM:
     api_key: str = ""
     temperature: float = 0.0
     timeout_s: float = 120.0
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
     def complete_with_tools(
         self,
@@ -81,13 +82,15 @@ class OpenAICompatibleToolLLM:
     ) -> dict[str, Any]:
         import urllib.request
 
-        body = json.dumps({
+        payload = {
             "model": self.model_id,
             "messages": messages,
             "tools": tools,
             "temperature": self.temperature,
             "max_tokens": max_tokens,
-        }).encode("utf-8")
+        }
+        payload.update(self.extra_body)
+        body = json.dumps(payload).encode("utf-8")
         url = self.base_url.rstrip("/") + "/chat/completions"
         req = urllib.request.Request(
             url,
