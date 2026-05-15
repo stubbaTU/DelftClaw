@@ -327,7 +327,7 @@ async def _drive(
             instance=instance,
             prompt=prompt,
             timeout_s=scenario.watchdog.interval_s,
-            model=f"ollama/{os.environ.get('QWEN_MODEL', 'qwen2.5-coder:7b')}",
+            model="claude-cli/claude-haiku-4-5",
         )
 
         record = {

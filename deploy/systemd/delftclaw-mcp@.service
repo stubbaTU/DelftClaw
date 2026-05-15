@@ -11,8 +11,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=delftclaw
-Group=delftclaw
+User=claw2
+Group=claw2
 WorkingDirectory=/opt/delftclaw
 # Every per-instance value (seed file path, ports, HOME, publish-overlay
 # args) is supplied by the env file deploy/scenario_boot.py drops at

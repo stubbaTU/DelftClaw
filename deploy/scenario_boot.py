@@ -51,7 +51,7 @@ SCENARIOS_REPO_DIR = REPO_ROOT / "deploy" / "scenarios"
 ETC_INSTANCES = Path("/etc/delftclaw/instances")
 ETC_SCENARIOS = Path("/etc/delftclaw/scenarios")
 STATE_ROOT = Path("/var/lib/delftclaw")
-SERVICE_USER = "delftclaw"
+SERVICE_USER = "claw2"
 HOST_ENV_FILE = REPO_ROOT / "configs" / "host.env"
 
 
@@ -236,6 +236,30 @@ def _seed_for_agent(scenario: Scenario, agent: AgentSpec) -> None:
     ])
 
 
+def _link_claude_auth(scenario: Scenario, agent: AgentSpec) -> None:
+    """Symlink the service user's Claude Code auth into the per-agent HOME.
+
+    The watchdog runs ``openclaw agent --model claude-cli/claude-haiku-4-5``,
+    which shells out to the ``claude`` CLI. ``claude`` reads its auth from
+    ``$HOME/.claude/``, and each scenario agent has HOME=/var/lib/delftclaw/
+    <scenario>/<agent>/. Without this symlink, every openclaw call fails
+    with "not logged in".
+    """
+    state = _state_dir(scenario.name, agent.name)
+    link = state / ".claude"
+    target = Path(f"/home/{SERVICE_USER}/.claude")
+    if not target.is_dir():
+        c_warn(f"{agent.name}: claude auth dir {target} missing — "
+               f"openclaw calls will fail until ``claude`` is logged in as {SERVICE_USER}")
+        return
+    # ``ln -sfn`` replaces an existing symlink atomically; creates if missing.
+    subprocess.run(
+        ["sudo", "-u", SERVICE_USER, "ln", "-sfn", str(target), str(link)],
+        check=True,
+    )
+    c_ok(f"{agent.name}: linked {link} -> {target}")
+
+
 def _write_env_file(scenario: Scenario, agent: AgentSpec) -> None:
     env_path = _instance_env_path(scenario, agent)
     body = _instance_env_contents(scenario, agent)
@@ -352,17 +376,17 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     <scenario>/<agent>``. OpenClaw resolves its config at ``$HOME/.openclaw/``,
     so writing per-agent state under that HOME naturally isolates them.
 
-    Three sub-steps:
+    Two sub-steps:
       1. ``openclaw mcp set <instance> '{"url": "http://127.0.0.1:<port>/mcp",
          "transport": "streamable-http"}'`` — wire the agent's MCP server into
          its config so ``openclaw agent`` knows where to look.
       2. ``openclaw agents add <instance> --non-interactive --workspace …
-         --agent-dir …`` — register the agent name the watchdog will pass to
-         ``--agent <instance>``.
-      3. Verify with ``openclaw agents list --json``.
+         --agent-dir … --model claude-cli/claude-haiku-4-5`` — register the
+         agent name the watchdog will pass to ``--agent <instance>``, bound
+         to Haiku via the built-in claude-cli provider.
 
-    Each command runs as the ``delftclaw`` user with HOME pointing at this
-    agent's state dir, so the config writes land in the right place.
+    Each command runs as the service user with HOME pointing at this agent's
+    state dir, so the config writes land in the right place.
     """
     instance = scenario.instance_id(agent.name)
     state = _state_dir(scenario.name, agent.name)
@@ -377,60 +401,11 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
 
     sudo_env = ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}"]
 
-    # (1) Patch the agent's openclaw.json so the Ollama provider is registered
-    # before any model lookup happens. Without this, ``openclaw agent --local
-    # --model ollama/qwen2.5-coder:7b`` can't resolve the model.
-    #
-    # ``agents.defaults.timeoutSeconds`` is the *inner* LLM call timeout (the
-    # subprocess-level timeout we pass via --timeout is unrelated). qwen3.6:27b
-    # cold-starts ~30s on the GPU host; the OpenClaw default of 30s would
-    # always fire on turn 1. Set this generously below the watchdog tick
-    # ``interval_s`` so timeouts surface as turn errors rather than truncated
-    # responses mid-call.
-    provider_patch = json.dumps({
-        "agents": {
-            "defaults": {
-                "timeoutSeconds": 150,
-            },
-        },
-        "models": {
-            "mode": "merge",
-            "providers": {
-                "ollama": {
-                    "baseUrl": _ollama_base_from(QWEN_BASE_URL),
-                    "api": "ollama",
-                    # OpenClaw refuses to call any provider without an apiKey,
-                    # even Ollama which accepts anything as Bearer. The string
-                    # ``OLLAMA_API_KEY`` is resolved at runtime against the
-                    # systemd env file (see ``_instance_env_contents``).
-                    "apiKey": "OLLAMA_API_KEY",
-                    "models": [
-                        {
-                            "id": QWEN_MODEL,
-                            "name": QWEN_MODEL,
-                            "reasoning": False,
-                            "input": ["text"],
-                            "cost": {"input": 0, "output": 0,
-                                     "cacheRead": 0, "cacheWrite": 0},
-                            "contextWindow": 32768,
-                            "maxTokens": 4096,
-                        },
-                    ],
-                },
-            },
-        },
-    })
-    # ``--replace-path models.providers.ollama.models`` so we overwrite the
-    # whole model list each run; openclaw config patch otherwise refuses to
-    # drop existing entries (e.g. a stale qwen2.5-coder:7b from a prior boot).
-    c_info(f"{agent.name}: openclaw config patch (ollama provider)")
-    subprocess.run(
-        [*sudo_env, "openclaw", "config", "patch", "--stdin",
-         "--replace-path", "models.providers.ollama.models"],
-        input=provider_patch, text=True, check=True,
-    )
+    # No provider patch needed: the ``claude-cli`` provider is built into
+    # openclaw and reads its auth from ``$HOME/.claude/``. ``_link_claude_auth``
+    # symlinks that into each agent's HOME before the watchdog starts.
 
-    # (2) Register the MCP server in this HOME's openclaw.json.
+    # (1) Register the MCP server in this HOME's openclaw.json.
     mcp_value = json.dumps({"url": mcp_url, "transport": "streamable-http"})
     c_info(f"{agent.name}: openclaw mcp set {instance} -> {mcp_url}")
     subprocess.run(
@@ -438,7 +413,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         check=True,
     )
 
-    # (3) Register the agent. ``openclaw agents add`` errors if already
+    # (2) Register the agent. ``openclaw agents add`` errors if already
     # present, so we list-and-skip when re-running.
     proc = subprocess.run(
         [*sudo_env, "openclaw", "agents", "list", "--json"],
@@ -464,7 +439,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
-             "--model", f"ollama/{QWEN_MODEL}"],
+             "--model", "claude-cli/claude-haiku-4-5"],
             check=True,
         )
 
@@ -573,6 +548,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             c_dry(f"  env body:\n{_instance_env_contents(scenario, agent)}")
             continue
         _seed_for_agent(scenario, agent)
+        _link_claude_auth(scenario, agent)
         _stage_scenario_dir(scenario, agent)
         _write_env_file(scenario, agent)
 
@@ -581,7 +557,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         for agent in scenario.agents.values():
             instance = scenario.instance_id(agent.name)
             c_dry(f"  would openclaw mcp set {instance} (HOME=/var/lib/delftclaw/{scenario.name}/{agent.name})")
-            c_dry(f"  would openclaw agents add {instance} --non-interactive --model ollama/{QWEN_MODEL}")
+            c_dry(f"  would openclaw agents add {instance} --non-interactive --model claude-cli/claude-haiku-4-5")
         c_dry("would call MCP peer_add for cross-introductions:")
         for agent in scenario.agents.values():
             for peer_name in agent.peers:

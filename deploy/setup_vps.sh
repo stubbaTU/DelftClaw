@@ -31,7 +31,7 @@ set -euo pipefail
 REPO_ROOT=${REPO_ROOT:-/opt/delftclaw}
 STATE_DIR=/var/lib/delftclaw
 LOG_DIR=/var/log/delftclaw
-SERVICE_USER=delftclaw
+SERVICE_USER=claw2
 
 IPV8_PORT=${IPV8_PORT:-8090}
 MCP_PORT=${MCP_PORT:-8765}
@@ -212,7 +212,7 @@ step_firewall() {
 main() {
     require_root
     step_apt
-    step_tailscale
+    # step_tailscale  # skipped on personal VPS — not reaching the team GPU box
     step_ollama
     step_openclaw_cli
     step_user
