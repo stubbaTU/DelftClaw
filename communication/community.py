@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -51,6 +52,33 @@ from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
 
 from admission.donation_verifier import DonationVerifier
+
+
+# Mirror the redteam pull-loop's HTTP access-log shape: one line per
+# wire event, written via the standard logger so systemd journals
+# capture it alongside uvicorn's ``/head`` / ``/entries`` lines. Grep
+# with ``journalctl -u delftclaw-mcp@... | grep IPv8``.
+_wire_logger = logging.getLogger("delftclaw.communication.wire")
+
+
+def _peer_tag(peer: Peer) -> str:
+    """Short, log-friendly identifier for a peer (first 6 bytes of mid hex)."""
+    try:
+        return peer.mid.hex()[:12]
+    except Exception:
+        return "??"
+
+
+def _log_wire(direction: str, msg: str, peer: Peer, **fields: object) -> None:
+    """Emit one structured line per wire event.
+
+    ``direction`` is ``send`` or ``recv``. ``msg`` is the payload class
+    name without the ``Payload`` suffix. Extra ``fields`` are joined as
+    ``key=value`` pairs in the order given.
+    """
+    rendered = " ".join(f"{k}={v}" for k, v in fields.items())
+    suffix = (" " + rendered) if rendered else ""
+    _wire_logger.info("IPv8 %s msg=%s peer=%s%s", direction, msg, _peer_tag(peer), suffix)
 
 
 @dataclass(frozen=True)
@@ -290,23 +318,28 @@ class SeedboxCommunity(Community, PeerObserver):
         loop = asyncio.get_event_loop()
         future: asyncio.Future[bool] = loop.create_future()
         self._pending_joins[gatekeeper.mid] = future
+        _log_wire("send", "JoinRequest", gatekeeper, txid=donation_txid.hex()[:16])
         self.ez_send(gatekeeper, JoinRequestPayload(donation_txid))
         return future
 
     @lazy_wrapper(JoinRequestPayload)
     def on_join_request(self, peer: Peer, payload: JoinRequestPayload) -> None:
+        _log_wire("recv", "JoinRequest", peer, txid=payload.donation_txid.hex()[:16])
         if self._verifier is None:
+            _log_wire("send", "JoinResponse", peer, accepted=False, reason="no_verifier")
             self.ez_send(peer, JoinResponsePayload(False))
             return
         result = self._verifier.verify(payload.donation_txid.hex())
         if result.accepted:
             self.network.add_verified_peer(peer)
+        _log_wire("send", "JoinResponse", peer, accepted=result.accepted)
         self.ez_send(peer, JoinResponsePayload(result.accepted))
         if result.accepted:
             self._send_peer_intro(peer)
 
     @lazy_wrapper(JoinResponsePayload)
     def on_join_response(self, peer: Peer, payload: JoinResponsePayload) -> None:
+        _log_wire("recv", "JoinResponse", peer, accepted=payload.accepted)
         future = self._pending_joins.pop(peer.mid, None)
         if future is not None and not future.done():
             future.set_result(payload.accepted)
@@ -333,6 +366,11 @@ class SeedboxCommunity(Community, PeerObserver):
         future: asyncio.Future[tuple[bool, str]] = loop.create_future()
         self._pending_community_joins[gatekeeper.mid] = future
         payload_bytes = _json.dumps(signed_entry).encode("utf-8")
+        _log_wire(
+            "send", "CommunityJoinRequest", gatekeeper,
+            entry_bytes=len(payload_bytes),
+            entry_type=signed_entry.get("type") if isinstance(signed_entry, dict) else "?",
+        )
         self.ez_send(gatekeeper, CommunityJoinRequestPayload(payload_bytes))
         return future
 
@@ -341,7 +379,12 @@ class SeedboxCommunity(Community, PeerObserver):
         self, peer: Peer, payload: CommunityJoinRequestPayload,
     ) -> None:
         import json as _json
+        _log_wire(
+            "recv", "CommunityJoinRequest", peer,
+            entry_bytes=len(payload.signed_entry),
+        )
         if self._community_join_callback is None:
+            _log_wire("send", "CommunityJoinResponse", peer, accepted=False, reason="no_callback")
             self.ez_send(
                 peer,
                 CommunityJoinResponsePayload(False, b"no_community_join_callback"),
@@ -350,17 +393,23 @@ class SeedboxCommunity(Community, PeerObserver):
         try:
             entry = _json.loads(payload.signed_entry.decode("utf-8"))
         except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+            _log_wire("send", "CommunityJoinResponse", peer, accepted=False, reason=f"malformed:{exc}")
             self.ez_send(
                 peer,
                 CommunityJoinResponsePayload(False, f"malformed_entry:{exc}".encode("utf-8")),
             )
             return
         if not isinstance(entry, dict):
+            _log_wire("send", "CommunityJoinResponse", peer, accepted=False, reason="not_object")
             self.ez_send(peer, CommunityJoinResponsePayload(False, b"entry_not_object"))
             return
         accepted, reason = self._community_join_callback(peer, entry)
         if accepted:
             self.network.add_verified_peer(peer)
+        _log_wire(
+            "send", "CommunityJoinResponse", peer,
+            accepted=bool(accepted), reason=(reason or "")[:60],
+        )
         self.ez_send(
             peer,
             CommunityJoinResponsePayload(bool(accepted), (reason or "").encode("utf-8")),
@@ -378,6 +427,10 @@ class SeedboxCommunity(Community, PeerObserver):
             reason = payload.reason.decode("utf-8")
         except UnicodeDecodeError:
             reason = "<reason: invalid utf-8>"
+        _log_wire(
+            "recv", "CommunityJoinResponse", peer,
+            accepted=bool(payload.accepted), reason=reason[:60],
+        )
         if future is not None and not future.done():
             future.set_result((bool(payload.accepted), reason))
         if payload.accepted:
@@ -400,6 +453,7 @@ class SeedboxCommunity(Community, PeerObserver):
         """Tell ``peer`` we serve an overlay with this id (no payload sent)."""
         if len(md_hash) != 20:
             raise ValueError("md_hash must be exactly 20 bytes")
+        _log_wire("send", "OverlayOffer", peer, md_hash=md_hash.hex()[:16])
         self.ez_send(peer, OverlayOfferPayload(md_hash))
 
     def fetch_overlay(self, peer: Peer, md_hash: bytes) -> asyncio.Future[bytes]:
@@ -411,11 +465,13 @@ class SeedboxCommunity(Community, PeerObserver):
         # Key by md_hash, not peer mid — multiple peers may serve the same overlay
         # and we accept the first delivery.
         self._pending_fetches[md_hash] = future
+        _log_wire("send", "OverlayRequest", peer, md_hash=md_hash.hex()[:16])
         self.ez_send(peer, OverlayRequestPayload(md_hash))
         return future
 
     @lazy_wrapper(OverlayOfferPayload)
     def on_overlay_offer(self, peer: Peer, payload: OverlayOfferPayload) -> None:
+        _log_wire("recv", "OverlayOffer", peer, md_hash=payload.md_hash.hex()[:16])
         self._known_offers.setdefault(payload.md_hash, set()).add(peer.mid)
         cb = self._offer_callback
         if cb is not None:
@@ -423,16 +479,25 @@ class SeedboxCommunity(Community, PeerObserver):
 
     @lazy_wrapper(OverlayRequestPayload)
     def on_overlay_request(self, peer: Peer, payload: OverlayRequestPayload) -> None:
+        _log_wire("recv", "OverlayRequest", peer, md_hash=payload.md_hash.hex()[:16])
         md_text = self._published.get(payload.md_hash)
         if md_text is None:
             return  # silently ignore; requester times out at its end
         body = md_text.encode("utf-8")
         if len(body) > MAX_OVERLAY_BYTES:
             return  # we never publish anything that big; defensive drop
+        _log_wire(
+            "send", "OverlayDelivery", peer,
+            md_hash=payload.md_hash.hex()[:16], bytes=len(body),
+        )
         self.ez_send(peer, OverlayDeliveryPayload(payload.md_hash, body))
 
     @lazy_wrapper(OverlayDeliveryPayload)
     def on_overlay_delivery(self, peer: Peer, payload: OverlayDeliveryPayload) -> None:
+        _log_wire(
+            "recv", "OverlayDelivery", peer,
+            md_hash=payload.md_hash.hex()[:16], bytes=len(payload.md_text),
+        )
         if len(payload.md_text) > MAX_OVERLAY_BYTES:
             return
         # Verify the delivery actually matches the hash before resolving
@@ -461,6 +526,7 @@ class SeedboxCommunity(Community, PeerObserver):
         """Tell ``peer`` we serve a manifest with this id (no payload sent)."""
         if len(md_hash) != 20:
             raise ValueError("md_hash must be exactly 20 bytes")
+        _log_wire("send", "ManifestOffer", peer, md_hash=md_hash.hex()[:16])
         self.ez_send(peer, ManifestOfferPayload(md_hash))
 
     def fetch_manifest(self, peer: Peer, md_hash: bytes) -> asyncio.Future[bytes]:
@@ -470,11 +536,13 @@ class SeedboxCommunity(Community, PeerObserver):
         loop = asyncio.get_event_loop()
         future: asyncio.Future[bytes] = loop.create_future()
         self._pending_manifest_fetches[md_hash] = future
+        _log_wire("send", "ManifestRequest", peer, md_hash=md_hash.hex()[:16])
         self.ez_send(peer, ManifestRequestPayload(md_hash))
         return future
 
     @lazy_wrapper(ManifestOfferPayload)
     def on_manifest_offer(self, peer: Peer, payload: ManifestOfferPayload) -> None:
+        _log_wire("recv", "ManifestOffer", peer, md_hash=payload.md_hash.hex()[:16])
         self._known_manifest_offers.setdefault(payload.md_hash, set()).add(peer.mid)
         cb = self._manifest_offer_callback
         if cb is not None:
@@ -482,16 +550,25 @@ class SeedboxCommunity(Community, PeerObserver):
 
     @lazy_wrapper(ManifestRequestPayload)
     def on_manifest_request(self, peer: Peer, payload: ManifestRequestPayload) -> None:
+        _log_wire("recv", "ManifestRequest", peer, md_hash=payload.md_hash.hex()[:16])
         md_text = self._published_manifests.get(payload.md_hash)
         if md_text is None:
             return  # silently ignore; requester times out at its end
         body = md_text.encode("utf-8")
         if len(body) > MAX_OVERLAY_BYTES:
             return  # we never publish anything that big; defensive drop
+        _log_wire(
+            "send", "ManifestDelivery", peer,
+            md_hash=payload.md_hash.hex()[:16], bytes=len(body),
+        )
         self.ez_send(peer, ManifestDeliveryPayload(payload.md_hash, body))
 
     @lazy_wrapper(ManifestDeliveryPayload)
     def on_manifest_delivery(self, peer: Peer, payload: ManifestDeliveryPayload) -> None:
+        _log_wire(
+            "recv", "ManifestDelivery", peer,
+            md_hash=payload.md_hash.hex()[:16], bytes=len(payload.md_text),
+        )
         if len(payload.md_text) > MAX_OVERLAY_BYTES:
             return
         delivered_text = payload.md_text.decode("utf-8", errors="replace")
@@ -517,6 +594,10 @@ class SeedboxCommunity(Community, PeerObserver):
             return
         overlays = sorted(self._published.keys())
         body = msgpack.packb(overlays, use_bin_type=True)
+        _log_wire(
+            "send", "PeerIntro", peer,
+            wallet=self._wallet_address[:16], overlays=len(overlays),
+        )
         self.ez_send(
             peer,
             PeerIntroPayload(
@@ -530,17 +611,21 @@ class SeedboxCommunity(Community, PeerObserver):
         try:
             addr = payload.wallet_address.decode("utf-8")
         except UnicodeDecodeError:
+            _log_wire("recv", "PeerIntro", peer, dropped="invalid_wallet_utf8")
             return  # malformed; drop
         try:
             raw = msgpack.unpackb(payload.known_overlays, raw=False)
         except Exception:
+            _log_wire("recv", "PeerIntro", peer, wallet=addr[:16], dropped="overlays_unpack_failed")
             return  # malformed; drop
         if not isinstance(raw, list):
+            _log_wire("recv", "PeerIntro", peer, wallet=addr[:16], dropped="overlays_not_list")
             return
         overlays: list[bytes] = []
         for h in raw:
             if isinstance(h, (bytes, bytearray)) and len(h) == 20:
                 overlays.append(bytes(h))
+        _log_wire("recv", "PeerIntro", peer, wallet=addr[:16], overlays=len(overlays))
         meta = PeerMeta(wallet_address=addr, known_overlays=tuple(overlays))
         self._peer_meta[peer.mid] = meta
         cb = self._peer_intro_callback

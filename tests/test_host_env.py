@@ -72,7 +72,7 @@ def test_qwen_resolution_env_var_wins_over_host_env(monkeypatch, tmp_path):
     monkeypatch.setenv("QWEN_BASE_URL", "http://env-var-url:8000/v1")
     monkeypatch.setenv("QWEN_MODEL", "env-var-model")
 
-    base, model = scenario_boot._resolve_qwen(host_env)
+    base, model, _api_key = scenario_boot._resolve_qwen(host_env)
     assert base == "http://env-var-url:8000/v1"
     assert model == "env-var-model"
 
@@ -87,7 +87,7 @@ def test_qwen_resolution_host_env_wins_over_default(monkeypatch, tmp_path):
     monkeypatch.delenv("QWEN_BASE_URL", raising=False)
     monkeypatch.delenv("QWEN_MODEL", raising=False)
 
-    base, model = scenario_boot._resolve_qwen(host_env)
+    base, model, _api_key = scenario_boot._resolve_qwen(host_env)
     assert base == "http://host-env-only/v1"
     assert model == "host-env-model"
 
@@ -96,9 +96,26 @@ def test_qwen_resolution_default_when_neither_set(monkeypatch, tmp_path):
     monkeypatch.delenv("QWEN_BASE_URL", raising=False)
     monkeypatch.delenv("QWEN_MODEL", raising=False)
 
-    base, model = scenario_boot._resolve_qwen(tmp_path / "no_such.env")
+    base, model, _api_key = scenario_boot._resolve_qwen(tmp_path / "no_such.env")
     assert base == scenario_boot.DEFAULT_QWEN_BASE_URL
     assert model == scenario_boot.DEFAULT_QWEN_MODEL
+
+
+def test_ollama_api_key_resolution(monkeypatch, tmp_path):
+    """OLLAMA_API_KEY follows the same env > host.env > default order."""
+    host_env = tmp_path / "host.env"
+    host_env.write_text("OLLAMA_API_KEY=from-host-env\n", encoding="utf-8")
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    _b, _m, key = scenario_boot._resolve_qwen(host_env)
+    assert key == "from-host-env"
+
+    monkeypatch.setenv("OLLAMA_API_KEY", "from-process-env")
+    _b, _m, key = scenario_boot._resolve_qwen(host_env)
+    assert key == "from-process-env"
+
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    _b, _m, key = scenario_boot._resolve_qwen(tmp_path / "no_such.env")
+    assert key == scenario_boot.DEFAULT_OLLAMA_API_KEY
 
 
 def test_resolve_qwen_partial_override(monkeypatch, tmp_path):
@@ -108,6 +125,6 @@ def test_resolve_qwen_partial_override(monkeypatch, tmp_path):
     monkeypatch.delenv("QWEN_BASE_URL", raising=False)
     monkeypatch.delenv("QWEN_MODEL", raising=False)
 
-    base, model = scenario_boot._resolve_qwen(host_env)
+    base, model, _api_key = scenario_boot._resolve_qwen(host_env)
     assert base == scenario_boot.DEFAULT_QWEN_BASE_URL
     assert model == "host-env-model-only"

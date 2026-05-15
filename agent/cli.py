@@ -63,6 +63,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -574,6 +575,17 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # Surface INFO-level structured logs (IPv8 wire events from
+    # ``communication.community._log_wire``, pull-loop progress, etc.)
+    # to stderr → systemd journal. Format mirrors uvicorn's access log
+    # so journalctl filters look the same across HTTP + IPv8 events.
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(
         prog="python -m agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
