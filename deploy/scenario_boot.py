@@ -206,6 +206,15 @@ def _state_dir(scenario_name: str, agent_name: str) -> Path:
     return STATE_ROOT / scenario_name / agent_name
 
 
+def _prepare_shared_state(scenario: Scenario) -> None:
+    """Create scenario-level writable state that is shared across agents."""
+    if scenario.name != "paper_security":
+        return
+    security_root = STATE_ROOT / scenario.name / "security"
+    _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
+    c_ok(f"{scenario.name}: shared security evidence dir ready ({security_root})")
+
+
 def _instance_env_path(scenario: Scenario, agent: AgentSpec) -> Path:
     return ETC_INSTANCES / f"{scenario.instance_id(agent.name)}.env"
 
@@ -769,6 +778,8 @@ def _pubkey_for_agent(scenario: Scenario, agent: AgentSpec) -> str:
 
 async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     # Phase 1: filesystem + env + scenario staging.
+    if not dry_run:
+        _prepare_shared_state(scenario)
     for agent in scenario.agents.values():
         if dry_run:
             c_dry(f"{agent.name}: would seed + write env at {_instance_env_path(scenario, agent)}")
