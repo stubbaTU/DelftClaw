@@ -146,7 +146,8 @@ _IPV8_MARKERS = ("IPv8 send msg=", "IPv8 recv msg=")
 
 def _journal_lines(scenario: str, *, tail: int | None = None) -> list[str]:
     cmd = ["journalctl", "--no-pager",
-           f"-u", f"delftclaw-mcp@{scenario}-*.service"]
+           f"-u", f"delftclaw-mcp@{scenario}-*.service",
+           f"-u", f"delftclaw-watchdog@{scenario}-*.service"]
     if tail is not None:
         cmd[2:2] = ["-n", str(tail)]
     out = subprocess.run(cmd, capture_output=True, text=True)

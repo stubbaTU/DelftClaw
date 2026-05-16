@@ -75,6 +75,7 @@ PAPER_DEMO_TOOL_ALLOWLIST = {
     "community_treasury_balance",
     "community_member_count",
     "community_donate_and_join",
+    "community_join_via_peer",
     "network_join",
     "overlay_invoke",
     "overlays_list",
