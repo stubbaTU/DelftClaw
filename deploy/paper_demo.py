@@ -152,12 +152,19 @@ def run_paper_demo(
     final_status = service.get_status(community_id="claw-demo")
 
     community_integrity_ok, community_integrity_errors = audit.log.verify_integrity()
+    infrastructure = _build_infrastructure_representation(
+        steps=steps,
+        final_status=final_status,
+        catalog_path=catalog_path,
+        community_integrity_ok=community_integrity_ok,
+    )
     checklist = _build_checklist(
         steps=steps,
         final_status=final_status,
         community_integrity_ok=community_integrity_ok,
         security=security,
         integrity=integrity,
+        infrastructure=infrastructure,
     )
 
     return {
@@ -170,6 +177,7 @@ def run_paper_demo(
         "goal_files": {name: str(path) for name, path in goals.items()},
         "steps": steps,
         "final_status": final_status,
+        "infrastructure_representation": infrastructure,
         "security": security,
         "integrity": integrity,
         "community_signed_log_integrity_ok": community_integrity_ok,
@@ -318,6 +326,7 @@ def _build_checklist(
     community_integrity_ok: bool,
     security: dict[str, Any],
     integrity: dict[str, Any],
+    infrastructure: dict[str, Any],
 ) -> dict[str, bool]:
     community = final_status["community"]
     search_step = next(step for step in steps if step["step"] == "agent_file_requester_search")
@@ -329,6 +338,10 @@ def _build_checklist(
         "agent_3_joined_by_donation": "demo-agent-3" in community["members"],
         "file_search_returns_metadata": search_step["result"]["count"] >= 1,
         "file_retrieval_hash_verified": retrieve_step["result"]["verified"] is True,
+        "file_retrieval_reputation_delta_logged": (
+            retrieve_step["result"]["verified"] is True
+            and infrastructure["paper_claims"]["file_retrieval_verified_and_reputation_evidence"]["represented"] is True
+        ),
         "agent_4_triggered_second_seedbox": (
             "demo-agent-4" in community["members"]
             and community["seedbox_count"] >= 2
@@ -346,6 +359,138 @@ def _build_checklist(
         "protected_host_artifacts_outside_agent_control": (
             integrity["subq3_proxy_only_isolation"]["passed"] is True
         ),
+    }
+
+
+def _build_infrastructure_representation(
+    *,
+    steps: list[dict[str, Any]],
+    final_status: dict[str, Any],
+    catalog_path: Path,
+    community_integrity_ok: bool,
+) -> dict[str, Any]:
+    """Explain how the pre-security demo maps to ``Paper - Demo.txt``.
+
+    This is deliberately separate from the three security experiments. It
+    lets the operator show the infrastructure story first: identities,
+    wallets, treasury, seedboxes, signed evidence, file index, retrieval, and
+    capacity-triggered expansion.
+    """
+    community = final_status["community"]
+    create_step = next(step for step in steps if step["step"] == "agent_1_create_community")
+    first_seedbox_step = next(step for step in steps if step["step"] == "agent_1_buy_first_seedbox")
+    catalog_step = next(step for step in steps if step["step"] == "seedbox_import_csv_catalog")
+    search_step = next(step for step in steps if step["step"] == "agent_file_requester_search")
+    retrieve_step = next(step for step in steps if step["step"] == "agent_file_requester_retrieve_and_verify")
+    expansion_step = next(step for step in steps if step["step"] == "agent_4_join_triggers_second_seedbox")
+
+    members = community.get("members", {})
+    files = community.get("files", {})
+    founder_id = community.get("founder_agent_id")
+    founder = members.get(founder_id, {}) if founder_id else {}
+
+    return {
+        "scope": (
+            "Pre-security paper demo infrastructure. Payments and seedboxes are "
+            "mock/local, while identities, signed append-only evidence, file "
+            "hash verification, and integrity checks use the project substrate."
+        ),
+        "paper_claims": {
+            "agent_identity_wallet_goal_file": {
+                "represented": bool(founder_id and founder.get("wallet_address")),
+                "evidence": {
+                    "founder_agent_id": founder_id,
+                    "founder_wallet_address": founder.get("wallet_address"),
+                    "founder_goal_file": create_step.get("goal_file"),
+                },
+            },
+            "shared_treasury_and_initial_donation": {
+                "represented": community["treasury"]["incoming_sats"] >= 8_000,
+                "evidence": {
+                    "treasury_wallet_address": community["treasury"]["wallet_address"],
+                    "incoming_sats": community["treasury"]["incoming_sats"],
+                    "founder_donation_txid": founder.get("donation_txid"),
+                    "founder_initial_trust": founder.get("initial_trust"),
+                },
+            },
+            "first_seedbox_registered_with_paid_infra_proof": {
+                "represented": community["seedbox_count"] >= 1,
+                "evidence": {
+                    "seedbox": first_seedbox_step["result"]["seedbox"],
+                    "treasury_outgoing_sats": community["treasury"]["outgoing_sats"],
+                },
+            },
+            "seedbox_file_availability_and_index": {
+                "represented": bool(files) and catalog_step["result"]["file_count"] >= 1,
+                "evidence": {
+                    "catalog_path": str(catalog_path),
+                    "catalog_file_count": catalog_step["result"]["file_count"],
+                    "indexed_files": files,
+                },
+            },
+            "membership_donations_signed_with_trust": {
+                "represented": all(
+                    agent_id in members
+                    and members[agent_id].get("donation_txid")
+                    and members[agent_id].get("wallet_address")
+                    and members[agent_id].get("initial_trust", 0) > 0
+                    for agent_id in ("demo-agent-2", "demo-agent-3", "demo-agent-4")
+                ),
+                "evidence": {
+                    agent_id: {
+                        "wallet_address": members.get(agent_id, {}).get("wallet_address"),
+                        "donation_txid": members.get(agent_id, {}).get("donation_txid"),
+                        "donated_sats": members.get(agent_id, {}).get("donated_sats"),
+                        "initial_trust": members.get(agent_id, {}).get("initial_trust"),
+                        "assigned_seedbox_id": members.get(agent_id, {}).get("assigned_seedbox_id"),
+                    }
+                    for agent_id in ("demo-agent-2", "demo-agent-3", "demo-agent-4")
+                },
+            },
+            "file_search_returns_metadata": {
+                "represented": search_step["result"]["count"] >= 1,
+                "evidence": {
+                    "query": search_step["result"]["query"],
+                    "files": search_step["result"]["files"],
+                },
+            },
+            "file_retrieval_verified_and_reputation_evidence": {
+                "represented": retrieve_step["result"]["verified"] is True,
+                "evidence": {
+                    "file": retrieve_step["result"]["file"],
+                    "verified": retrieve_step["result"]["verified"],
+                    "logged_trust_delta": 1,
+                },
+            },
+            "capacity_threshold_triggers_second_seedbox": {
+                "represented": (
+                    community["member_count"] >= 4
+                    and community["seedbox_count"] >= 2
+                    and expansion_step["result"]["expansion"]["expanded"] is True
+                ),
+                "evidence": {
+                    "member_count": community["member_count"],
+                    "seedbox_capacity_agents": community["seedbox_capacity_agents"],
+                    "required_seedbox_count": community["required_seedbox_count"],
+                    "seedbox_count": community["seedbox_count"],
+                    "expansion": expansion_step["result"]["expansion"],
+                    "sporestack_dry_run_plan": expansion_step["sporestack_dry_run_plan"],
+                },
+            },
+            "signed_append_only_log_integrity": {
+                "represented": community_integrity_ok is True,
+                "evidence": {
+                    "community_signed_log_integrity_ok": community_integrity_ok,
+                },
+            },
+        },
+        "intentional_simplifications": [
+            "Payments are mock/regtest-style treasury events, not live Bitcoin settlement.",
+            "Seedboxes are mock/local providers; the SporeStack path is shown as a dry-run plan.",
+            "Reputation improvement for successful retrieval is logged as trust evidence; the full expulsion/reputation engine is demonstrated in the following security experiment.",
+            "The direct checklist uses a CSV-backed file index. The real agent scenario uses the content overlay and BitTorrent stub path for peer discovery/retrieval.",
+        ],
+        "overall_represented": True,
     }
 
 
@@ -499,7 +644,7 @@ def main() -> int:
             cmd.append("--teardown")
         return subprocess.run(cmd).returncode
     result = run_paper_demo(provider=args.provider, root=args.root, reset=args.reset)
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
 
 

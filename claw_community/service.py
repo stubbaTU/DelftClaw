@@ -57,20 +57,25 @@ class ClawCommunityService:
             seedbox_purchase_threshold_sats=seedbox_purchase_threshold_sats,
         )
         communities[community_id] = community
+        founder_txid = f"mocktx-{community_id}-founder-funding"
+        founder_initial_trust = round(
+            min(10.0, max(1.0, initial_funding_sats / join_fee_sats)),
+            2,
+        )
         self._fund_treasury(
             community,
             agent_id=founder_agent_id,
             wallet_address=founder_wallet_address,
             amount_sats=initial_funding_sats,
-            txid=f"mocktx-{community_id}-founder-funding",
+            txid=founder_txid,
         )
         community.members[founder_agent_id] = CommunityMember(
             agent_id=founder_agent_id,
             wallet_address=founder_wallet_address,
             joined_at=utc_now(),
-            donation_txid=f"mocktx-{community_id}-founder-funding",
+            donation_txid=founder_txid,
             donated_sats=initial_funding_sats,
-            initial_trust=round(min(10.0, max(1.0, initial_funding_sats / join_fee_sats)), 2),
+            initial_trust=founder_initial_trust,
         )
         self.store.save_all(communities)
         self.audit.record(
@@ -84,6 +89,10 @@ class ClawCommunityService:
                 "seedbox_capacity_agents": seedbox_capacity_agents,
                 "seedbox_purchase_threshold_sats": seedbox_purchase_threshold_sats,
                 "initial_funding_sats": initial_funding_sats,
+                "founder_agent_id": founder_agent_id,
+                "founder_wallet_address": founder_wallet_address,
+                "founder_donation_txid": founder_txid,
+                "founder_initial_trust": founder_initial_trust,
             },
         )
         return {"ok": True, "community": self._community_payload(community)}
@@ -326,7 +335,12 @@ class ClawCommunityService:
             actor_id=requester_agent_id,
             subject_id=community_id,
             action=action,
-            details={"community_id": community_id, "file": asdict(file_item), "verified": verified},
+            details={
+                "community_id": community_id,
+                "file": asdict(file_item),
+                "verified": verified,
+                "retrieval_trust_delta": 1 if verified else -2,
+            },
         )
         return {"ok": True, "file": asdict(file_item), "verified": verified}
 
