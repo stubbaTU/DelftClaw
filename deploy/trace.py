@@ -331,20 +331,28 @@ def _render_agent(scenario: str, agent: str, snap: dict) -> None:
 
 
 def _latest_snapshot(summary: dict) -> dict:
-    return summary.get("last_snapshot") or summary.get("stop_snapshot") or {}
+    # Turn events capture the state *before* the agent acts. If the
+    # watchdog stopped later, the stop event contains the completed state
+    # and should drive the story checklist.
+    return summary.get("stop_snapshot") or summary.get("last_snapshot") or {}
 
 
 def _community_snapshot(summaries: dict[str, dict]) -> dict:
-    for agent in ("agent_1", "agent_4", "agent_3", "agent_2"):
-        snap = _latest_snapshot(summaries.get(agent, {}))
-        community = snap.get("community")
-        if community:
-            return community
-    for summary in summaries.values():
-        community = _latest_snapshot(summary).get("community")
-        if community:
-            return community
-    return {}
+    communities = [
+        _latest_snapshot(summary).get("community")
+        for summary in summaries.values()
+        if _latest_snapshot(summary).get("community")
+    ]
+    if not communities:
+        return {}
+    return max(
+        communities,
+        key=lambda c: (
+            int(c.get("seedbox_count") or 0),
+            int(c.get("member_count") or 0),
+            int(c.get("balance_sats") or 0),
+        ),
+    )
 
 
 def _network_admission(summaries: dict[str, dict]) -> dict:
