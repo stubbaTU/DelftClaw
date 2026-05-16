@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import hashlib
 import json
+import logging
 import subprocess
 import sys
 import shutil
@@ -795,9 +797,27 @@ def main() -> int:
         if args.stop_real_agents:
             cmd.append("--teardown")
         return subprocess.run(cmd).returncode
-    result = run_paper_demo(provider=args.provider, root=args.root, reset=args.reset)
+    _route_logging_stdout_to_stderr()
+    with contextlib.redirect_stdout(sys.stderr):
+        result = run_paper_demo(provider=args.provider, root=args.root, reset=args.reset)
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
+
+
+def _route_logging_stdout_to_stderr() -> None:
+    """Keep stdout machine-readable for ``python -m deploy.paper_demo | jq``.
+
+    Several lower layers emit debug/audit lines while the checklist runs.
+    Those are useful in an interactive terminal but they corrupt the final
+    JSON report when stdout is piped into jq. Route existing stdout-backed
+    logging handlers to stderr; direct prints during the run are redirected
+    in ``main``.
+    """
+    for logger_name in ("", "redteam.primitives.signed_log", "delftclaw.communication.wire"):
+        logger = logging.getLogger(logger_name)
+        for handler in logger.handlers:
+            if getattr(handler, "stream", None) is sys.stdout:
+                handler.stream = sys.stderr
 
 
 if __name__ == "__main__":
