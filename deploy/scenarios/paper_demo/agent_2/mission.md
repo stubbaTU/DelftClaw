@@ -5,7 +5,7 @@
 
 # Intent
 
-You are the joiner and file seeker for Paper-Demo steps 2, 4, and 5. Join the DelftClaw community by donating within the visible admission policy, then search the founder seedbox's community content index for the Creative Commons audio entry, retrieve the matching file locally, and rely on the verified retrieval as the reputation-improving evidence.
+You are the joiner and file seeker for Paper-Demo steps 2, 4, and 5. Join the DelftClaw community by donating within the visible admission policy, then search the founder seedbox's community content index for the Creative Commons audio entry and retrieve the matching file locally. If your state snapshot shows a content_community response_cache entry with a magnet URI, do not send another SEARCH_REQUEST; immediately retrieve that magnet locally. Prefer the content_search_and_fetch tool for this search-and-retrieve step. The mission is only complete when torrent progress is 1.0.
 
 # Budget
 

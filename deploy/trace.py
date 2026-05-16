@@ -386,6 +386,27 @@ def _first_content_row(summaries: dict[str, dict]) -> dict:
     return {}
 
 
+def _content_overlay_rows(summary: dict, key: str) -> list[dict]:
+    rows = []
+    for overlay in (_latest_snapshot(summary).get("overlays") or []):
+        if overlay.get("name") != "content_community":
+            continue
+        for row in overlay.get(key) or []:
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def _format_content_row(row: dict) -> str:
+    if not row:
+        return "none"
+    parts = []
+    for key in ("name", "size", "mime", "magnet"):
+        if row.get(key) is not None:
+            parts.append(f"{key}={row.get(key)}")
+    return " ".join(parts) if parts else "none"
+
+
 def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
     if scenario != "paper_demo":
         return
@@ -406,6 +427,8 @@ def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
     a3 = summaries.get("agent_3", {})
     a4 = summaries.get("agent_4", {})
     a2_retrieved = any(float(row.get("progress") or 0) >= 1 for row in _torrent_rows(a2))
+    seedbox_index = _content_overlay_rows(a1, "local_index")
+    seeker_responses = _content_overlay_rows(a2, "response_cache")
 
     _print_header("paper story checklist")
     print("  This section maps the live real-agent run to Paper - Demo.txt before the security experiments.")
@@ -417,15 +440,10 @@ def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
     print(f"  3. Third member on first seedbox: {_ok_wait(member_count >= 3 or a3.get('stopped'))}  "
           f"members={member_count} agent_3_stopped={'yes' if a3.get('stopped') else 'no'}")
 
-    if content:
-        content_bits = []
-        for key in ("name", "size", "mime", "magnet"):
-            if content.get(key) is not None:
-                content_bits.append(f"{key}={content.get(key)}")
-        content_text = " ".join(content_bits)
-    else:
-        content_text = "no seeded content visible in latest snapshots"
-    print(f"  4. File index/search metadata: {_ok_wait(bool(content))}  {content_text}")
+    print(f"  4a. Seedbox file index published: {_ok_wait(bool(seedbox_index))}  "
+          f"{_format_content_row(seedbox_index[0] if seedbox_index else content)}")
+    print(f"  4b. Seeker received search metadata: {_ok_wait(bool(seeker_responses))}  "
+          f"{_format_content_row(seeker_responses[0] if seeker_responses else {})}")
     print(f"  5. Retrieval and verification evidence: {_ok_wait(a2_retrieved)}  "
           f"agent_2_torrent_progress_gte_1={'yes' if a2_retrieved else 'no'}")
     print(f"  6. Capacity-triggered second seedbox: {_ok_wait(seedbox_count >= 2)}  "
