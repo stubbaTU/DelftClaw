@@ -226,6 +226,7 @@ def _seed_content_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
+    security_root = STATE_ROOT / scenario.name / "security"
     openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
     overlay = agent.publish_overlays[0] if agent.publish_overlays else (
         REPO_ROOT / "protocol" / "examples" / "content_community.md"
@@ -278,7 +279,15 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
         f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
         f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
-        f"WATCHDOG_DRIVER={OPENCLAW_LLM['watchdog_driver']}",
+        f"WATCHDOG_DRIVER={'direct' if scenario.name == 'paper_security' else OPENCLAW_LLM['watchdog_driver']}",
+        *(
+            [
+                "DIRECT_TOOL_ALLOWLIST=paper_security",
+                f"SECURITY_DEMO_ROOT={security_root}",
+                f"SECURITY_EVIDENCE_PATH={security_root / 'security_evidence.json'}",
+            ]
+            if scenario.name == "paper_security" else []
+        ),
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
         # config resolves to this env var; any non-empty string works.

@@ -14,7 +14,10 @@ The snapshot is intentionally:
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,6 +40,7 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
         "peers": _peers_snapshot(agent),
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
+        "security": _security_snapshot(),
     }
 
 
@@ -222,3 +226,32 @@ def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             "peers": int(t.peers),
         })
     return out
+
+
+def _security_snapshot() -> dict[str, Any] | None:
+    path_raw = os.environ.get("SECURITY_EVIDENCE_PATH")
+    if not path_raw:
+        return None
+    path = Path(path_raw)
+    if not path.is_file():
+        return {"ok": False, "layers": {}, "checklist": {}, "path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "layers": {},
+            "checklist": {},
+            "path": str(path),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if isinstance(data, dict):
+        data["path"] = str(path)
+        return data
+    return {
+        "ok": False,
+        "layers": {},
+        "checklist": {},
+        "path": str(path),
+        "error": f"expected object, got {type(data).__name__}",
+    }

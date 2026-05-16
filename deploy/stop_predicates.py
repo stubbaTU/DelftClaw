@@ -80,6 +80,30 @@ def _community_member_count_gte_N(n: int = 1) -> Predicate:
     return pred
 
 
+def _security_layer_done(layer: str | int = "") -> Predicate:
+    key = {
+        "1": "layer1",
+        "2": "layer2",
+        "3": "layer3",
+        "preventative": "layer1",
+        "accountability": "layer2",
+        "impact": "layer3",
+    }.get(str(layer), str(layer))
+
+    def pred(snapshot: StateSnapshot) -> bool:
+        security = snapshot.get("security") or {}
+        checklist = security.get("checklist") or {}
+        return bool(checklist.get(key))
+
+    pred.__name__ = f"security_layer_done_{key}"
+    return pred
+
+
+def _security_all_done(snapshot: StateSnapshot) -> bool:
+    security = snapshot.get("security") or {}
+    return bool(security.get("ok"))
+
+
 # ---------------------------------------------------------------------------
 # Registry + resolver
 # ---------------------------------------------------------------------------
@@ -93,6 +117,8 @@ _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "wallet_received_sats": _wallet_received_sats,
     "community_seedbox_count_gte_N": _community_seedbox_count_gte_N,
     "community_member_count_gte_N": _community_member_count_gte_N,
+    "security_layer_done": _security_layer_done,
+    "security_all_done": _security_all_done,
 }
 
 
@@ -151,6 +177,7 @@ def _looks_like_factory(obj: Any) -> bool:
         or name.startswith("_wallet_received_sats")
         or name.startswith("_community_seedbox_count_gte_N")
         or name.startswith("_community_member_count_gte_N")
+        or name.startswith("_security_layer_done")
     )
 
 

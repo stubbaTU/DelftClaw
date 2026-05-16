@@ -42,6 +42,7 @@ from agent.runtime import AgentConfig, OpenClawAgent
 from communication.bittorrent import build_default_service
 from deploy import stop_predicates
 from deploy.scenario import AgentSpec, parse_scenario
+from deploy.security_agent_tools import build_security_tools
 from deploy.state_snapshot import collect_state
 from deploy.turn_builder import (
     TurnHistory,
@@ -138,6 +139,7 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "peers": snapshot.get("peers"),
         "torrents": snapshot.get("torrents"),
         "overlays_loaded": overlays_loaded,
+        "security": snapshot.get("security"),
     }
 
 
@@ -274,6 +276,7 @@ def _invoke_openclaw_agent(
 async def _invoke_direct_tool_loop(
     *,
     agent: OpenClawAgent,
+    agent_name: str,
     prompt: str,
     timeout_s: int,
     max_iterations: int,
@@ -297,8 +300,12 @@ async def _invoke_direct_tool_loop(
         timeout_s=max(30, timeout_s - 15),
         extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
     )
-    tools = build_tools(agent)
-    if os.environ.get("DIRECT_TOOL_ALLOWLIST", "paper_demo").strip().lower() == "paper_demo":
+    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "paper_demo").strip().lower()
+    if tool_allowlist == "paper_security":
+        tools = build_security_tools(agent_name)
+    else:
+        tools = build_tools(agent)
+    if tool_allowlist == "paper_demo":
         tools._tools = {  # type: ignore[attr-defined]
             name: tool
             for name, tool in tools._tools.items()  # type: ignore[attr-defined]
@@ -480,6 +487,7 @@ async def _drive(
         if driver == "direct":
             ok, stdout, stderr = await _invoke_direct_tool_loop(
                 agent=agent,
+                agent_name=spec.name,
                 prompt=prompt,
                 timeout_s=scenario.watchdog.interval_s + 30,
                 max_iterations=scenario.watchdog.max_iterations_per_turn,

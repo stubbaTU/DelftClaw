@@ -462,6 +462,61 @@ def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
         print(f"  Founder latest note: {a1['last_stdout'].replace(chr(10), ' ')[:220]}")
 
 
+def _security_snapshot(summaries: dict[str, dict]) -> dict:
+    snapshots = [
+        _latest_snapshot(summary).get("security")
+        for summary in summaries.values()
+        if _latest_snapshot(summary).get("security")
+    ]
+    if not snapshots:
+        return {}
+    return max(
+        snapshots,
+        key=lambda item: (
+            int(bool(item.get("ok"))),
+            sum(1 for ok in (item.get("checklist") or {}).values() if ok),
+            len(item.get("layers") or {}),
+        ),
+    )
+
+
+def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
+    if scenario != "paper_security":
+        return
+
+    security = _security_snapshot(summaries)
+    layers = security.get("layers") or {}
+    checklist = security.get("checklist") or {}
+    layer1 = layers.get("1_preventative_gateway") or {}
+    layer2 = layers.get("2_accountability_reputation") or {}
+    layer3 = layers.get("3_impact_integrity_containment") or {}
+
+    l1_without = layer1.get("without_defense") or {}
+    l1_with = layer1.get("with_defense") or {}
+    l2_before = layer2.get("before_accountability_reports") or {}
+    l2_after = layer2.get("after_accountability_reports") or {}
+    l3_without = layer3.get("without_isolation") or {}
+    l3_with = layer3.get("with_proxy_only_isolation") or {}
+    tamper = layer3.get("tamper_detection") or {}
+
+    _print_header("security story checklist")
+    print("  This section maps Act 2 to the paper's defense-in-depth security story.")
+    print(f"  1. Preventative gateway: {_ok_wait(bool(checklist.get('layer1')))}  "
+          f"baseline_attack_success={l1_without.get('attack_success')} "
+          f"benign_allowed={l1_with.get('benign_executed')} "
+          f"defended_blocked={l1_with.get('blocked')}")
+    print(f"  2. Accountability and reputation: {_ok_wait(bool(checklist.get('layer2')))}  "
+          f"before_score={l2_before.get('score')} before_banned={l2_before.get('banned')} "
+          f"after_score={l2_after.get('score')} after_banned={l2_after.get('banned')} "
+          f"banned_agents={l2_after.get('banned_agents')}")
+    print(f"  3. Impact containment and integrity: {_ok_wait(bool(checklist.get('layer3')))}  "
+          f"no_isolation_passed={l3_without.get('passed')} "
+          f"proxy_only_passed={l3_with.get('passed')} "
+          f"tamper_detected={tamper.get('community_log_after_tamper_ok') is False}")
+    print(f"  Overall defense-in-depth story: {_ok_wait(bool(security.get('ok')))}  "
+          f"evidence={security.get('path', 'none')}")
+
+
 def _render_ipv8(hist: collections.Counter, recent: list[str]) -> None:
     _print_header("IPv8 wire events — totals from journal buffer")
     if not hist:
@@ -506,6 +561,7 @@ def main(argv: list[str]) -> int:
             _render_agent(scenario, agent, snap)
 
     _render_paper_story(scenario, summaries)
+    _render_security_story(scenario, summaries)
     _render_ipv8(_ipv8_histogram(scenario), _recent_ipv8_events(scenario))
     return 0
 

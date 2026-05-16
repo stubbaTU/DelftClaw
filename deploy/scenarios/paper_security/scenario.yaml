@@ -1,0 +1,58 @@
+# Scenario: paper_security
+#
+# Real watchdog-driven security showcase for Act 2 of Paper - Demo.txt.
+# Each agent gets a narrow security tool surface through the direct driver
+# and writes signed/structured evidence into a shared scenario evidence file.
+
+name: paper_security
+description: >-
+  Four watchdog-driven agents demonstrate the paper demo security story:
+  preventative gateway controls, accountability and reputation updates, and
+  impact containment through proxy-only integrity protection.
+
+watchdog:
+  interval_s: 90
+  max_iterations_per_turn: 6
+  max_total_turns: 8
+  max_wall_clock_s: 1800
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/paper_security
+
+agents:
+
+  security_operator:
+    ipv8_port: 8290
+    mcp_port: 18870
+    redteam_port: 28870
+    publish_overlays: []
+    mission_file: security_operator/mission.md
+    stop_predicate: security_layer_done(layer=1)
+    initial_balance_sats: 0
+
+  auditor:
+    ipv8_port: 8291
+    mcp_port: 18871
+    redteam_port: 28871
+    publish_overlays: []
+    mission_file: auditor/mission.md
+    stop_predicate: security_layer_done(layer=2)
+    initial_balance_sats: 0
+
+  impact_tester:
+    ipv8_port: 8292
+    mcp_port: 18872
+    redteam_port: 28872
+    publish_overlays: []
+    mission_file: impact_tester/mission.md
+    stop_predicate: security_layer_done(layer=3)
+    initial_balance_sats: 0
+
+  presenter:
+    ipv8_port: 8293
+    mcp_port: 18873
+    redteam_port: 28873
+    publish_overlays: []
+    mission_file: presenter/mission.md
+    stop_predicate: security_all_done
+    initial_balance_sats: 0
