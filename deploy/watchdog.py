@@ -114,6 +114,15 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "community_id_hex": item.get("community_id_hex"),
             "name": item.get("name"),
             "messages": messages,
+            "usage_hint": (
+                "For content_community, a seeker sends SEARCH_REQUEST to a seedbox peer. "
+                "SEARCH_RESPONSE is sent automatically by the seedbox handler; do not send "
+                "SEARCH_RESPONSE manually as a seeker. After a response arrives, read "
+                "response_cache and call torrent_fetch on the returned magnet."
+                if item.get("name") == "content_community" else None
+            ),
+            "local_index": (item.get("local_index") or [])[:5],
+            "response_cache": (item.get("response_cache") or [])[-5:],
         })
 
     return {

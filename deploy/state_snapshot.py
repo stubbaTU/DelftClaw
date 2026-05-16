@@ -191,12 +191,15 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                 for msg_name, payload_cls in compiled.payload_classes.items()
             ]
 
+        instance = agent.registry.get(community_id)
         out.append({
             "community_id_hex": community_id.hex(),
             "origin": compiled.origin,
             "name": name,
             "version": version,
             "messages": messages,
+            "local_index": list(getattr(instance, "local_index", []))[:10],
+            "response_cache": list(getattr(instance, "response_cache", []))[-10:],
         })
     return out
 

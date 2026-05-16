@@ -696,6 +696,17 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         compiled = agent.registry._compiled[community_id]
         if message_name not in compiled.payload_classes:
             return {"error": f"unknown_message:{message_name}"}
+        if (
+            compiled.parsed is not None
+            and compiled.parsed.identity.get("name") == "content_community"
+            and message_name == "SEARCH_RESPONSE"
+        ):
+            return {
+                "error": (
+                    "do_not_send_SEARCH_RESPONSE_manually: content seekers must send "
+                    "SEARCH_REQUEST; the seedbox handler sends SEARCH_RESPONSE automatically"
+                )
+            }
         payload_cls = compiled.payload_classes[message_name]
 
         from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]

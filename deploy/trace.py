@@ -378,6 +378,11 @@ def _first_content_row(summaries: dict[str, dict]) -> dict:
         for row in _torrent_rows(summaries.get(agent, {})):
             if row.get("name") or row.get("magnet"):
                 return row
+        for overlay in (_latest_snapshot(summaries.get(agent, {})).get("overlays") or []):
+            for key in ("local_index", "response_cache"):
+                for row in overlay.get(key) or []:
+                    if isinstance(row, dict) and (row.get("name") or row.get("magnet")):
+                        return row
     return {}
 
 
