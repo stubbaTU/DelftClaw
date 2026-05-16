@@ -76,6 +76,7 @@ PAPER_DEMO_TOOL_ALLOWLIST = {
     "community_member_count",
     "community_donate_and_join",
     "network_join",
+    "overlay_invoke",
     "overlays_list",
     "seedbox_purchase_propose",
     "seedbox_provisioned",
@@ -93,6 +94,27 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     without embedding every overlay message schema on every turn.
     """
     agent = snapshot.get("agent") or {}
+    overlays_loaded = []
+    for item in snapshot.get("overlays") or []:
+        messages = []
+        for message in item.get("messages") or []:
+            name = message.get("name")
+            if name not in {"SEARCH_REQUEST", "SEARCH_RESPONSE"}:
+                continue
+            messages.append({
+                "name": name,
+                "fields": [
+                    field.get("name")
+                    for field in message.get("fields") or []
+                    if field.get("name")
+                ],
+            })
+        overlays_loaded.append({
+            "community_id_hex": item.get("community_id_hex"),
+            "name": item.get("name"),
+            "messages": messages,
+        })
+
     return {
         "ts": snapshot.get("ts"),
         "agent": {
@@ -104,13 +126,7 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "community": snapshot.get("community"),
         "peers": snapshot.get("peers"),
         "torrents": snapshot.get("torrents"),
-        "overlays_loaded": [
-            {
-                "community_id_hex": item.get("community_id_hex"),
-                "name": item.get("name"),
-            }
-            for item in snapshot.get("overlays") or []
-        ],
+        "overlays_loaded": overlays_loaded,
     }
 
 

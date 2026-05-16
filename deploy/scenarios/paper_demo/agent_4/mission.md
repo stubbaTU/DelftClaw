@@ -5,7 +5,7 @@
 
 # Intent
 
-Join the DelftClaw paper demo community by donating within the visible admission policy. When your admission pushes the community beyond the single-seedbox capacity and the treasury can cover expansion, authorize the mock second seedbox and record that the new seedbox has been provisioned.
+You are the scaling agent in Paper-Demo step 6. Join the DelftClaw community by donating within the visible admission policy. When your admission pushes the community beyond the single-seedbox capacity and the treasury can cover expansion, authorize the mock second seedbox and record that the new seedbox has been provisioned.
 
 # Budget
 

@@ -132,6 +132,8 @@ def _agent_summary(scenario: str, agent: str) -> dict:
         "last_stop_value": last_turn.get("stop_predicate_value") if last_turn else None,
         "last_stderr_tail": stderr_tail,
         "last_stdout": last_stdout,
+        "last_snapshot": last_turn.get("snapshot") if last_turn else None,
+        "stop_snapshot": stop_events[-1].get("snapshot") if stop_events else None,
         "stopped": bool(stop_events),
         "total_entries_in_file": len(entries),
     }
@@ -328,6 +330,106 @@ def _render_agent(scenario: str, agent: str, snap: dict) -> None:
                   f"seedbox_cost={cs['manifest_seedbox_cost_sats']}")
 
 
+def _latest_snapshot(summary: dict) -> dict:
+    return summary.get("last_snapshot") or summary.get("stop_snapshot") or {}
+
+
+def _community_snapshot(summaries: dict[str, dict]) -> dict:
+    for agent in ("agent_1", "agent_4", "agent_3", "agent_2"):
+        snap = _latest_snapshot(summaries.get(agent, {}))
+        community = snap.get("community")
+        if community:
+            return community
+    for summary in summaries.values():
+        community = _latest_snapshot(summary).get("community")
+        if community:
+            return community
+    return {}
+
+
+def _network_admission(summaries: dict[str, dict]) -> dict:
+    for summary in summaries.values():
+        admission = (_latest_snapshot(summary).get("network") or {}).get("admission")
+        if admission:
+            return admission
+    return {}
+
+
+def _torrent_rows(summary: dict) -> list[dict]:
+    torrents = _latest_snapshot(summary).get("torrents") or []
+    return [row for row in torrents if isinstance(row, dict)]
+
+
+def _ok_wait(ok: bool) -> str:
+    return f"{_C['green']}OK{_C['reset']}" if ok else f"{_C['yellow']}WAIT{_C['reset']}"
+
+
+def _first_content_row(summaries: dict[str, dict]) -> dict:
+    for agent in ("agent_1", "agent_2"):
+        for row in _torrent_rows(summaries.get(agent, {})):
+            if row.get("name") or row.get("magnet"):
+                return row
+    return {}
+
+
+def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
+    if scenario != "paper_demo":
+        return
+
+    community = _community_snapshot(summaries)
+    admission = _network_admission(summaries)
+    content = _first_content_row(summaries)
+
+    member_count = int(community.get("member_count") or 0)
+    seedbox_count = int(community.get("seedbox_count") or 0)
+    treasury = int(community.get("balance_sats") or 0)
+    min_sats = admission.get("min_sats", "?")
+    seedbox_cost = admission.get("seedbox_cost_sats", "?")
+    capacity = admission.get("max_agents_per_seedbox", "?")
+
+    a1 = summaries.get("agent_1", {})
+    a2 = summaries.get("agent_2", {})
+    a3 = summaries.get("agent_3", {})
+    a4 = summaries.get("agent_4", {})
+    a2_retrieved = any(float(row.get("progress") or 0) >= 1 for row in _torrent_rows(a2))
+
+    _print_header("paper story checklist")
+    print("  This section maps the live real-agent run to Paper - Demo.txt before the security experiments.")
+    print(f"  1. Founder, wallet, treasury, first seedbox: {_ok_wait(member_count >= 1)}  "
+          f"members={member_count} treasury_sats={treasury} seedboxes={seedbox_count} "
+          f"join_fee={min_sats} seedbox_cost={seedbox_cost} capacity={capacity}")
+    print(f"  2. Second agent donation/admission: {_ok_wait(a2.get('last_turn_ok') is True)}  "
+          f"turns={a2.get('turn_count', 0)} stop={a2.get('last_stop_value')}")
+    print(f"  3. Third member on first seedbox: {_ok_wait(member_count >= 3 or a3.get('stopped'))}  "
+          f"members={member_count} agent_3_stopped={'yes' if a3.get('stopped') else 'no'}")
+
+    if content:
+        content_bits = []
+        for key in ("name", "size", "mime", "magnet"):
+            if content.get(key) is not None:
+                content_bits.append(f"{key}={content.get(key)}")
+        content_text = " ".join(content_bits)
+    else:
+        content_text = "no seeded content visible in latest snapshots"
+    print(f"  4. File index/search metadata: {_ok_wait(bool(content))}  {content_text}")
+    print(f"  5. Retrieval and verification evidence: {_ok_wait(a2_retrieved)}  "
+          f"agent_2_torrent_progress_gte_1={'yes' if a2_retrieved else 'no'}")
+    print(f"  6. Capacity-triggered second seedbox: {_ok_wait(seedbox_count >= 2)}  "
+          f"seedboxes={seedbox_count} agent_4_stop={a4.get('last_stop_value')}")
+
+    own_peer_logs = []
+    for agent, summary in summaries.items():
+        cs = _community_state_summary(scenario, agent)
+        if cs and "error" not in cs:
+            own_peer_logs.append(
+                f"{agent}:own={cs['own_log_entries']},peer={cs['peer_log_entries']}"
+            )
+    if own_peer_logs:
+        print(f"  Signed append-only evidence: {'; '.join(own_peer_logs)}")
+    if a1.get("last_stdout"):
+        print(f"  Founder latest note: {a1['last_stdout'].replace(chr(10), ' ')[:220]}")
+
+
 def _render_ipv8(hist: collections.Counter, recent: list[str]) -> None:
     _print_header("IPv8 wire events — totals from journal buffer")
     if not hist:
@@ -361,14 +463,17 @@ def main(argv: list[str]) -> int:
     agents = _agents_for_scenario(scenario)
     tools_by_agent = _tool_histogram(scenario)
     _print_header(f"agents in {scenario}")
+    summaries: dict[str, dict] = {}
     if not agents:
         print(f"  {_C['yellow']}(no JSONL traces found under {LOG_ROOT / scenario}){_C['reset']}")
     else:
         for agent in agents:
             snap = _agent_summary(scenario, agent)
             snap["_tools"] = tools_by_agent.get(agent, collections.Counter())
+            summaries[agent] = snap
             _render_agent(scenario, agent, snap)
 
+    _render_paper_story(scenario, summaries)
     _render_ipv8(_ipv8_histogram(scenario), _recent_ipv8_events(scenario))
     return 0
 

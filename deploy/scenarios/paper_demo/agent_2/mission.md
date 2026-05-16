@@ -5,7 +5,7 @@
 
 # Intent
 
-Join the DelftClaw paper demo community by donating within the visible admission policy. After admission, find the Creative Commons audio content advertised by the founder's seedbox and retrieve it locally while staying within budget.
+You are the joiner and file seeker for Paper-Demo steps 2, 4, and 5. Join the DelftClaw community by donating within the visible admission policy, then search the founder seedbox's community content index for the Creative Commons audio entry, retrieve the matching file locally, and rely on the verified retrieval as the reputation-improving evidence.
 
 # Budget
 
