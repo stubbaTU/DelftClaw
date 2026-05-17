@@ -365,8 +365,96 @@ def _enable_unit(unit: str) -> None:
 
 
 def _stop_unit(unit: str) -> None:
+    """Stop+disable a systemd unit and verify the main PID actually died.
+
+    ``systemctl stop`` returns success the moment systemd has sent SIGTERM,
+    not when the worker process has actually exited. If the worker hangs
+    inside teardown (IPv8 shutdown can stall, uvicorn doesn't honour
+    ``should_exit`` mid-keepalive, the asyncio loop is wedged in an await
+    that never wakes), the next ``make demo`` boots a NEW worker that
+    fights the zombie for the same TCP/UDP ports and fails to bind. The
+    pattern looks like: ``ss -ltnp`` shows the redteam port held but
+    ``systemctl status`` reports the unit as inactive — load-bearing
+    foot-gun caught live in the seek_cc 20:46 session.
+
+    Defence:
+      1. ``systemctl stop`` — polite SIGTERM.
+      2. Poll ``systemctl is-active`` for 5s — wait for systemd to
+         report the unit as inactive.
+      3. If still active, escalate to ``systemctl kill -s SIGKILL``.
+      4. ``systemctl disable`` regardless so the unit doesn't auto-start.
+    """
     _sudo(["systemctl", "stop", unit], check=False)
+    # Step 2: short poll for `is-active` to flip to inactive/failed.
+    for _ in range(10):
+        proc = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, check=False,
+        )
+        state = (proc.stdout or "").strip()
+        if state in ("inactive", "failed", "deactivating"):
+            break
+        time.sleep(0.5)
+    else:
+        # Step 3: escalate.
+        c_warn(f"{unit}: still active after 5s — escalating to SIGKILL")
+        _sudo(["systemctl", "kill", "-s", "SIGKILL", unit], check=False)
+        time.sleep(0.5)
     _sudo(["systemctl", "disable", unit], check=False)
+
+
+def _scenario_python_patterns(scenario: Scenario) -> list[str]:
+    """pgrep patterns that match any python process this scenario could own."""
+    return [
+        # MCP-process agents — match the systemd ExecStart cmdline.
+        f"python -m agent .*{scenario.name}-",
+        # Watchdog processes — match the systemd ExecStart cmdline.
+        f"python -m deploy.watchdog .*{scenario.name}-",
+    ]
+
+
+def _purge_orphans(scenario: Scenario) -> None:
+    """Kill any leftover delftclaw worker process that systemd lost track of.
+
+    Sweeps every TCP port the scenario manifest declares (mcp / redteam)
+    plus every UDP port (ipv8), plus pgrep-by-cmdline as a belt-and-
+    braces fallback. Runs BEFORE ``_enable_unit`` so a half-dead
+    previous run can't hold the ports we're about to ask the new
+    services to bind.
+
+    Idempotent. Cheap (<1s) when the host is clean.
+    """
+    # Collect every port this scenario will try to bind. We don't know
+    # what the previous run actually held, but binding the new run's
+    # ports is the only thing we need to clear.
+    tcp_ports: list[int] = []
+    udp_ports: list[int] = []
+    for agent in scenario.agents.values():
+        tcp_ports.append(agent.mcp_port)
+        if agent.redteam_port:
+            tcp_ports.append(agent.redteam_port)
+        udp_ports.append(agent.ipv8_port)
+
+    # ``fuser -k`` sends SIGKILL to any process holding a given port.
+    # ``-n tcp`` / ``-n udp`` picks the address family. We invoke
+    # silently and ignore exit codes — a port being unbound is the
+    # success case and fuser returns 1 there.
+    for port in tcp_ports:
+        _sudo(["fuser", "-k", "-s", f"{port}/tcp"], check=False)
+    for port in udp_ports:
+        _sudo(["fuser", "-k", "-s", f"{port}/udp"], check=False)
+
+    # Belt + braces: pkill anything that looks like a scenario worker
+    # whose ports we somehow missed (e.g. a worker that already crashed
+    # mid-bind and is in zombie state with no port).
+    for pattern in _scenario_python_patterns(scenario):
+        _sudo(["pkill", "-9", "-f", pattern], check=False)
+
+    # Brief settle so the kernel actually releases the sockets before
+    # the next systemctl start tries to bind. SO_REUSEADDR mitigates
+    # the TIME_WAIT race but not all UDP setups honour it.
+    time.sleep(0.5)
+    c_ok(f"{scenario.name}: purged orphan workers + freed scenario ports")
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +752,16 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         c_dry(f"would systemctl start delftclaw-watchdog@<instance> for {list(scenario.agents)}")
         return 0
 
+    # Phase 1.5: purge any worker process or port-holder the previous
+    # run left behind. Without this, a zombie ``delftclaw-mcp@`` worker
+    # whose systemctl stop never fully landed will keep holding the
+    # ports the new services are about to ask the kernel for, and only
+    # one of the four agents (whichever port happens to be free) will
+    # actually come up — caught live in the seek_cc 20:46 session
+    # where ``ss -ltnp`` showed exactly one redteam port bound out of
+    # four. Idempotent + cheap on a clean host.
+    _purge_orphans(scenario)
+
     # Phase 2: start MCP services + wait for them to come up.
     for agent in scenario.agents.values():
         _enable_unit(f"delftclaw-mcp@{scenario.instance_id(agent.name)}.service")
@@ -790,6 +888,11 @@ def _teardown(scenario: Scenario, dry_run: bool) -> int:
         env_path = _instance_env_path(scenario, agent)
         if env_path.exists():
             _sudo(["rm", "-f", str(env_path)])
+    # Final sweep — kill any worker that the per-instance stop missed.
+    # ``_stop_unit`` already SIGKILLs the unit's main PID on hang, but
+    # a child process orphaned by an asyncio.create_task that the
+    # parent never awaited can survive and keep holding ports.
+    _purge_orphans(scenario)
     c_ok(f"scenario '{scenario.name}' torn down")
     return 0
 
