@@ -64,6 +64,13 @@ EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
 
+# Per-turn cap for the ``openclaw agent --timeout`` flag. Decoupled from
+# scenario.watchdog.interval_s (which controls *tick frequency*) because
+# Sonnet's agentic multi-tool turns routinely exceed 120s — the diagnostic
+# on 2026-05-17 confirmed a single tool call is ~8s but a full mission-
+# advancing turn iterates donate → fetch → seed and needs 5-10x more.
+OPENCLAW_AGENT_TIMEOUT_S = 600
+
 
 # ---------------------------------------------------------------------------
 # Boot
@@ -330,7 +337,7 @@ async def _drive(
             _invoke_openclaw_agent,
             instance=instance,
             prompt=prompt,
-            timeout_s=scenario.watchdog.interval_s,
+            timeout_s=OPENCLAW_AGENT_TIMEOUT_S,
             model="claude-cli/claude-sonnet-4-6",
         )
 
