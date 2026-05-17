@@ -177,22 +177,12 @@ def _invoke_openclaw_agent(
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
-    # Forward the Claude-CLI MCP config so the patched openclaw provider
-    # can pass --mcp-config to claude. Without this env, openclaw spawns
-    # claude with no MCP wiring and Haiku has no callable tools — every
-    # reply is hallucinated chat text. Scenario_boot writes the JSON to
-    # $HOME/openclaw/claude-mcp-config.json at provision time.
-    env = os.environ.copy()
-    mcp_config = Path(env.get("HOME", "/var/lib/delftclaw")) / "openclaw" / "claude-mcp-config.json"
-    if mcp_config.exists():
-        env["CLAUDE_MCP_CONFIG"] = str(mcp_config)
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s + 30,
-            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
