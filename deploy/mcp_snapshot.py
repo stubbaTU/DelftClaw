@@ -248,12 +248,31 @@ def load_manifest_from_file(path: Path) -> NetworkManifest | None:
 
     The watchdog calls this once at boot and reuses the result for every
     snapshot. ``scenario_boot.py`` writes the manifest to disk at boot
-    time so this is a cheap synchronous read.
+    time so this is a cheap synchronous read. Logs at WARNING when a
+    file exists but doesn't parse so the operator can see immediately
+    that ``state.network`` will be null in the prompts — which is what
+    causes the LLM to hallucinate manifest re-injection calls (caught
+    in the 20:33+ seek_cc run).
     """
+    import logging
+    _log = logging.getLogger("watchdog.manifest")
+
     if not path.is_file():
+        _log.warning("manifest file does not exist: %s", path)
         return None
     try:
         text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        _log.warning("manifest file %s unreadable: %s: %s",
+                     path, type(exc).__name__, exc)
+        return None
+    try:
         return parse_manifest(text)
-    except Exception:
+    except Exception as exc:
+        # Quote the first 200 chars of the file so the operator can
+        # see what the parser is rejecting without having to ssh in
+        # and `sudo cat` the file.
+        snippet = text[:200].replace("\n", "\\n")
+        _log.warning("manifest file %s did NOT parse: %s: %s | head=%r",
+                     path, type(exc).__name__, exc, snippet)
         return None

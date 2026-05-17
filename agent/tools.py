@@ -574,8 +574,35 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         ``network_id``. Used by ``scenario_boot`` to hand a freshly-
         generated manifest to a joining agent, and by the LLM after a
         MANIFEST_DELIVERY round-trip.
+
+        Short-circuit guard: when the agent ALREADY has a manifest
+        loaded (the common case — scenario_boot pre-injects it at
+        boot), return ``{"already_loaded": True, …}`` without parsing
+        the caller's ``md_text``. Driven by an LLM bug we caught
+        in 20:34:30+: Haiku was inventing manifest markdown and
+        calling this tool every turn instead of donating. The
+        synthesised markdown didn't pass the schema parser, so the
+        LLM never advanced. With the short-circuit it sees
+        ``already_loaded`` and pivots to a real action
+        (community_donate_and_join etc.).
         """
         from protocol.manifest import ManifestParseError
+
+        if agent.network_manifest is not None:
+            return {
+                "already_loaded": True,
+                "network_id_hex": agent.network_manifest.network_id.hex(),
+                "name": agent.network_manifest.identity.get("name", ""),
+                "genesis_peers": len(agent.network_manifest.genesis_peers),
+                "default_overlays": list(agent.network_manifest.default_overlays),
+                "note": (
+                    "Manifest is already loaded — its contents are in "
+                    "state.network. You do NOT need to inject it again. "
+                    "If you're trying to JOIN this network, call "
+                    "community_join_via_peer or community_donate_and_join "
+                    "with the policy from state.network.admission."
+                ),
+            }
 
         try:
             manifest = agent.load_manifest(md_text)
