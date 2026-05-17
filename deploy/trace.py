@@ -501,6 +501,9 @@ def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
     l3_without = layer3.get("without_isolation") or {}
     l3_with = layer3.get("with_proxy_only_isolation") or {}
     tamper = layer3.get("tamper_detection") or {}
+    real = layer3.get("real_guardrails") or {}
+    gvisor = real.get("gvisor") or {}
+    iptables = real.get("iptables") or {}
 
     _print_header("security story checklist")
     print("  This section maps Act 2 to the paper's defense-in-depth security story.")
@@ -515,7 +518,8 @@ def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
     print(f"  3. Impact containment and integrity: {_ok_wait(bool(checklist.get('layer3')))}  "
           f"no_isolation_passed={l3_without.get('passed')} "
           f"proxy_only_passed={l3_with.get('passed')} "
-          f"tamper_detected={tamper.get('community_log_after_tamper_ok') is False}")
+          f"tamper_detected={tamper.get('community_log_after_tamper_ok') is False} "
+          f"real_gvisor={gvisor.get('ok')} real_iptables={iptables.get('ok')}")
     print(f"  Overall defense-in-depth story: {_ok_wait(bool(security.get('ok')))}  "
           f"evidence={security.get('path', 'none')}")
 
@@ -538,6 +542,9 @@ def _render_integrated_security_story(scenario: str, summaries: dict[str, dict])
     prevention = story.get("preventative") or {}
     accountability = story.get("accountability") or {}
     impact = story.get("impact") or {}
+    real = impact.get("real_guardrails") or {}
+    gvisor = real.get("gvisor") or {}
+    iptables = real.get("iptables") or {}
 
     _print_header("integrated security episode")
     print("  This section shows the security layers firing inside the normal four-agent paper story.")
@@ -558,6 +565,9 @@ def _render_integrated_security_story(scenario: str, summaries: dict[str, dict])
           f"no_isolation_passed={impact.get('without_isolation_passed')} "
           f"proxy_only_passed={impact.get('with_proxy_only_isolation_passed')} "
           f"guardrails={', '.join(impact.get('guardrails') or [])}")
+    print(f"  12. Real gVisor and iptables probe: {_ok_wait(real.get('ok') is True)}  "
+          f"gvisor={gvisor.get('ok')} reason={gvisor.get('reason', '')} "
+          f"iptables={iptables.get('ok')} reason={iptables.get('reason', '')}")
     print(f"  Combined demo security outcome: {_ok_wait(bool(story.get('represented')))}  "
           f"evidence={security.get('path', 'none')}")
 

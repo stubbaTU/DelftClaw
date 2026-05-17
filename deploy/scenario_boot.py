@@ -212,6 +212,19 @@ def _prepare_shared_state(scenario: Scenario) -> None:
         return
     security_root = STATE_ROOT / scenario.name / "security"
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
+    if scenario.name == "paper_integrated_security":
+        try:
+            from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
+
+            report = run_real_guardrail_probe(security_root, timeout_s=120)
+            real_path = security_root / "real_guardrails.json"
+            _sudo(["chown", f"{SERVICE_USER}:{SERVICE_USER}", str(real_path)], check=False)
+            c_ok(
+                f"{scenario.name}: real isolation probe "
+                f"{'OK' if report.get('ok') else 'not ready'} ({real_path})"
+            )
+        except Exception as exc:
+            c_warn(f"{scenario.name}: real isolation probe failed: {type(exc).__name__}: {exc}")
     c_ok(f"{scenario.name}: shared security evidence dir ready ({security_root})")
 
 

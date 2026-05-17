@@ -11,6 +11,7 @@ from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.contracts import SecurityAction, ToolRisk
 from security.integration.gateway import GatewayState
 from security.subq3_integrity.integrity import run_log_integrity_experiment
+from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
 
 
 def build_security_tools(agent_name: str) -> ToolRegistry:
@@ -233,6 +234,7 @@ async def run_impact_layer() -> dict[str, Any]:
         host_dir=str(root / "impact_host"),
         workspace_dir=str(root / "impact_workspace"),
     )
+    real_guardrails = _read_or_run_real_guardrails(root)
     no_dict = _result_to_dict(no_isolation)
     proxy_dict = _result_to_dict(proxy_only)
     result = {
@@ -258,11 +260,13 @@ async def run_impact_layer() -> dict[str, Any]:
             "community_log_after_tamper_ok": after_ok,
             "community_log_after_tamper_errors": after_errors,
         },
+        "real_guardrails": real_guardrails,
     }
     result["represented"] = (
         result["without_isolation"]["passed"] is False
         and result["with_proxy_only_isolation"]["passed"] is True
         and after_ok is False
+        and real_guardrails.get("ok") is True
     )
     _update_layer("3_impact_integrity_containment", result)
     return result
@@ -338,6 +342,7 @@ async def run_integrated_security_episode() -> dict[str, Any]:
         host_dir=str(root / "integrated_impact_host"),
         workspace_dir=str(root / "integrated_impact_workspace"),
     )
+    real_guardrails = _read_or_run_real_guardrails(root)
     no_dict = _result_to_dict(no_isolation)
     proxy_dict = _result_to_dict(proxy_only)
 
@@ -409,7 +414,8 @@ async def run_integrated_security_episode() -> dict[str, Any]:
             "with_proxy_only_succeeded_attacks": [
                 attempt["attack_name"] for attempt in proxy_dict["attempts"] if attempt["succeeded"]
             ],
-            "guardrails": ["gVisor-style workspace boundary", "iptables-protected host artifacts", "append-only log proxy"],
+            "real_guardrails": real_guardrails,
+            "guardrails": ["real gVisor runsc runtime", "real iptables policy in an isolated netns", "append-only log proxy"],
         },
     }
     result["represented"] = (
@@ -420,6 +426,7 @@ async def run_integrated_security_episode() -> dict[str, Any]:
         and after_expulsion["banned"] is True
         and no_dict["passed"] is False
         and proxy_dict["passed"] is True
+        and real_guardrails.get("ok") is True
     )
     _update_integrated_episode(result)
     return result
@@ -453,6 +460,18 @@ def _evidence_path() -> Path:
     path = Path(os.environ.get("SECURITY_EVIDENCE_PATH", _demo_root() / "security_evidence.json"))
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _read_or_run_real_guardrails(root: Path) -> dict[str, Any]:
+    path = root / "real_guardrails.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+    return run_real_guardrail_probe(root)
 
 
 def _read_evidence() -> dict[str, Any]:
