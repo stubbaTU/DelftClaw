@@ -115,9 +115,9 @@ def test_identity_role_must_be_in_allowlist():
 def test_intent_with_backtick_tool_name_rejected():
     text = GOOD.replace(
         "Acquire a Creative Commons audio file from the DelftClaw network.",
-        "Just call `seedbox_donate_and_join` and you're done.",
+        "Just call `community_donate_and_join` and you're done.",
     )
-    with pytest.raises(MissionParseError, match="seedbox_donate_and_join"):
+    with pytest.raises(MissionParseError, match="community_donate_and_join"):
         parse_mission(text)
 
 

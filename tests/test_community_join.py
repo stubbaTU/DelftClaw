@@ -251,24 +251,6 @@ async def test_community_join_response_carries_reason_text(alice_and_bob):
 
 
 @pytest.mark.asyncio
-async def test_legacy_donation_verifier_path_still_works(alice_and_bob):
-    """Phase 5 is additive — the legacy seedbox_donate_and_join still works."""
-    alice, bob = alice_and_bob
-    bob_tools = build_tools(bob)
-
-    # Bob uses the deprecated path; mock DonationVerifier auto-admits.
-    result = await bob_tools.dispatch(
-        "seedbox_donate_and_join",
-        {
-            "gatekeeper_mid": alice.seedbox.my_peer.mid.hex(),
-            "sats": 30_000,
-            "gatekeeper_address": alice.wallet.address(),
-        },
-    )
-    assert result["accepted"] is True
-
-
-@pytest.mark.asyncio
 async def test_community_join_callback_returns_no_manifest_when_unloaded(tmp_path):
     """An agent without a manifest can't admit anyone — rejects with reason."""
     save_dir = tmp_path / "x"

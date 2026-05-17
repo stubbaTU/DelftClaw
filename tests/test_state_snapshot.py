@@ -56,8 +56,9 @@ async def started_agent(tmp_path):
 @pytest.mark.asyncio
 async def test_snapshot_has_expected_top_level_keys(started_agent):
     snap = collect_state(started_agent)
-    assert set(snap.keys()) == {"ts", "agent", "network", "wallet", "peers", "overlays", "torrents"}
+    assert set(snap.keys()) == {"ts", "agent", "network", "wallet", "community", "peers", "overlays", "torrents"}
     assert snap["network"] is None  # no manifest loaded yet
+    assert snap["community"] is None  # no community state without a manifest either
     assert snap["peers"] == []
     assert snap["overlays"] == []
 
