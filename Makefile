@@ -35,7 +35,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
              --exclude=.pytest_cache --exclude='*.pyc' --exclude='*.pem' \
              --exclude='*.key' --exclude='ec*.pem' --exclude=.venv
 
-.PHONY: help deploy push bootstrap scenario scenarios watch watch-ipv8 \
+.PHONY: help deploy push bootstrap reinstall-units scenario scenarios watch watch-ipv8 \
         tools tail-turns tools-summary trace stop \
         demo llm-up llm-down llm-logs \
         ssh test clean check-name
@@ -54,6 +54,22 @@ push: ## rsync the repo to the VPS, skipping venv/git/caches
 
 bootstrap: ## Run setup_vps.sh on the VPS as root
 	$(SSH) "bash $(VPS_ROOT)/deploy/setup_vps.sh"
+
+reinstall-units: push ## Reinstall the templated systemd units + daemon-reload (no apt / no ollama)
+	# Lightweight subset of bootstrap that only refreshes the unit files
+	# under /etc/systemd/system. Use whenever deploy/systemd/*.service
+	# changes — ``make demo`` only rsyncs files into /opt/delftclaw and
+	# would otherwise leave systemd reading the previous unit body.
+	# Idempotent and fast (no apt, no ollama, no venv work).
+	$(SSH) "set -e; \
+	    for unit in delftclaw-mcp@.service delftclaw-watchdog@.service \
+	                delftclaw-identity-mcp@.service delftclaw-security-mcp@.service; do \
+	      if [ -f $(VPS_ROOT)/deploy/systemd/\$$unit ]; then \
+	        install -m 0644 -o root -g root \
+	          $(VPS_ROOT)/deploy/systemd/\$$unit /etc/systemd/system/\$$unit; \
+	      fi; \
+	    done; \
+	    systemctl daemon-reload"
 
 # ---------------------------------------------------------------------------
 # Scenario orchestration
@@ -156,7 +172,13 @@ llm-down: ## Stop the LLM proxy on the VPS
 llm-logs: ## Tail the LLM proxy journal (Ctrl-C to stop)
 	$(SSH) "journalctl --no-pager -f -u delftclaw-llm-proxy"
 
-demo: check-name push llm-up ## One-shot: deploy + llm-up + stop + scenario
+demo: check-name push reinstall-units llm-up ## One-shot: push + refresh units + llm-up + stop + scenario
+	# reinstall-units is part of the chain so a systemd unit change
+	# (e.g. adding the --redteam-host/port flags) lands without a
+	# separate ``make deploy``. Caught once: stale unit silently
+	# disabled the redteam FastAPI sub-server on every MCP process,
+	# which made pull_loop.error fire on every tick and prevented
+	# bob/charlie/dave from ever seeing alice's donation entry.
 	-$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
