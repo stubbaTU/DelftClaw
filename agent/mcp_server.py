@@ -81,10 +81,36 @@ def _budget_per_session() -> int:
     return max(1, n)
 
 
-# Counter: session_id -> tool calls already served this session. Cleaned
-# up opportunistically when a session goes over budget; FastMCP's session
-# manager terminates the underlying transport ~30s after the last call
-# so leaks are bounded even without explicit cleanup.
+# Read-only / introspection tools that DO NOT count toward the per-session
+# budget. The point of the budget is to stop the LLM from emitting
+# multiple state-changing actions per turn (donate, send, invoke, ...).
+# Letting it freely query state is exactly the pattern we want — fetch
+# the snapshot, decide, do one thing. It also lets the watchdog's
+# ``deploy.mcp_snapshot.collect_state_via_mcp`` issue its 6 sequential
+# introspection calls inside a single MCP session without tripping the
+# gate (the watchdog snapshot is a SEPARATE caller from openclaw and
+# should not consume the LLM's budget at all).
+_BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
+    # local-node introspection
+    "peers_list",
+    "wallet_address",
+    "wallet_balance",
+    # community-state reads (replay over signed log + peer log)
+    "community_treasury_balance",
+    "community_member_count",
+    "community_log_list_recent",
+    # overlay metadata reads
+    "overlays_list",
+    "overlay_describe",
+    # torrent / bittorrent reads
+    "torrent_stats",
+})
+
+
+# Counter: session_id -> tool calls already served this session. Only
+# ``write`` tools (anything not in ``_BUDGET_FREE_TOOLS``) increment it.
+# FastMCP's session manager terminates the underlying transport ~30s
+# after the last call, so leaks are bounded even without explicit cleanup.
 _SESSION_TOOL_COUNT: dict[str, int] = {}
 
 
@@ -122,12 +148,19 @@ def _audit_wrap(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     so a buggy tool surfaces in the MCP response payload rather than
     crashing the streamable-HTTP session.
     """
+    is_free = name in _BUDGET_FREE_TOOLS
+
     @functools.wraps(fn)
     async def wrapper(**kwargs: Any) -> Any:
         budget = _budget_per_session()
         session_id = _session_id_or_global()
         served = _SESSION_TOOL_COUNT.get(session_id, 0)
-        if served >= budget:
+
+        # Read-only tools (peers_list, wallet_balance, *_list, etc.)
+        # bypass the budget entirely. They don't drive LLM state changes
+        # and the watchdog snapshot legitimately needs to call several
+        # of them inside one MCP session every tick.
+        if not is_free and served >= budget:
             _tool_logger.warning(
                 "TOOL skip name=%s reason=budget session=%s served=%d budget=%d",
                 name, session_id[:8], served, budget,
@@ -139,19 +172,24 @@ def _audit_wrap(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
             # be rejected by the MCP client's schema validator).
             raise ToolError(
                 f"tool_budget_exhausted: you have already used your "
-                f"{budget} tool call this turn. STOP calling tools and "
-                "produce your final assistant message now — the harness "
-                "will wake you again with a fresh budget on the next tick."
+                f"{budget} state-changing tool call this turn. STOP calling "
+                "tools and produce your final assistant message now — the "
+                "harness will wake you again with a fresh budget on the "
+                "next tick. (Read-only tools like peers_list / wallet_balance "
+                "/ overlays_list / community_treasury_balance are free.)"
             )
 
         t0 = time.monotonic()
+        kind = "free" if is_free else f"{served + 1}/{budget}"
         _tool_logger.info(
-            "TOOL call name=%s session=%s served=%d/%d args=%s",
-            name, session_id[:8], served + 1, budget, _short(kwargs),
+            "TOOL call name=%s session=%s budget=%s args=%s",
+            name, session_id[:8], kind, _short(kwargs),
         )
-        # Reserve the slot BEFORE awaiting so a concurrent second call
-        # racing inside the same session also trips the cap.
-        _SESSION_TOOL_COUNT[session_id] = served + 1
+        # Only state-changing calls consume budget. Reserve the slot
+        # BEFORE awaiting so a concurrent second call racing inside the
+        # same session also trips the cap.
+        if not is_free:
+            _SESSION_TOOL_COUNT[session_id] = served + 1
         try:
             result = await fn(**kwargs)
             _tool_logger.info(

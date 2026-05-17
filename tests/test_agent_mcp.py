@@ -79,36 +79,63 @@ async def two_agents_with_mcp(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_mcp_session_tool_budget_caps_calls_per_session(two_agents_with_mcp):
+async def test_mcp_session_tool_budget_caps_state_changing_calls(two_agents_with_mcp):
     """The default MCP_TOOL_BUDGET_PER_SESSION=1 must block the 2nd
-    call within a session and reset across sessions.
+    state-changing call within a session and reset across sessions.
 
-    Why this exists: openclaw + Haiku ignore the HARD RULE turn prompt
-    and routinely fire 7-8 tool calls per session. The MCP-side cap is
-    our enforcement layer; a regression where the budget silently
-    disappears would re-introduce the rate-limit thrash on every demo.
+    Read-only tools (peers_list, wallet_balance, overlays_list, etc.)
+    are deliberately free so the watchdog snapshot can issue several
+    introspection calls inside one MCP session every tick without
+    consuming the LLM's per-turn write budget.
+
+    Why this regression test exists: openclaw + Haiku ignore the HARD
+    RULE turn prompt and routinely fire 7-8 tool calls per session. The
+    MCP-side cap is our enforcement layer; if a refactor silently
+    re-opened the floodgates the demo would thrash Anthropic Tier 1
+    again. ``peer_add`` is the write tool used here because it returns
+    cleanly on a bad pubkey hex without needing community/manifest
+    setup — perfect for budget-only assertion.
     """
     from fastmcp.exceptions import ToolError
 
     alice, _bob = two_agents_with_mcp
     server = build_mcp_server(alice)
 
-    # First call in a session succeeds.
-    async with Client(server) as client:
-        result = await client.call_tool("wallet_address", {})
-        assert result.content[0].text.startswith("dclaw")
+    BAD_PEER_1 = {"host": "1.2.3.4", "port": 9001, "pubkey_hex": "deadbeef"}
+    BAD_PEER_2 = {"host": "1.2.3.4", "port": 9002, "pubkey_hex": "cafebabe"}
 
-        # Second call in the SAME session must raise — FastMCP turns
-        # the ToolError into an MCP isError response, which the client
-        # surfaces as a Python exception.
+    async with Client(server) as client:
+        # Read-only tools should NEVER count against the budget —
+        # multiple in a row inside one session must all succeed.
+        for _ in range(3):
+            r = await client.call_tool("wallet_address", {})
+            assert r.content[0].text.startswith("dclaw")
+        for _ in range(3):
+            r = await client.call_tool("wallet_balance", {})
+            # int return — just confirm it parses
+            assert r.content[0].text.isdigit() or r.content[0].text == "0"
+
+        # First state-changing call in this session — should succeed
+        # (the args are intentionally garbage but the tool will return
+        # an error envelope, which still counts as a normal completion
+        # for budget purposes).
+        await client.call_tool("peer_add", BAD_PEER_1)
+
+        # Second state-changing call in the SAME session must raise —
+        # FastMCP turns the ToolError into an MCP isError response.
         with pytest.raises((ToolError, Exception)) as excinfo:
-            await client.call_tool("wallet_balance", {})
+            await client.call_tool("peer_add", BAD_PEER_2)
         assert "tool_budget_exhausted" in str(excinfo.value)
 
-    # A new MCP session gets a fresh budget.
+        # But read-only calls AFTER the budget is exhausted must still
+        # succeed — otherwise the model can't even check the snapshot
+        # to decide what its final assistant message should say.
+        r = await client.call_tool("peers_list", {})
+        assert r.content[0].text is not None
+
+    # A new MCP session gets a fresh write budget.
     async with Client(server) as client2:
-        addr = await client2.call_tool("wallet_address", {})
-        assert addr.content[0].text.startswith("dclaw")
+        await client2.call_tool("peer_add", BAD_PEER_1)  # ok
 
 
 @pytest.mark.asyncio
