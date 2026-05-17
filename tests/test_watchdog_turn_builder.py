@@ -102,11 +102,23 @@ def test_prompt_says_none_yet_on_first_turn():
     assert "RECENT TURNS: (none yet" in out
 
 
-def test_prompt_starts_with_mission_header():
+def test_prompt_orders_hard_constraint_role_then_mission():
     out = build_turn_prompt("MISSION-BODY", {}, TurnHistory())
-    # The header literal precedes the body; this prevents an operator
-    # from sneaking arbitrary content above the MISSION block.
-    assert out.split("\n", 1)[0] == "MISSION:"
+    # Non-operator-supplied prose is only allowed above MISSION:. The
+    # one-tool-per-turn HARD CONSTRAINT sits at the very top to maximise
+    # the chance the LLM honours it; ROLE: framing is next; MISSION: is
+    # the first operator-supplied content. The relative order is the
+    # operator-trust boundary — anything above MISSION: must be code-
+    # supplied, never user-supplied.
+    lines = out.split("\n")
+    assert "HARD CONSTRAINT — READ THIS FIRST:" in lines
+    assert "ROLE:" in lines
+    assert "MISSION:" in lines
+    hard_idx = lines.index("HARD CONSTRAINT — READ THIS FIRST:")
+    role_idx = lines.index("ROLE:")
+    mission_idx = lines.index("MISSION:")
+    assert hard_idx < role_idx < mission_idx
+    assert hard_idx == 0  # nothing slips above the budget rule
 
 
 # ---------------------------------------------------------------------------

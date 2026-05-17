@@ -33,10 +33,13 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import time
 from typing import Any, Callable
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
 from fastmcp.tools.tool import Tool as FastMCPTool
 
 from agent.runtime import OpenClawAgent
@@ -44,6 +47,58 @@ from agent.tools import build_tools
 
 
 _tool_logger = logging.getLogger("delftclaw.agent.tools")
+
+
+# ---------------------------------------------------------------------------
+# Per-session tool-call budget
+# ---------------------------------------------------------------------------
+#
+# OpenClaw + Haiku ignore the HARD RULE in the turn prompt and routinely
+# fire 7-8 tool calls per MCP session (== one watchdog turn). Each one
+# costs a Haiku round-trip, blows through the Anthropic Tier-1 token
+# budget, and stretches the watchdog turn lock past a minute.
+#
+# We enforce one-tool-per-turn at the MCP layer instead. The first call
+# in a session runs normally; subsequent calls short-circuit with a
+# ``tool_budget_exhausted`` error that tells the model exactly what to
+# do next. Soft enforcement — the model can still ignore the error and
+# call again, but every extra call returns the same error so the cost
+# is bounded to "openclaw gives up and produces text."
+#
+# Budget keyed by FastMCP's per-session id. ``MCP_TOOL_BUDGET_PER_SESSION``
+# env override exists so a turn that genuinely needs multiple tools
+# (e.g. ``overlay_fetch_and_load`` THEN ``overlay_invoke``) can be
+# unlocked from scenario.yaml without a code change.
+
+DEFAULT_TOOL_BUDGET_PER_SESSION = 1
+
+
+def _budget_per_session() -> int:
+    try:
+        n = int(os.environ.get("MCP_TOOL_BUDGET_PER_SESSION", DEFAULT_TOOL_BUDGET_PER_SESSION))
+    except (TypeError, ValueError):
+        return DEFAULT_TOOL_BUDGET_PER_SESSION
+    return max(1, n)
+
+
+# Counter: session_id -> tool calls already served this session. Cleaned
+# up opportunistically when a session goes over budget; FastMCP's session
+# manager terminates the underlying transport ~30s after the last call
+# so leaks are bounded even without explicit cleanup.
+_SESSION_TOOL_COUNT: dict[str, int] = {}
+
+
+def _session_id_or_global() -> str:
+    """Return the current MCP session id, or ``"__global__"`` as a fallback.
+
+    FastMCP's ``get_context()`` raises outside a request scope; this
+    happens in tests that invoke ``add_tool``'d functions directly. The
+    fallback lets the same wrapper be used in-process without surprise.
+    """
+    try:
+        return get_context().session_id or "__global__"
+    except Exception:
+        return "__global__"
 
 
 def _short(value: Any, n: int = 80) -> str:
@@ -57,7 +112,8 @@ def _short(value: Any, n: int = 80) -> str:
 
 def _audit_wrap(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     """Return an async wrapper around ``fn`` that emits the same TOOL
-    log lines ``ToolRegistry.dispatch`` does for the in-process path.
+    log lines ``ToolRegistry.dispatch`` does for the in-process path,
+    and enforces the per-session tool-call budget.
 
     FastMCP introspects the wrapped function's signature for its JSON
     schema, so ``functools.wraps`` is load-bearing — it preserves the
@@ -68,21 +124,60 @@ def _audit_wrap(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     """
     @functools.wraps(fn)
     async def wrapper(**kwargs: Any) -> Any:
+        budget = _budget_per_session()
+        session_id = _session_id_or_global()
+        served = _SESSION_TOOL_COUNT.get(session_id, 0)
+        if served >= budget:
+            _tool_logger.warning(
+                "TOOL skip name=%s reason=budget session=%s served=%d budget=%d",
+                name, session_id[:8], served, budget,
+            )
+            # ``ToolError`` is FastMCP's way to surface a tool-side
+            # failure to the model without violating the declared
+            # output_schema (the LLM-driven tools have typed returns
+            # like ``int`` for wallet_balance; an envelope dict would
+            # be rejected by the MCP client's schema validator).
+            raise ToolError(
+                f"tool_budget_exhausted: you have already used your "
+                f"{budget} tool call this turn. STOP calling tools and "
+                "produce your final assistant message now — the harness "
+                "will wake you again with a fresh budget on the next tick."
+            )
+
         t0 = time.monotonic()
-        _tool_logger.info("TOOL call name=%s args=%s", name, _short(kwargs))
+        _tool_logger.info(
+            "TOOL call name=%s session=%s served=%d/%d args=%s",
+            name, session_id[:8], served + 1, budget, _short(kwargs),
+        )
+        # Reserve the slot BEFORE awaiting so a concurrent second call
+        # racing inside the same session also trips the cap.
+        _SESSION_TOOL_COUNT[session_id] = served + 1
         try:
             result = await fn(**kwargs)
             _tool_logger.info(
-                "TOOL ok   name=%s elapsed=%.3fs result=%s",
-                name, time.monotonic() - t0, _short(result),
+                "TOOL ok   name=%s session=%s elapsed=%.3fs result=%s",
+                name, session_id[:8], time.monotonic() - t0, _short(result),
             )
             return result
+        except ToolError:
+            # Let the budget guard (or any tool-emitted ToolError) flow
+            # back to the client untouched so it materialises as an
+            # ``isError=true`` MCP response instead of getting buried in
+            # a generic envelope dict that the client may schema-reject.
+            raise
         except Exception as exc:
             _tool_logger.warning(
-                "TOOL fail name=%s elapsed=%.3fs error=%s: %s",
-                name, time.monotonic() - t0, type(exc).__name__, exc,
+                "TOOL fail name=%s session=%s elapsed=%.3fs error=%s: %s",
+                name, session_id[:8], time.monotonic() - t0,
+                type(exc).__name__, exc,
             )
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            # Surface unexpected tool failures the same way — the
+            # in-process ToolRegistry returns an envelope dict, but
+            # over MCP we want a typed error so the model sees a
+            # clear failure signal rather than a {"error": …} payload
+            # that fights the output_schema. The in-process path is
+            # unaffected because it never goes through this wrapper.
+            raise ToolError(f"{type(exc).__name__}: {exc}")
 
     return wrapper
 

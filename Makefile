@@ -7,8 +7,15 @@
 #     make scenarios               # list scenarios + their agents on the VPS
 #     make watch    NAME=seek_cc   # tail the full journal (every line)
 #     make watch-ipv8 NAME=seek_cc # tail only IPv8 wire events + errors
+#     make tools    NAME=seek_cc   # tail only TOOL audit lines (one per agent tool call)
+#     make tail-turns NAME=seek_cc # turn-summary tail: lock acquire/release + TOOL + IPv8
+#     make tools-summary NAME=seek_cc  # one-shot histogram: TOOL counts per agent + per name
 #     make trace    NAME=seek_cc   # one-shot snapshot per agent
 #     make stop     NAME=seek_cc   # stop a scenario
+#     make demo     NAME=seek_cc   # one-shot: deploy + llm-up + stop + scenario
+#     make llm-up                  # install/start LLM proxy on the VPS
+#     make llm-down                # stop the LLM proxy
+#     make llm-logs                # tail the LLM proxy journal
 #     make ssh                     # interactive shell on the VPS
 #     make test                    # run the local pytest suite
 #
@@ -28,11 +35,13 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
              --exclude=.pytest_cache --exclude='*.pyc' --exclude='*.pem' \
              --exclude='*.key' --exclude='ec*.pem' --exclude=.venv
 
-.PHONY: help deploy push bootstrap scenario scenarios watch watch-ipv8 trace stop \
+.PHONY: help deploy push bootstrap scenario scenarios watch watch-ipv8 \
+        tools tail-turns tools-summary trace stop \
+        demo llm-up llm-down llm-logs \
         ssh test clean check-name
 
 help:
-	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z0-9_-]+:.*## / { printf "  %-15s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 # ---------------------------------------------------------------------------
 # Repo deployment
@@ -70,14 +79,44 @@ watch: check-name ## Tail the full journal (every line — Ctrl-C to stop)
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service'"
 
-watch-ipv8: check-name ## Tail only IPv8 wire events + errors (filtered)
+watch-ipv8: check-name ## Tail IPv8 + TOOL events; drops the pull-loop + uvicorn noise
 	$(SSH) "journalctl --no-pager -f \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service' \
 		| grep --line-buffered -E \
 		  'IPv8|delftclaw\\.|TOOL |turn |openclaw|ERROR|WARN|FAIL|Traceback' \
 		| grep --line-buffered -vE \
-		  'GET /head|GET /entries|GET /entry/'"
+		  'GET /head|GET /entries|GET /entry/|httpx INFO HTTP Request.*head|Processing request of type|streamable_http|Negotiated protocol|Received session ID|Created new transport|Terminating session'"
+
+tools: check-name ## Live tail of TOOL audit lines (one entry per agent tool call)
+	$(SSH) "journalctl --no-pager -f \
+		-u 'delftclaw-mcp@$(NAME)-*.service' \
+		-u 'delftclaw-watchdog@$(NAME)-*.service' \
+		| grep --line-buffered -E 'delftclaw\\.agent\\.tools.*TOOL '"
+
+tail-turns: check-name ## Turn-level tail: lock acquire/release + TOOL + IPv8 + errors
+	$(SSH) "journalctl --no-pager -f \
+		-u 'delftclaw-mcp@$(NAME)-*.service' \
+		-u 'delftclaw-watchdog@$(NAME)-*.service' \
+		| grep --line-buffered -E \
+		  'llm turn lock|TOOL |IPv8 (send|recv)|ERROR|WARN|FAIL|Traceback|stop_predicate'"
+
+tools-summary: check-name ## One-shot histogram of TOOL invocations per agent and per tool name
+	$(SSH) "journalctl --no-pager --since '1 hour ago' \
+		-u 'delftclaw-mcp@$(NAME)-*.service' \
+		-u 'delftclaw-watchdog@$(NAME)-*.service' \
+		| grep -E 'delftclaw\\.agent\\.tools.*TOOL (call|ok|fail|skip)' \
+		| awk '{ \
+		    for (i=1; i<=NF; i++) { \
+		      if (\$\$i ~ /^name=/) { name=\$\$i; sub(/^name=/, \"\", name) } \
+		      if (\$\$i ~ /^session=/) { sess=\$\$i; sub(/^session=/, \"\", sess) } \
+		    } \
+		    op=\$\$5; counts[op\" \"name]++ \
+		  } \
+		  END { \
+		    for (k in counts) printf \"%6d  %s\\n\", counts[k], k \
+		  }' \
+		| sort -nr"
 
 trace: check-name ## Snapshot per-agent demo state (turns, tools, IPv8 events, community)
 	$(SSH) "PYTHONPATH=$(VPS_ROOT) $(VPS_ROOT)/venv/bin/python -m deploy.trace $(NAME)"
@@ -85,6 +124,51 @@ trace: check-name ## Snapshot per-agent demo state (turns, tools, IPv8 events, c
 stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
+
+# ---------------------------------------------------------------------------
+# Gemini proxy + one-shot demo launcher
+# ---------------------------------------------------------------------------
+
+# Pull LLM_API_KEYS / LLM_PROXY_PORT / LLM_PROXY_UPSTREAM out of
+# configs/host.env so the Makefile can pass them to the VPS without the
+# user re-typing keys. host.env is gitignored.
+LLM_KEYS := $(shell grep -E '^LLM_API_KEYS=' configs/host.env 2>/dev/null | sed 's/^LLM_API_KEYS=//')
+LLM_PORT := $(shell grep -E '^LLM_PROXY_PORT=' configs/host.env 2>/dev/null | sed 's/^LLM_PROXY_PORT=//' | head -1)
+LLM_UPSTREAM := $(shell grep -E '^LLM_PROXY_UPSTREAM=' configs/host.env 2>/dev/null | sed 's/^LLM_PROXY_UPSTREAM=//' | head -1)
+
+llm-up: push ## Install + (re)start the LLM proxy on the VPS
+	@if [ -z "$(LLM_KEYS)" ]; then \
+	  echo "LLM_API_KEYS is empty in configs/host.env — populate it first."; \
+	  echo "Get a key at https://console.anthropic.com, then edit configs/host.env."; \
+	  exit 1; \
+	fi
+	$(SSH) "LLM_API_KEYS='$(LLM_KEYS)' \
+	        LLM_PROXY_PORT='$(or $(LLM_PORT),11600)' \
+	        LLM_PROXY_UPSTREAM='$(or $(LLM_UPSTREAM),https://api.anthropic.com/v1)' \
+	        REPO_ROOT='$(VPS_ROOT)' \
+	        bash $(VPS_ROOT)/deploy/install_llm_proxy.sh"
+
+llm-down: ## Stop the LLM proxy on the VPS
+	$(SSH) "systemctl stop delftclaw-llm-proxy || true; \
+	        systemctl disable delftclaw-llm-proxy || true; \
+	        systemctl status delftclaw-llm-proxy --no-pager || true"
+
+llm-logs: ## Tail the LLM proxy journal (Ctrl-C to stop)
+	$(SSH) "journalctl --no-pager -f -u delftclaw-llm-proxy"
+
+demo: check-name push llm-up ## One-shot: deploy + llm-up + stop + scenario
+	-$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME)"
+	@echo
+	@echo "Demo running. Useful follow-ups:"
+	@echo "  make tools         NAME=$(NAME)  # live: every tool call by every agent"
+	@echo "  make tail-turns    NAME=$(NAME)  # live: lock acquire/release + tools + wire"
+	@echo "  make watch-ipv8    NAME=$(NAME)  # live: IPv8 + TOOL events only"
+	@echo "  make tools-summary NAME=$(NAME)  # one-shot: TOOL histogram (last hour)"
+	@echo "  make trace         NAME=$(NAME)  # one-shot: per-agent snapshot"
+	@echo "  make llm-logs                    # proxy traffic"
 
 # ---------------------------------------------------------------------------
 # Operator extras

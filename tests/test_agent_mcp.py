@@ -79,6 +79,39 @@ async def two_agents_with_mcp(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_mcp_session_tool_budget_caps_calls_per_session(two_agents_with_mcp):
+    """The default MCP_TOOL_BUDGET_PER_SESSION=1 must block the 2nd
+    call within a session and reset across sessions.
+
+    Why this exists: openclaw + Haiku ignore the HARD RULE turn prompt
+    and routinely fire 7-8 tool calls per session. The MCP-side cap is
+    our enforcement layer; a regression where the budget silently
+    disappears would re-introduce the rate-limit thrash on every demo.
+    """
+    from fastmcp.exceptions import ToolError
+
+    alice, _bob = two_agents_with_mcp
+    server = build_mcp_server(alice)
+
+    # First call in a session succeeds.
+    async with Client(server) as client:
+        result = await client.call_tool("wallet_address", {})
+        assert result.content[0].text.startswith("dclaw")
+
+        # Second call in the SAME session must raise — FastMCP turns
+        # the ToolError into an MCP isError response, which the client
+        # surfaces as a Python exception.
+        with pytest.raises((ToolError, Exception)) as excinfo:
+            await client.call_tool("wallet_balance", {})
+        assert "tool_budget_exhausted" in str(excinfo.value)
+
+    # A new MCP session gets a fresh budget.
+    async with Client(server) as client2:
+        addr = await client2.call_tool("wallet_address", {})
+        assert addr.content[0].text.startswith("dclaw")
+
+
+@pytest.mark.asyncio
 async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
     """MCP surface MUST equal the in-process tool registry.
 
@@ -177,7 +210,16 @@ async def test_mcp_wallet_address_is_deterministic(two_agents_with_mcp):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_mcp_client_can_publish_fetch_and_invoke_overlay(two_agents_with_mcp):
+async def test_mcp_client_can_publish_fetch_and_invoke_overlay(
+    two_agents_with_mcp, monkeypatch,
+):
+    # This test exercises two tool calls in the same MCP session
+    # (overlay_fetch_and_load then overlay_invoke) to validate the
+    # wire-level cross-overlay flow. The production budget of 1
+    # tool-call-per-session would block the second call — raise it
+    # for this test only.
+    monkeypatch.setenv("MCP_TOOL_BUDGET_PER_SESSION", "10")
+
     alice, bob = two_agents_with_mcp
     # Alice publishes locally via the MCP surface.
     server_a = build_mcp_server(alice)
