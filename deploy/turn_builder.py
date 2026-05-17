@@ -129,6 +129,14 @@ def build_turn_prompt(
             sections.append(record.summary())
     else:
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
+    sections.append("")
+    # Action trigger. AGENTS.md (system prompt) already says "respond
+    # with exactly one MCP tool call", but Haiku 2026-05-17 went silent
+    # ("NO_REPLY") without a per-tick imperative in the user message:
+    # system-prompt instructions are weaker than user-message ones for
+    # action triggering. Keep this line — it is the only verb the agent
+    # gets each tick.
+    sections.append("Pick the single best tool to call now to advance toward your goal.")
     return "\n".join(sections)
 
 

@@ -148,6 +148,17 @@ def test_prompt_says_none_yet_on_first_turn():
     assert "RECENT TURNS: (none yet" in out
 
 
+def test_prompt_ends_with_action_trigger():
+    # 2026-05-17: without a per-tick imperative in the user message,
+    # Haiku replied "NO_REPLY" and made no tool call — the AGENTS.md
+    # instructions in the system prompt weren't strong enough. The
+    # trigger line is the only verb the agent sees each tick.
+    out = build_turn_prompt({"k": "v"}, TurnHistory())
+    assert out.rstrip().endswith(
+        "Pick the single best tool to call now to advance toward your goal."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Caps
 # ---------------------------------------------------------------------------
