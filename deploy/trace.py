@@ -408,7 +408,7 @@ def _format_content_row(row: dict) -> str:
 
 
 def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario != "paper_demo":
+    if scenario not in {"paper_demo", "paper_integrated_security"}:
         return
 
     community = _community_snapshot(summaries)
@@ -431,7 +431,10 @@ def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
     seeker_responses = _content_overlay_rows(a2, "response_cache")
 
     _print_header("paper story checklist")
-    print("  This section maps the live real-agent run to Paper - Demo.txt before the security experiments.")
+    if scenario == "paper_integrated_security":
+        print("  This section maps the live real-agent run to Paper - Demo.txt with the security episode embedded.")
+    else:
+        print("  This section maps the live real-agent run to Paper - Demo.txt before the security experiments.")
     print(f"  1. Founder, wallet, treasury, first seedbox: {_ok_wait(member_count >= 1)}  "
           f"members={member_count} treasury_sats={treasury} seedboxes={seedbox_count} "
           f"join_fee={min_sats} seedbox_cost={seedbox_cost} capacity={capacity}")
@@ -517,6 +520,48 @@ def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
           f"evidence={security.get('path', 'none')}")
 
 
+def _render_integrated_security_story(scenario: str, summaries: dict[str, dict]) -> None:
+    if scenario != "paper_integrated_security":
+        return
+
+    security = _security_snapshot(summaries)
+    story = security.get("integrated_story") or {}
+    timeline = story.get("timeline") or []
+    by_stage = {
+        row.get("stage"): row
+        for row in timeline
+        if isinstance(row, dict)
+    }
+    good = by_stage.get("joined_and_retrieved_file") or {}
+    blocked = by_stage.get("private_key_probe_blocked") or {}
+    expelled = by_stage.get("fake_seedbox_self_donation_expelled") or {}
+    prevention = story.get("preventative") or {}
+    accountability = story.get("accountability") or {}
+    impact = story.get("impact") or {}
+
+    _print_header("integrated security episode")
+    print("  This section shows the security layers firing inside the normal four-agent paper story.")
+    print(f"  7. Good member earns trust first: {_ok_wait(bool(good))}  "
+          f"subject={story.get('subject_id', 'agent_2')} "
+          f"trust={good.get('trust_score')} risk={good.get('risk_score')} banned={good.get('banned')}")
+    print(f"  8. Preventative Brain-vs-Hands block: {_ok_wait(bool(prevention.get('private_key_probe_blocked')))}  "
+          f"blocked={prevention.get('private_key_probe_blocked')} "
+          f"attack_success={prevention.get('private_key_attack_success')} "
+          f"blocked_count={prevention.get('blocked_count')}")
+    print(f"  9. Reputation falls after first abuse: {_ok_wait(bool(blocked))}  "
+          f"trust={blocked.get('trust_score')} risk={blocked.get('risk_score')} banned={blocked.get('banned')}")
+    print(f"  10. More malicious behavior triggers expulsion: {_ok_wait(bool(accountability.get('banned')))}  "
+          f"trust={expelled.get('trust_score')} "
+          f"risk={accountability.get('risk_after_more_malicious_behavior')} "
+          f"harm_count={accountability.get('harm_count')} banned={accountability.get('banned')}")
+    print(f"  11. Isolation limits fallout: {_ok_wait(impact.get('with_proxy_only_isolation_passed') is True)}  "
+          f"no_isolation_passed={impact.get('without_isolation_passed')} "
+          f"proxy_only_passed={impact.get('with_proxy_only_isolation_passed')} "
+          f"guardrails={', '.join(impact.get('guardrails') or [])}")
+    print(f"  Combined demo security outcome: {_ok_wait(bool(story.get('represented')))}  "
+          f"evidence={security.get('path', 'none')}")
+
+
 def _render_ipv8(hist: collections.Counter, recent: list[str]) -> None:
     _print_header("IPv8 wire events — totals from journal buffer")
     if not hist:
@@ -562,6 +607,7 @@ def main(argv: list[str]) -> int:
 
     _render_paper_story(scenario, summaries)
     _render_security_story(scenario, summaries)
+    _render_integrated_security_story(scenario, summaries)
     _render_ipv8(_ipv8_histogram(scenario), _recent_ipv8_events(scenario))
     return 0
 

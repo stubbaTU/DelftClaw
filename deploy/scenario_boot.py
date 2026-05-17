@@ -208,7 +208,7 @@ def _state_dir(scenario_name: str, agent_name: str) -> Path:
 
 def _prepare_shared_state(scenario: Scenario) -> None:
     """Create scenario-level writable state that is shared across agents."""
-    if scenario.name != "paper_security":
+    if scenario.name not in {"paper_security", "paper_integrated_security"}:
         return
     security_root = STATE_ROOT / scenario.name / "security"
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
@@ -288,14 +288,15 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
         f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
         f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
-        f"WATCHDOG_DRIVER={'direct' if scenario.name == 'paper_security' else OPENCLAW_LLM['watchdog_driver']}",
+        f"WATCHDOG_DRIVER={'direct' if scenario.name in {'paper_security', 'paper_integrated_security'} else OPENCLAW_LLM['watchdog_driver']}",
         *(
             [
-                "DIRECT_TOOL_ALLOWLIST=paper_security",
+                f"DIRECT_TOOL_ALLOWLIST={'paper_security' if scenario.name == 'paper_security' else 'paper_integrated_security'}",
                 f"SECURITY_DEMO_ROOT={security_root}",
                 f"SECURITY_EVIDENCE_PATH={security_root / 'security_evidence.json'}",
+                "INTEGRATED_ATTACKER_ID=agent_2",
             ]
-            if scenario.name == "paper_security" else []
+            if scenario.name in {"paper_security", "paper_integrated_security"} else []
         ),
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json

@@ -104,6 +104,12 @@ def _security_all_done(snapshot: StateSnapshot) -> bool:
     return bool(security.get("ok"))
 
 
+def _integrated_security_done(snapshot: StateSnapshot) -> bool:
+    security = snapshot.get("security") or {}
+    checklist = security.get("checklist") or {}
+    return bool(checklist.get("integrated"))
+
+
 # ---------------------------------------------------------------------------
 # Registry + resolver
 # ---------------------------------------------------------------------------
@@ -119,6 +125,7 @@ _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "community_member_count_gte_N": _community_member_count_gte_N,
     "security_layer_done": _security_layer_done,
     "security_all_done": _security_all_done,
+    "integrated_security_done": _integrated_security_done,
 }
 
 

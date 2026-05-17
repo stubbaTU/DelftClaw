@@ -42,7 +42,7 @@ from agent.runtime import AgentConfig, OpenClawAgent
 from communication.bittorrent import build_default_service
 from deploy import stop_predicates
 from deploy.scenario import AgentSpec, parse_scenario
-from deploy.security_agent_tools import build_security_tools
+from deploy.security_agent_tools import add_integrated_security_tools, build_security_tools
 from deploy.state_snapshot import collect_state
 from deploy.turn_builder import (
     TurnHistory,
@@ -85,6 +85,7 @@ PAPER_DEMO_TOOL_ALLOWLIST = {
     "seedbox_provisioned",
     "torrent_fetch",
     "torrent_stats",
+    "run_integrated_security_episode",
 }
 
 
@@ -305,7 +306,15 @@ async def _invoke_direct_tool_loop(
         tools = build_security_tools(agent_name)
     else:
         tools = build_tools(agent)
+    if tool_allowlist == "paper_integrated_security":
+        tools = add_integrated_security_tools(tools, agent_name)
     if tool_allowlist == "paper_demo":
+        tools._tools = {  # type: ignore[attr-defined]
+            name: tool
+            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
+            if name in PAPER_DEMO_TOOL_ALLOWLIST
+        }
+    if tool_allowlist == "paper_integrated_security":
         tools._tools = {  # type: ignore[attr-defined]
             name: tool
             for name, tool in tools._tools.items()  # type: ignore[attr-defined]
