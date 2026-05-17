@@ -183,7 +183,7 @@ def _invoke_openclaw_agent(
     # reply is hallucinated chat text. Scenario_boot writes the JSON to
     # $HOME/openclaw/claude-mcp-config.json at provision time.
     env = os.environ.copy()
-    mcp_config = Path(env.get("HOME", "/var/lib/delftclaw")) / "openclaw" / "workspace" / "claude-mcp-config.json"
+    mcp_config = Path(env.get("HOME", "/var/lib/delftclaw")) / "openclaw" / "claude-mcp-config.json"
     if mcp_config.exists():
         env["CLAUDE_MCP_CONFIG"] = str(mcp_config)
     try:
