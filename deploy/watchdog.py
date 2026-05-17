@@ -331,7 +331,7 @@ async def _drive(
             instance=instance,
             prompt=prompt,
             timeout_s=scenario.watchdog.interval_s,
-            model="claude-cli/claude-haiku-4-5",
+            model="claude-cli/claude-sonnet-4-6",
         )
 
         record = {

@@ -239,7 +239,7 @@ def _seed_for_agent(scenario: Scenario, agent: AgentSpec) -> None:
 def _link_claude_auth(scenario: Scenario, agent: AgentSpec) -> None:
     """Symlink the service user's Claude Code auth into the per-agent HOME.
 
-    The watchdog runs ``openclaw agent --model claude-cli/claude-haiku-4-5``,
+    The watchdog runs ``openclaw agent --model claude-cli/claude-sonnet-4-6``,
     which shells out to the ``claude`` CLI. ``claude`` reads its auth from
     ``$HOME/.claude/``, and each scenario agent has HOME=/var/lib/delftclaw/
     <scenario>/<agent>/. Without this symlink, every openclaw call fails
@@ -453,7 +453,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
          "transport": "streamable-http"}'`` — wire the agent's MCP server into
          its config so ``openclaw agent`` knows where to look.
       2. ``openclaw agents add <instance> --non-interactive --workspace …
-         --agent-dir … --model claude-cli/claude-haiku-4-5`` — register the
+         --agent-dir … --model claude-cli/claude-sonnet-4-6`` — register the
          agent name the watchdog will pass to ``--agent <instance>``, bound
          to Haiku via the built-in claude-cli provider.
 
@@ -511,7 +511,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
-             "--model", "claude-cli/claude-haiku-4-5"],
+             "--model", "claude-cli/claude-sonnet-4-6"],
             check=True,
         )
 
@@ -644,7 +644,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         for agent in scenario.agents.values():
             instance = scenario.instance_id(agent.name)
             c_dry(f"  would openclaw mcp set {instance} (HOME=/var/lib/delftclaw/{scenario.name}/{agent.name})")
-            c_dry(f"  would openclaw agents add {instance} --non-interactive --model claude-cli/claude-haiku-4-5")
+            c_dry(f"  would openclaw agents add {instance} --non-interactive --model claude-cli/claude-sonnet-4-6")
         c_dry("would call MCP peer_add for cross-introductions:")
         for agent in scenario.agents.values():
             for peer_name in agent.peers:
