@@ -128,6 +128,18 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
         self._identity = identity
         # Serialize concurrent appends so latest_hash + write are atomic.
         self._lock = threading.Lock()
+        # Cached chain head. ``None`` = not yet populated; first read of
+        # ``latest_hash()`` lazy-fills via a single file scan. Subsequent
+        # reads are O(1); ``_persist`` updates the cache under ``_lock``.
+        self._latest_hash: str | None = None
+
+    def latest_hash(self) -> str:
+        """O(1) head lookup after first call. Populates on first read."""
+        if self._latest_hash is not None:
+            return self._latest_hash
+        latest = super().latest_hash()
+        self._latest_hash = latest
+        return latest
 
     def append_event(
         self,
@@ -341,6 +353,9 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
             handle.write(json.dumps(entry) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # Caller holds ``self._lock``; update the cached head so
+        # subsequent ``latest_hash()`` calls stay O(1).
+        self._latest_hash = entry.get("entry_hash", self._latest_hash)
 
     @staticmethod
     def _entry_hash(entry: dict) -> str:

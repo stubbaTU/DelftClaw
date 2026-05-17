@@ -132,7 +132,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         ]
 
     async def peer_add(host: str, port: int, pubkey_hex: str) -> dict[str, Any]:
-        peer = agent.add_peer(host, port, pubkey_hex)
+        try:
+            peer = agent.add_peer(host, port, pubkey_hex)
+        except (ValueError, TypeError) as exc:
+            return {"error": f"invalid_pubkey_hex: {exc}"}
         return {
             "mid_hex": peer.mid.hex(),
             "address": list(peer.addresses.values())[0] if peer.addresses else None,
@@ -148,18 +151,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
     async def wallet_send(to_address: str, sats: int) -> str:
         return agent.wallet.send(to_address, sats)
-
-    # ---- Seedbox admission --------------------------------------------
-
-    async def seedbox_donate_and_join(
-        gatekeeper_mid: str, sats: int, gatekeeper_address: str
-    ) -> dict[str, Any]:
-        """Send ``sats`` to ``gatekeeper_address`` then JOIN_REQUEST the gatekeeper."""
-        peer = _resolve_peer(agent, gatekeeper_mid)
-        txid = agent.wallet.send(gatekeeper_address, sats)
-        future = agent.seedbox.request_join(peer, bytes.fromhex(txid))
-        accepted = await asyncio.wait_for(future, timeout=60)
-        return {"txid": txid, "accepted": bool(accepted)}
 
     # ---- Community treasury + signed-log layer (Phase 4) --------------
 
@@ -559,7 +550,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         md_hash = bytes.fromhex(md_hash_hex)
         future = agent.seedbox.fetch_overlay(peer, md_hash)
         md_bytes = await asyncio.wait_for(future, timeout=10)
-        instance = agent.registry.load(md_bytes.decode("utf-8"))
+        # ``aload`` runs the (potentially multi-second) compile via
+        # asyncio.to_thread so the IPv8 event loop keeps servicing
+        # packets while the LLM call is in flight.
+        instance = await agent.registry.aload(md_bytes.decode("utf-8"))
         return {
             "community_id_hex": instance.community_id.hex(),
             "loaded": True,
@@ -568,7 +562,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     async def overlay_publish(md_text: str) -> str:
         md_hash = agent.seedbox.publish_overlay(md_text)
         # Also load it locally so we serve traffic on the new overlay.
-        agent.registry.load(md_text)
+        await agent.registry.aload(md_text)
         return md_hash.hex()
 
     # ---- Network manifest -----------------------------------------------
@@ -592,97 +586,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             "name": manifest.identity.get("name", ""),
             "genesis_peers": len(manifest.genesis_peers),
             "default_overlays": list(manifest.default_overlays),
-        }
-
-    async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
-        """Join the network end-to-end. Uses the cached manifest when no
-        ``manifest_md_text`` is given; otherwise loads the provided one first.
-
-        Inside the tool: pre-introduce genesis peers, fetch + compile
-        every default overlay, donate the required satoshis, send a
-        JOIN_REQUEST, and await the gatekeeper's decision.
-
-        Composition is wrapped in a single tool because joining a
-        network is a single semantic act: parse-peer-fetch-donate-join
-        is the only sensible order. The lower-level tools remain
-        available for the LLM that wants explicit decomposition.
-        """
-        from protocol.manifest import ManifestParseError
-
-        if manifest_md_text is not None:
-            try:
-                manifest = agent.load_manifest(manifest_md_text)
-            except ManifestParseError as exc:
-                return {"error": f"manifest_parse_failed: {exc}"}
-        else:
-            manifest = agent.network_manifest
-            if manifest is None:
-                return {"error": "no_manifest_loaded"}
-
-        # Pick the first reachable genesis peer (the one IPv8 has accepted
-        # after load_manifest's add_peer() round). All admission + overlay
-        # traffic goes through this peer.
-        genesis_pubkey_set = {gp.pubkey_hex.lower() for gp in manifest.genesis_peers}
-        genesis_peers = [
-            p for p in agent.known_peers()
-            if p.public_key.key_to_bin().hex().lower() in genesis_pubkey_set
-        ]
-        if not genesis_peers:
-            return {
-                "error": "no_genesis_peers_reachable",
-                "network_id_hex": manifest.network_id.hex(),
-            }
-        primary = genesis_peers[0]
-
-        # Fetch + compile every default overlay.
-        overlays_loaded: list[str] = []
-        overlay_errors: list[dict[str, str]] = []
-        for h_hex in manifest.default_overlays:
-            h = bytes.fromhex(h_hex)
-            if agent.registry.get(h) is not None:
-                overlays_loaded.append(h_hex)
-                continue
-            try:
-                fut = agent.seedbox.fetch_overlay(primary, h)
-                md_bytes = await asyncio.wait_for(fut, timeout=10)
-                agent.registry.load(md_bytes.decode("utf-8"))
-                overlays_loaded.append(h_hex)
-            except Exception as exc:
-                overlay_errors.append({"sha1": h_hex, "error": str(exc)})
-
-        # Donate the required satoshis on-chain.
-        try:
-            txid = agent.wallet.send(
-                manifest.admission.gatekeeper_address,
-                manifest.admission.min_sats,
-            )
-        except Exception as exc:
-            return {
-                "error": f"donation_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-            }
-
-        # JOIN_REQUEST + await gatekeeper's decision.
-        try:
-            fut = agent.seedbox.request_join(primary, bytes.fromhex(txid))
-            accepted = await asyncio.wait_for(fut, timeout=60)
-        except Exception as exc:
-            return {
-                "error": f"join_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-                "txid": txid,
-            }
-
-        return {
-            "network_id_hex": manifest.network_id.hex(),
-            "accepted": bool(accepted),
-            "overlays_loaded": overlays_loaded,
-            "overlay_errors": overlay_errors,
-            "txid": txid,
         }
 
     async def overlay_invoke(
@@ -767,21 +670,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["to_address", "sats"],
               "additionalProperties": False},
              wallet_send),
-
-        Tool("seedbox_donate_and_join",
-             "DEPRECATED — single-gatekeeper donate+join. Prefer "
-             "community_donate_and_join, which appends a signed "
-             "donation_intent to the community log and is admitted by "
-             "the no-treasurer membership rules.",
-             {"type": "object",
-              "properties": {
-                  "gatekeeper_mid": {"type": "string", "description": "hex prefix of the gatekeeper's IPv8 mid"},
-                  "sats": {"type": "integer", "minimum": 1},
-                  "gatekeeper_address": {"type": "string", "description": "BTC address of the seedbox"},
-              },
-              "required": ["gatekeeper_mid", "sats", "gatekeeper_address"],
-              "additionalProperties": False},
-             seedbox_donate_and_join),
 
         Tool("community_log_list_recent",
              "Return the most-recent merged community-log entries "
@@ -925,15 +813,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["md_text"],
               "additionalProperties": False},
              agent_inject_manifest),
-
-        Tool("network_join",
-             "Join the network end-to-end: pre-introduce genesis peers, "
-             "fetch default overlays, donate, and send JOIN_REQUEST. Uses "
-             "the cached manifest unless 'manifest_md_text' is given.",
-             {"type": "object",
-              "properties": {"manifest_md_text": {"type": "string"}},
-              "additionalProperties": False},
-             network_join),
 
         Tool("overlay_invoke",
              "Send a message defined by a compiled overlay to a peer.",

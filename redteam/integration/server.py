@@ -322,6 +322,32 @@ def build_app(
         "started": False,
     }
 
+    # Read-side index for /head, /entries, /entries/{hash}. Rebuilt
+    # only when ``signed_log.latest_hash()`` (now O(1)) changes —
+    # otherwise every request reuses the same entries list and
+    # by-hash map, so /head is O(1) and /entries `since=` lookups are
+    # O(1) instead of a linear scan per request. Writes only happen
+    # via POST /log (this process) so head-mismatch detection is
+    # exact.
+    _entries_cache: dict[str, Any] = {"head": None, "entries": None, "by_hash": None}
+
+    def _ensure_entries_cache() -> dict[str, Any]:
+        head = signed_log.latest_hash()
+        if (
+            _entries_cache["head"] == head
+            and _entries_cache["entries"] is not None
+        ):
+            return _entries_cache
+        entries = signed_log.read_entries()
+        _entries_cache["entries"] = entries
+        _entries_cache["by_hash"] = {
+            e["entry_hash"]: i
+            for i, e in enumerate(entries)
+            if isinstance(e.get("entry_hash"), str)
+        }
+        _entries_cache["head"] = head
+        return _entries_cache
+
     async def _start_pull_loop() -> None:
         if _state["started"] or not peer_urls:
             return
@@ -564,7 +590,10 @@ def build_app(
 
     @app.get("/head")
     async def _get_head() -> JSONResponse:
-        """Current chain head (``"GENESIS"`` if the log is empty)."""
+        """Current chain head (``"GENESIS"`` if the log is empty).
+
+        O(1) — ``latest_hash`` is cached in-process after the first call.
+        """
         return JSONResponse(
             {"head_hash": signed_log.latest_hash()}, status_code=200
         )
@@ -594,24 +623,22 @@ def build_app(
             )
         limit = min(limit, 1000)
 
-        all_entries = signed_log.read_entries()
-        head_hash = signed_log.latest_hash()
+        cache = _ensure_entries_cache()
+        all_entries: list[dict] = cache["entries"]
+        by_hash: dict[str, int] = cache["by_hash"]
+        head_hash: str = cache["head"]
 
         if since is None or since == "GENESIS":
             # "from start of chain" — symmetry with /head's GENESIS sentinel.
             sliced = all_entries
         else:
-            start_index: int | None = None
-            for idx, entry in enumerate(all_entries):
-                if entry.get("entry_hash") == since:
-                    start_index = idx + 1
-                    break
+            start_index = by_hash.get(since)
             if start_index is None:
                 # 404 — the cursor is not in our chain. Malformed-hex
                 # cursors fall through here too: we don't pre-validate
                 # shape, "not in chain" covers the case.
                 return Response(status_code=404, headers={"Content-Length": "0"})
-            sliced = all_entries[start_index:]
+            sliced = all_entries[start_index + 1:]
 
         return JSONResponse(
             {
@@ -624,10 +651,11 @@ def build_app(
     @app.get("/entries/{entry_hash}")
     async def _get_entry_by_hash(entry_hash: str) -> JSONResponse:
         """Return a single entry by its chain hash, or 404."""
-        for entry in signed_log.read_entries():
-            if entry.get("entry_hash") == entry_hash:
-                return JSONResponse(entry, status_code=200)
-        return Response(status_code=404, headers={"Content-Length": "0"})
+        cache = _ensure_entries_cache()
+        idx = cache["by_hash"].get(entry_hash)
+        if idx is None:
+            return Response(status_code=404, headers={"Content-Length": "0"})
+        return JSONResponse(cache["entries"][idx], status_code=200)
 
     @app.options("/entries/{entry_hash}")
     async def _entry_by_hash_options(entry_hash: str) -> Response:
