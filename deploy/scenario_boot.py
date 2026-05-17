@@ -530,6 +530,24 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         )
     c_ok(f"{agent.name}: workspace files written ({list(files)})")
 
+    # (4) Write a Claude-CLI mcp-config JSON pointing at this agent's MCP
+    # server. The watchdog passes ``CLAUDE_MCP_CONFIG=<this path>`` to
+    # ``openclaw agent``, which we patched the local openclaw provider to
+    # forward as ``claude --mcp-config <path>``. Upstream openclaw 2026.5.5
+    # does not wire MCP through to claude, so without this every Haiku turn
+    # is hallucinated chat text (no callable tools). See raw 2026-05-17.
+    mcp_config_blob = json.dumps({
+        "mcpServers": {
+            instance: {"type": "http", "url": mcp_url},
+        },
+    }, indent=2)
+    mcp_config_path = state / "openclaw" / "claude-mcp-config.json"
+    subprocess.run(
+        ["sudo", "-u", SERVICE_USER, "tee", str(mcp_config_path)],
+        input=mcp_config_blob, text=True, check=True, capture_output=True,
+    )
+    c_ok(f"{agent.name}: claude mcp-config written ({mcp_config_path})")
+
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
 
 
