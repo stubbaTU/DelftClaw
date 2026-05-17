@@ -541,7 +541,12 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
             instance: {"type": "http", "url": mcp_url},
         },
     }, indent=2)
-    mcp_config_path = state / "openclaw" / "claude-mcp-config.json"
+    # Live inside the workspace dir (which the SOUL/AGENTS/HEARTBEAT writes
+    # already proved is SERVICE_USER-writable). The state/openclaw/ parent
+    # is root-owned per ``install -d`` quirk and tee can't write there.
+    # ``.json`` is not picked up by openclaw's workspace-file injection
+    # (which only reads ``.md``), so this doesn't pollute the system prompt.
+    mcp_config_path = workspace / "claude-mcp-config.json"
     subprocess.run(
         ["sudo", "-u", SERVICE_USER, "tee", str(mcp_config_path)],
         input=mcp_config_blob, text=True, check=True, capture_output=True,
