@@ -65,29 +65,57 @@ def test_summary_reflects_stop_predicate_value():
 # ---------------------------------------------------------------------------
 
 def test_prompt_is_deterministic_for_same_inputs():
-    mission = "MISSION:\n- name: tester\n- role: general\n\nDo the test."
+    # Path A refactor (2026-05-17): MISSION + INSTRUCTIONS + tool catalog
+    # have moved out of the per-turn prompt and into static openclaw
+    # workspace files (SOUL.md/AGENTS.md/HEARTBEAT.md). ``build_turn_prompt``
+    # no longer takes a mission argument.
     snapshot = {"peers": [], "wallet": {"balance_sats": 0}}
     h = TurnHistory()
-    a = build_turn_prompt(mission, snapshot, h)
-    b = build_turn_prompt(mission, snapshot, h)
+    a = build_turn_prompt(snapshot, h)
+    b = build_turn_prompt(snapshot, h)
     assert a == b
 
 
-def test_prompt_orders_sections_correctly():
+def test_prompt_orders_state_facts_recent():
     out = build_turn_prompt(
-        mission_text="MISSION-BLOCK",
         snapshot={"k": "v"},
         history=TurnHistory(),
     )
-    mission_idx = out.index("MISSION-BLOCK")
     state_idx = out.index("CURRENT STATE:")
+    facts_idx = out.index("OBSERVED FACTS")
     recent_idx = out.index("RECENT TURNS")
-    assert mission_idx < state_idx < recent_idx
+    assert state_idx < facts_idx < recent_idx
+    # MISSION header is gone (moved to SOUL.md).
+    assert "MISSION:" not in out
+
+
+def test_prompt_omits_mission_block():
+    out = build_turn_prompt(snapshot={"k": "v"}, history=TurnHistory())
+    # The MISSION block has moved to SOUL.md (auto-injected by openclaw
+    # into the system prompt). It must not leak back into the per-turn
+    # user message — that defeats the whole point of the refactor.
+    assert "MISSION:" not in out
+    # Even a sentinel passed via snapshot keys must not synthesise a
+    # MISSION header — there is no longer any code path that emits one.
+    sentinel_out = build_turn_prompt(
+        snapshot={"MISSION-BLOCK": "should-not-leak"},
+        history=TurnHistory(),
+    )
+    # The key string can appear inside the JSON snapshot block, but the
+    # literal "MISSION:" header must not.
+    assert "MISSION:" not in sentinel_out
+
+
+def test_prompt_omits_instructions_block():
+    out = build_turn_prompt(snapshot={"k": "v"}, history=TurnHistory())
+    # INSTRUCTIONS + the available-tools enumeration have moved to
+    # AGENTS.md (system-prompt-injected).
+    assert "INSTRUCTIONS:" not in out
+    assert "Available tools:" not in out
 
 
 def test_prompt_includes_serialised_snapshot_with_sorted_keys():
     out = build_turn_prompt(
-        mission_text="m",
         snapshot={"b": 2, "a": 1, "c": [3]},
         history=TurnHistory(),
     )
@@ -104,7 +132,7 @@ def test_prompt_lists_recent_turns_when_history_present():
                         stop_predicate_value=False))
     h.append(TurnRecord(turn_n=2, prompt="p", response_text="second turn happened",
                         stop_predicate_value=True))
-    out = build_turn_prompt("m", {}, h)
+    out = build_turn_prompt({}, h)
     assert "[turn 1]" in out
     assert "[turn 2]" in out
     # response_text is intentionally NOT echoed (hallucination-feedback fix).
@@ -116,15 +144,8 @@ def test_prompt_lists_recent_turns_when_history_present():
 
 
 def test_prompt_says_none_yet_on_first_turn():
-    out = build_turn_prompt("m", {}, TurnHistory())
+    out = build_turn_prompt({}, TurnHistory())
     assert "RECENT TURNS: (none yet" in out
-
-
-def test_prompt_starts_with_mission_header():
-    out = build_turn_prompt("MISSION-BODY", {}, TurnHistory())
-    # The header literal precedes the body; this prevents an operator
-    # from sneaking arbitrary content above the MISSION block.
-    assert out.split("\n", 1)[0] == "MISSION:"
 
 
 # ---------------------------------------------------------------------------

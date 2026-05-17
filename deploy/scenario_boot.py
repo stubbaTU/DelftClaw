@@ -369,6 +369,78 @@ async def _agent_self_info(url: str) -> dict:
     return {"wallet_address": addr if isinstance(addr, str) else str(addr)}
 
 
+_AGENTS_MD_TEMPLATE = """\
+# Operating Principles
+
+You are an autonomous agent in the DelftClaw network. Your identity and
+goals live in SOUL.md (above). This file describes how you operate.
+
+## Each tick
+
+On every wake-up, you receive a CURRENT STATE snapshot (JSON) and an
+OBSERVED FACTS section derived from it. Reason from those, never from
+your own past prose — your previous turn's chat output is NOT replayed
+to you, only the deterministic state.
+
+Respond with **exactly one** MCP tool call. Do not respond with chat
+prose. The watchdog (not you) evaluates the stop predicate against
+real state — never claim the mission is complete yourself.
+
+## Available tools
+
+Network + peers: peers_list, peer_add, network_join, agent_inject_manifest
+Wallet: wallet_address, wallet_balance, wallet_send
+Community: seedbox_donate_and_join
+Overlays: overlays_list, overlay_describe, overlay_fetch_and_load,
+  overlay_invoke, overlay_publish
+Torrents: torrent_seed, torrent_fetch, torrent_stats
+
+If you are unsure what to do next, call ``wallet_balance`` or
+``peers_list`` to refresh state — observation is always safe.
+"""
+
+
+_HEARTBEAT_MD_TEMPLATE = """\
+# Heartbeat
+
+You wake on a fixed tick (currently every 600s, driven by the watchdog
+systemd unit). Each tick is an independent turn: openclaw's session
+history is wiped between calls, so prior turns do not leak into your
+context. The only continuity is:
+
+- SOUL.md and AGENTS.md (this file's siblings) — your persistent
+  identity and operating rhythm.
+- The CURRENT STATE snapshot the watchdog hands you each tick — your
+  wallet balance, peers, overlays, and torrents are all there.
+- The OBSERVED FACTS block — authoritative derived assertions from the
+  snapshot. If FACTS contradict your intuition, trust FACTS.
+- The signed log on disk — everything you have done is recorded as
+  entries and is queryable via tools.
+
+Act on what is true right now, not on what you remember doing.
+"""
+
+
+def _render_workspace_files(spec: AgentSpec) -> dict[str, str]:
+    """Render the three openclaw workspace files for this agent.
+
+    Returns {"SOUL.md": ..., "AGENTS.md": ..., "HEARTBEAT.md": ...} — the
+    content openclaw injects into the system prompt on every ``openclaw
+    agent`` call. Replaces the previous flow where MISSION + INSTRUCTIONS
+    + tool catalog were re-pasted into the user-message every watchdog
+    tick (deploy/turn_builder.py).
+
+    Pure: takes an AgentSpec, reads spec.mission_file, returns strings.
+    No disk writes, no sudo, fully testable.
+    """
+    soul = spec.mission_file.read_text(encoding="utf-8")
+    return {
+        "SOUL.md": soul,
+        "AGENTS.md": _AGENTS_MD_TEMPLATE,
+        "HEARTBEAT.md": _HEARTBEAT_MD_TEMPLATE,
+    }
+
+
 def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     """Register an isolated OpenClaw agent + MCP server in its per-HOME config.
 
@@ -442,6 +514,21 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
              "--model", "claude-cli/claude-haiku-4-5"],
             check=True,
         )
+
+    # (3) Render the per-agent workspace files (SOUL.md/AGENTS.md/HEARTBEAT.md)
+    # into the workspace dir so openclaw auto-injects them into the system
+    # prompt on every ``openclaw agent`` call. Identity + operating loop +
+    # tool catalog now live here instead of in the per-turn user-message
+    # (deploy/turn_builder.py). Write via ``sudo -u SERVICE_USER tee`` so
+    # the files land as SERVICE_USER-owned (the workspace dir is too).
+    files = _render_workspace_files(agent)
+    for filename, content in files.items():
+        target = workspace / filename
+        subprocess.run(
+            ["sudo", "-u", SERVICE_USER, "tee", str(target)],
+            input=content, text=True, check=True, capture_output=True,
+        )
+    c_ok(f"{agent.name}: workspace files written ({list(files)})")
 
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
 

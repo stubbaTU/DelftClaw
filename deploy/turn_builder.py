@@ -53,15 +53,6 @@ class TurnHistory:
         return len(self._records)
 
 
-_AVAILABLE_TOOLS = (
-    "peers_list, peer_add, wallet_address, wallet_balance, wallet_send, "
-    "seedbox_donate_and_join, overlays_list, overlay_describe, "
-    "overlay_fetch_and_load, overlay_invoke, overlay_publish, "
-    "agent_inject_manifest, network_join, torrent_seed, torrent_fetch, "
-    "torrent_stats"
-)
-
-
 def _observed_facts(snapshot: dict[str, Any]) -> list[str]:
     """Derive a small set of authoritative facts from the snapshot.
 
@@ -103,25 +94,28 @@ def _observed_facts(snapshot: dict[str, Any]) -> list[str]:
 
 
 def build_turn_prompt(
-    mission_text: str,
     snapshot: dict[str, Any],
     history: TurnHistory,
 ) -> str:
-    """Assemble the LLM-facing prompt for one watchdog tick.
+    """Assemble the per-tick user-message the LLM sees.
 
-    The order is fixed: ``mission`` first (intent + budget + stop), then
-    the current STATE block (JSON, human-readable indent), then a flat
-    OBSERVED FACTS section derived from the snapshot, then the RECENT
-    TURNS tail. Determinism here is load-bearing — JSONL replay assumes
-    the same builder produces the same bytes from the same inputs.
+    Path A refactor (2026-05-17): identity (SOUL.md), operating loop +
+    tool catalog (AGENTS.md), and tick rhythm (HEARTBEAT.md) all moved
+    into the openclaw workspace, where they are auto-injected into the
+    *system* prompt on every ``openclaw agent`` call. This builder is
+    now responsible only for the *deterministic state* the agent must
+    react to this tick:
 
-    The mission is the *only* operator-supplied prose the LLM sees;
-    every other prompt input is either machine-generated (state snapshot,
-    history tail, observed facts) or content-hashed (the network
-    manifest, which lives inside the snapshot).
+      1. CURRENT STATE  — the JSON snapshot (sorted keys for determinism).
+      2. OBSERVED FACTS — flat assertions derived from the snapshot, the
+         authoritative counter to LLM hallucination of mission progress.
+      3. RECENT TURNS   — the bounded history tail (summaries only — see
+         ``TurnRecord.summary`` for the no-response-echo rationale).
+
+    Determinism here is load-bearing — JSONL replay assumes the same
+    builder produces the same bytes from the same inputs.
     """
-    sections: list[str] = ["MISSION:", mission_text.rstrip(), ""]
-    sections.append("CURRENT STATE:")
+    sections: list[str] = ["CURRENT STATE:"]
     sections.append("```json")
     sections.append(json.dumps(snapshot, indent=2, sort_keys=True))
     sections.append("```")
@@ -135,12 +129,6 @@ def build_turn_prompt(
             sections.append(record.summary())
     else:
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
-    sections.append("")
-    sections.append("INSTRUCTIONS:")
-    sections.append("- Respond with exactly one MCP tool call. Do not respond with chat prose.")
-    sections.append("- The watchdog evaluates the stop predicate against real state — never claim the mission is complete yourself.")
-    sections.append("- If you are unsure what to do next, call ``peers_list`` or ``wallet_balance`` to refresh state.")
-    sections.append(f"- Available tools: {_AVAILABLE_TOOLS}.")
     return "\n".join(sections)
 
 

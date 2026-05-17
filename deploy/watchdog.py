@@ -205,7 +205,13 @@ async def _run_loop(args: argparse.Namespace) -> int:
         )
     spec: AgentSpec = scenario.agents[agent_name]
 
-    mission_text = spec.mission_file.read_text(encoding="utf-8")
+    # Mission text now lives in the openclaw workspace as SOUL.md (written
+    # by scenario_boot._provision_openclaw_workspace) and is auto-injected
+    # into the system prompt on every ``openclaw agent`` call. The watchdog
+    # itself no longer needs the prose, but we still touch the file here so
+    # a missing/unreadable mission_file fails fast at boot rather than on
+    # the first tick.
+    spec.mission_file.read_text(encoding="utf-8")
 
     # Bring up our own OpenClawAgent — read-only collector for snapshot calls.
     # Same seed file as the MCP service, but we bind a *different* IPv8 port
@@ -257,7 +263,6 @@ async def _run_loop(args: argparse.Namespace) -> int:
             spec=spec,
             scenario=scenario,
             instance=args.instance,
-            mission_text=mission_text,
         )
     finally:
         await agent.stop()
@@ -269,7 +274,6 @@ async def _drive(
     spec: AgentSpec,
     scenario,
     instance: str,
-    mission_text: str,
 ) -> int:
     log_dir = Path(os.environ.get("LOG_DIR", str(scenario.log_dir)))
     sink = JsonlSink(log_dir / f"{spec.name}.jsonl")
@@ -321,7 +325,7 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        prompt = build_turn_prompt(mission_text, snapshot, history)
+        prompt = build_turn_prompt(snapshot, history)
         ok, stdout, stderr = await asyncio.to_thread(
             _invoke_openclaw_agent,
             instance=instance,
