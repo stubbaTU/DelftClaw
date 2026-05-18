@@ -114,11 +114,16 @@ EOF
 
 echo "[*] Bitcoin config written to $BITCOIN_CONF"
 
-# Function to run bitcoin-cli commands
-# Waits for the daemon to be ready
+# Run a bitcoin-cli command without retrying.
+# Use this for real RPC calls so errors are visible immediately.
 btc() {
+    "$BITCOIN_CLI" -regtest "$@"
+}
+
+# Wait until the daemon responds successfully.
+btc_wait() {
     local retries=0
-    while ! "$BITCOIN_CLI" -regtest "$@" 2>/dev/null; do
+    while ! btc "$@" >/dev/null 2>&1; do
         if [ $retries -ge 60 ]; then
             echo "[!] Bitcoin daemon did not respond after 60 seconds" >&2
             return 1
@@ -135,7 +140,7 @@ bitcoind -datadir="$BITCOIN_DATA" -regtest -daemon
 # Wait for RPC to be available
 echo "[*] Waiting for bitcoind RPC to be ready..."
 for i in {1..60}; do
-    if "$BITCOIN_CLI" -regtest getblockcount 2>/dev/null; then
+    if btc getblockcount >/dev/null 2>&1; then
         echo "[+] bitcoind is ready"
         break
     fi
@@ -149,18 +154,15 @@ done
 # Create named wallets for demo agents
 echo "[*] Creating agent wallets..."
 for agent in alice bob charlie dave; do
-    if "$BITCOIN_CLI" -regtest listwallets 2>/dev/null | grep -q "\"$agent\""; then
+    if btc listwallets 2>/dev/null | grep -q "\"$agent\""; then
         echo "  ✓ Wallet '$agent' already exists"
+    elif [ -d "$BITCOIN_DATA/$REGTEST_CHAIN/wallets/$agent" ]; then
+        btc loadwallet "$agent" >/dev/null
+        echo "  ✓ Loaded existing wallet '$agent'"
     else
-        btc createwallet "$agent" false false "" false false true
+        btc createwallet "$agent" >/dev/null
         echo "  ✓ Created wallet '$agent'"
     fi
-done
-
-# Load all wallets
-echo "[*] Loading all wallets..."
-for agent in alice bob charlie dave; do
-    btc loadwallet "$agent" 2>/dev/null || true
 done
 
 # Get current block count
@@ -199,17 +201,17 @@ show_wallet_info() {
 
     # Get wallet info
     local wallet_info
-    wallet_info=$(btc -regtest -rpcwallet="$wallet_name" getwalletinfo 2>/dev/null || echo "{}")
+    wallet_info=$(btc -rpcwallet="$wallet_name" getwalletinfo 2>/dev/null || echo "{}")
 
     # Get first address
     local addr
-    addr=$(btc -regtest -rpcwallet="$wallet_name" getnewaddress 2>/dev/null || echo "ERROR")
+    addr=$(btc -rpcwallet="$wallet_name" getnewaddress 2>/dev/null || echo "ERROR")
 
     echo "    Address: $addr"
 
     # Try to get balance
     local balance
-    balance=$(btc -regtest -rpcwallet="$wallet_name" getbalance 2>/dev/null || echo "0")
+    balance=$(btc -rpcwallet="$wallet_name" getbalance 2>/dev/null || echo "0")
     echo "    Balance: $balance BTC"
 }
 
