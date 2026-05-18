@@ -306,8 +306,8 @@ MCP_HOST=0.0.0.0
 MCP_PORT=18765                       # per-agent in [18765, 18774]
 PUBLISH_OVERLAY=/opt/delftclaw/protocol/examples/content_community.md
 MANIFEST_FILE=/etc/delftclaw/scenarios/<instance>/network_manifest.md
-QWEN_BASE_URL=http://<gpu-host>:11434/v1
-QWEN_MODEL=qwen3.6:27b
+LLM_BASE_URL=http://<gpu-host>:11434/v1
+LLM_MODEL=qwen3.6:27b
 LOG_DIR=/var/log/delftclaw/scenarios/<scenario>
 ```
 

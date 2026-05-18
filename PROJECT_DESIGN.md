@@ -108,7 +108,7 @@ reference further down.
 | **Mission descriptor** *(v5.1)* | One `mission.md` per agent (Identity / Intent / Budget / Stop); strict parser refuses recipes (no tool names, no ≥3-step lists) | 10.3, 22 |
 | **Protocols** | Markdown descriptors compiled at runtime by an LLM into IPv8 `Community` classes; sha1-derived `community_id` | 7 |
 | **Sandbox** | AST whitelist + namespaced `exec` (demo-grade; trust gradient is small because peers are admission-gated) | 7.3 |
-| **Compiler LLM** | Pluggable `LLMClient` Protocol; **production** is an external GPU-host OpenAI-compatible endpoint via `QWEN_BASE_URL`; local Ollama is the dev/CI fallback | 7.2 |
+| **Compiler LLM** | Pluggable `LLMClient` Protocol; **production** is an external GPU-host OpenAI-compatible endpoint via `LLM_BASE_URL`; local Ollama is the dev/CI fallback | 7.2 |
 | **Reasoning LLM** | OpenClaw's chat session (whatever model the chat host runs); driven externally over MCP | 9.4 |
 | **Per-node identity** | One BIP-39 seed → three BIP-32 derived keys (IPv8 transport, app-layer signing, Bitcoin HD) | 5 |
 | **Bitcoin network** | `mock` (synthetic wallet, default) or `testnet` (real bitcoinlib); the synthetic wallet still tracks per-deploy `initial_balance_sats` so donation budgets are realistic | 5.3 |
@@ -1205,7 +1205,7 @@ the code.
 | Bitcoin testnet provider outage | Low | `bitcoinlib.services.Service` rotates providers; `DonationVerifier.verify` catches and returns a typed error |
 | Bob never finds Alice's wallet address in state snapshot | Medium | Known gap — Bob's `mission.md` explicitly says to wait when the address isn't visible. Fixable by plumbing peer wallet addresses into the snapshot (small follow-up) |
 | `openclaw agent` not on `PATH` for the watchdog | Low | `setup_vps.sh` warns at install; watchdog exits 3 if subprocess fails repeatedly |
-| `qwen2.5-coder:7b` is too small to generate correct overlay code | Medium | Test vectors catch wire-level errors at activation, so failures are loud; can swap to a larger model via `QWEN_MODEL` env var |
+| `qwen2.5-coder:7b` is too small to generate correct overlay code | Medium | Test vectors catch wire-level errors at activation, so failures are loud; can swap to a larger model via `LLM_MODEL` env var |
 | **Mock-mode admission auto-admits any txid** *(post-merge)* | High in production / acceptable for demo | `DonationVerifier(network="mock")` is the default for v5.1 + the synthetic wallet. Donation gate is ceremonial in mock mode. Flip to `BTC_NETWORK=testnet` in `configs/host.env` for real on-chain verification. |
 | **Hand-written Python overlays escape the markdown sandbox** *(post-merge)* | High | `register_community(cls)` runs whatever `Community` subclass the operator imports — no AST whitelist, no test vectors. By design (this is the escape hatch for static experiments); local-only because nothing wire-transmittable references the class. Reviewers must audit the source the same way they audit any other module the agent imports. |
 
@@ -1496,7 +1496,7 @@ In rough priority order:
 | **Agent** | An LLM-driven peer on the network. One `OpenClawAgent` per Python process; one Python process per VPS-scenario tenant. |
 | **Bootstrap community** | The fixed-id IPv8 community (`SeedboxCommunity`) that every node runs to do admission + overlay distribution. |
 | **`community_id`** | The 20-byte IPv8 wire prefix that identifies a protocol overlay. For markdown overlays, derived as `sha1(canonical(md))[:20]`. |
-| **Compiler LLM** | The OpenAI-compatible model that turns `.md` descriptors into Python `Community` classes. **v5.1 production target**: external GPU-host endpoint via `QWEN_BASE_URL`; **dev/CI fallback**: local Ollama. Distinct from the reasoning LLM. |
+| **Compiler LLM** | The OpenAI-compatible model that turns `.md` descriptors into Python `Community` classes. **v5.1 production target**: external GPU-host endpoint via `LLM_BASE_URL`; **dev/CI fallback**: local Ollama. Distinct from the reasoning LLM. |
 | **Donation** | A Bitcoin (testnet) transaction paying the seedbox's wallet address; the proof of admission. |
 | **Genesis agent** *(v5.1)* | The agent started with `--genesis <manifest>`: declares a new network by publishing its manifest into `SeedboxCommunity` and serving it via `MANIFEST_REQUEST`. Acts as the admission gatekeeper. |
 | **Mission descriptor** *(v5.1)* | One `mission.md` per agent: Identity / Intent / Budget / Stop. The single operator-supplied prose the LLM sees each turn; strict parser refuses recipes. Replaces v5.0's persona + goal pair. |
@@ -1559,7 +1559,7 @@ v5.1 addresses all three. The headline changes:
 | Tools | 13 (peers, wallet, overlays, torrents) | 16 (+ `overlay_describe`, `agent_inject_manifest`, `network_join`) |
 | Admission flow | LLM calls `wallet_send` → `seedbox.request_join` manually | `network_join` does parse → peer_add → fetch default overlays → donate → JOIN_REQUEST in one tool call |
 | Package layout | `replication/verification/donation_verifier.py` | `admission/donation_verifier.py` |
-| Compiler-LLM placement | "Local Ollama on the VPS" (canonical) | **External GPU host via `QWEN_BASE_URL`** (canonical); Ollama is the dev/CI fallback |
+| Compiler-LLM placement | "Local Ollama on the VPS" (canonical) | **External GPU host via `LLM_BASE_URL`** (canonical); Ollama is the dev/CI fallback |
 
 What did *not* change: the overlay schema, the AST sandbox, the
 `community_id = sha1(canonical(md))[:20]` rule, the BIP-32 identity

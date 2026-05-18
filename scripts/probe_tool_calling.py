@@ -8,9 +8,18 @@ just text?
 
 Usage::
 
-    python scripts/probe_tool_calling.py                     # uses host.env's QWEN_MODEL
-    python scripts/probe_tool_calling.py --model qwen3:8b    # explicit override
-    python scripts/probe_tool_calling.py --base http://127.0.0.1:11434/v1
+    # Local Ollama (default — uses host.env's LLM_MODEL):
+    python scripts/probe_tool_calling.py
+
+    # Local Ollama, explicit model:
+    python scripts/probe_tool_calling.py --model qwen3:8b
+
+    # Anthropic via its OpenAI-compatible endpoint (needs ANTHROPIC_API_KEY):
+    python scripts/probe_tool_calling.py --anthropic --model claude-haiku-4-5-20251001
+
+    # Any OpenAI-compatible endpoint:
+    python scripts/probe_tool_calling.py \\
+        --base https://api.example.com/v1 --api-key sk-... --model whatever
 
 Exit codes:
   0 — model returned a tool_calls array (tool calling works)
@@ -22,11 +31,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from urllib import request, error
 
 DEFAULT_BASE = "http://127.0.0.1:11434/v1"
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+ANTHROPIC_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _load_host_env() -> dict[str, str]:
@@ -45,7 +57,7 @@ def _load_host_env() -> dict[str, str]:
     return out
 
 
-def _probe(base: str, model: str, *, force: bool, verbose: bool) -> int:
+def _probe(base: str, model: str, api_key: str, *, force: bool, verbose: bool) -> int:
     body = {
         "model": model,
         "messages": [
@@ -91,7 +103,7 @@ def _probe(base: str, model: str, *, force: bool, verbose: bool) -> int:
         url, data=json.dumps(body).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer ollama",
+            "Authorization": f"Bearer {api_key}",
         },
     )
     try:
@@ -138,26 +150,50 @@ def _probe(base: str, model: str, *, force: bool, verbose: bool) -> int:
 
 def main(argv: list[str]) -> int:
     host_env = _load_host_env()
-    default_base = host_env.get("QWEN_BASE_URL", DEFAULT_BASE)
+    default_base = host_env.get("LLM_BASE_URL", DEFAULT_BASE)
     # The host.env points at the SSH tunnel (port 11500); for a direct
     # laptop test we want the bare Ollama port. If the URL looks like
     # the tunnel, hint at the direct port for clarity.
     if "11500" in default_base:
         default_base = default_base.replace("11500", "11434")
-    default_model = host_env.get("QWEN_MODEL", "qwen2.5-coder:7b")
+    default_model = host_env.get("LLM_MODEL", "qwen2.5-coder:7b")
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default=default_base,
                         help=f"OpenAI-compatible base URL (default: {default_base})")
     parser.add_argument("--model", default=default_model,
                         help=f"model id (default: {default_model})")
+    parser.add_argument("--api-key", default=None,
+                        help="API key sent as 'Authorization: Bearer'. "
+                             "Defaults to LLM_API_KEY or ANTHROPIC_API_KEY env vars, "
+                             "or the literal 'ollama' if neither is set.")
+    parser.add_argument("--anthropic", action="store_true",
+                        help="shortcut: target Anthropic's OpenAI-compatible endpoint "
+                             "(sets base+model+api-key from $ANTHROPIC_API_KEY)")
     parser.add_argument("--no-force", action="store_true",
                         help="omit tool_choice='required' (use 'auto' instead)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="print full JSON response")
     args = parser.parse_args(argv)
 
-    return _probe(args.base, args.model, force=not args.no_force, verbose=args.verbose)
+    if args.anthropic:
+        args.base = ANTHROPIC_BASE
+        if args.model == default_model:  # i.e. user didn't override
+            args.model = ANTHROPIC_DEFAULT_MODEL
+        if args.api_key is None:
+            args.api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not args.api_key:
+                print("--anthropic requires ANTHROPIC_API_KEY env var "
+                      "(get one at https://console.anthropic.com)", file=sys.stderr)
+                return 2
+
+    if args.api_key is None:
+        args.api_key = (os.environ.get("LLM_API_KEY")
+                        or os.environ.get("ANTHROPIC_API_KEY")
+                        or "ollama")
+
+    return _probe(args.base, args.model, args.api_key,
+                  force=not args.no_force, verbose=args.verbose)
 
 
 if __name__ == "__main__":

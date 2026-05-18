@@ -82,13 +82,13 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
     return out
 
 
-DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
-DEFAULT_QWEN_MODEL = "qwen3.6:27b"
-DEFAULT_OLLAMA_API_KEY = "ollama"
+DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
+DEFAULT_LLM_MODEL = "qwen3.6:27b"
+DEFAULT_LLM_API_KEY = "ollama"
 
 
-def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
-    """Resolve QWEN_BASE_URL + QWEN_MODEL + OLLAMA_API_KEY.
+def _resolve_llm(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
+    """Resolve LLM_BASE_URL + LLM_MODEL + LLM_API_KEY.
 
     Order: process env var → configs/host.env (if present) →
     hard-coded default. Exposed as a function so tests can stub the
@@ -96,29 +96,86 @@ def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
     """
     host_env = _load_host_env(host_env_file)
     base = os.environ.get(
-        "QWEN_BASE_URL",
-        host_env.get("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL),
+        "LLM_BASE_URL",
+        host_env.get("LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
     )
     model = os.environ.get(
-        "QWEN_MODEL",
-        host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
+        "LLM_MODEL",
+        host_env.get("LLM_MODEL", DEFAULT_LLM_MODEL),
     )
     api_key = os.environ.get(
-        "OLLAMA_API_KEY",
-        host_env.get("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY),
+        "LLM_API_KEY",
+        host_env.get("LLM_API_KEY", DEFAULT_LLM_API_KEY),
     )
     return base, model, api_key
 
 
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
-# ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
-QWEN_BASE_URL, QWEN_MODEL, OLLAMA_API_KEY = _resolve_qwen()
+# ``HOST_ENV_FILE`` then re-call ``_resolve_llm`` directly.
+LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
 
 
-def _ollama_base_from(qwen_base_url: str) -> str:
+def _native_base_from(base_url: str) -> str:
     """Strip the trailing ``/v1`` from an OpenAI-compat URL to get Ollama's native base."""
-    return qwen_base_url.rstrip("/").removesuffix("/v1")
+    return base_url.rstrip("/").removesuffix("/v1")
+
+
+def _direct_patch_openclaw_json(path: Path, provider_key: str, provider_cfg: dict) -> None:
+    """Set ``models.providers`` in openclaw.json to a single provider.
+
+    Bypasses ``openclaw config patch`` to sidestep its size-drop safety
+    check (which fires when wiping a stale multi-provider map). Uses
+    ``sudo tee`` to write since the file is owned by ``delftclaw``.
+    """
+    if not path.is_file():
+        raise RuntimeError(f"expected openclaw.json at {path} but file is missing")
+    raw_text = subprocess.run(
+        ["sudo", "cat", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    try:
+        cfg = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"openclaw.json at {path} is not valid JSON: {exc}") from exc
+
+    models = cfg.setdefault("models", {})
+    models["mode"] = "merge"
+    models["providers"] = {provider_key: provider_cfg}
+
+    body = json.dumps(cfg, indent=2)
+    subprocess.run(
+        ["sudo", "tee", str(path)],
+        input=body, capture_output=True, text=True, check=True,
+    )
+    subprocess.run(
+        ["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", str(path)],
+        check=True,
+    )
+
+
+def _provider_for(base_url: str) -> tuple[str, str, str]:
+    """Resolve (provider_key, api_type, base_url) from a configured URL.
+
+    OpenClaw validates ``api`` against a fixed list — ``"ollama"`` for
+    Ollama's native protocol (POST /api/chat), ``"openai-completions"``
+    for OpenAI-compatible endpoints (POST /v1/chat/completions). The
+    OpenAI-compat path covers Anthropic (via its OpenAI-compat endpoint
+    fronted by llm_proxy.py), OpenAI itself, vLLM, Groq, etc. We pick
+    based on whether the configured URL keeps the ``/v1`` suffix.
+
+    Returns ``(provider_key, api_type, base_url)``. The ``provider_key``
+    must match the ``--model <key>/<name>`` prefix used at agent
+    registration time. We deliberately AVOID common provider names
+    (``openai``, ``anthropic``, ``google``) because OpenClaw appears to
+    treat those as reserved and silently overrides our baseUrl/api
+    with its built-in defaults. ``compat`` is a generic placeholder
+    that doesn't collide.
+    """
+    trimmed = base_url.rstrip("/")
+    if trimmed.endswith("/v1"):
+        return ("compat", "openai-completions", trimmed)
+    return ("ollama", "ollama", _native_base_from(base_url))
 
 
 def c_info(msg: str) -> None: print(f"\033[1;36m[boot]\033[0m {msg}", flush=True)
@@ -163,6 +220,13 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         for other in scenario.agents.values()
         if other.name != agent.name and other.redteam_port != 0
     ]
+    # Stagger the first turn across agents so they don't all hit the LLM
+    # provider at the same instant. Each agent gets a different slot in
+    # the interval_s window — agent i waits (i / N) * interval_s seconds
+    # before its first tick. After that the sleep loop keeps them offset.
+    agent_index = list(scenario.agents).index(agent.name)
+    num_agents = len(scenario.agents)
+    initial_delay_s = (agent_index * scenario.watchdog.interval_s) / num_agents
     lines = [
         "# generated by deploy.scenario_boot — do not hand-edit",
         f"PYTHONPATH={REPO_ROOT}",
@@ -195,13 +259,19 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
         # process's agent, not the watchdog's separate snapshot collector.
         f"MANIFEST_FILE={_manifest_file_path(scenario, agent)}",
-        f"QWEN_BASE_URL={QWEN_BASE_URL}",
-        f"QWEN_MODEL={QWEN_MODEL}",
+        f"LLM_BASE_URL={LLM_BASE_URL}",
+        f"LLM_MODEL={LLM_MODEL}",
         # Mirror of the literal ``apiKey`` written into openclaw.json. Kept
         # here too so any code path that reads the env var (rather than the
         # openclaw config) sees the same value.
-        f"OLLAMA_API_KEY={OLLAMA_API_KEY}",
+        f"LLM_API_KEY={LLM_API_KEY}",
+        # The watchdog passes ``--model {OPENCLAW_PROVIDER_KEY}/{LLM_MODEL}``
+        # to ``openclaw agent``. The key must match what we wrote into the
+        # agent's openclaw.json providers map (``compat`` for OpenAI-compat
+        # endpoints, ``ollama`` for native Ollama).
+        f"OPENCLAW_PROVIDER_KEY={_provider_for(LLM_BASE_URL)[0]}",
         f"LOG_DIR={scenario.log_dir}",
+        f"WATCHDOG_INITIAL_DELAY_S={initial_delay_s:.2f}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -295,8 +365,96 @@ def _enable_unit(unit: str) -> None:
 
 
 def _stop_unit(unit: str) -> None:
+    """Stop+disable a systemd unit and verify the main PID actually died.
+
+    ``systemctl stop`` returns success the moment systemd has sent SIGTERM,
+    not when the worker process has actually exited. If the worker hangs
+    inside teardown (IPv8 shutdown can stall, uvicorn doesn't honour
+    ``should_exit`` mid-keepalive, the asyncio loop is wedged in an await
+    that never wakes), the next ``make demo`` boots a NEW worker that
+    fights the zombie for the same TCP/UDP ports and fails to bind. The
+    pattern looks like: ``ss -ltnp`` shows the redteam port held but
+    ``systemctl status`` reports the unit as inactive — load-bearing
+    foot-gun caught live in the seek_cc 20:46 session.
+
+    Defence:
+      1. ``systemctl stop`` — polite SIGTERM.
+      2. Poll ``systemctl is-active`` for 5s — wait for systemd to
+         report the unit as inactive.
+      3. If still active, escalate to ``systemctl kill -s SIGKILL``.
+      4. ``systemctl disable`` regardless so the unit doesn't auto-start.
+    """
     _sudo(["systemctl", "stop", unit], check=False)
+    # Step 2: short poll for `is-active` to flip to inactive/failed.
+    for _ in range(10):
+        proc = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, check=False,
+        )
+        state = (proc.stdout or "").strip()
+        if state in ("inactive", "failed", "deactivating"):
+            break
+        time.sleep(0.5)
+    else:
+        # Step 3: escalate.
+        c_warn(f"{unit}: still active after 5s — escalating to SIGKILL")
+        _sudo(["systemctl", "kill", "-s", "SIGKILL", unit], check=False)
+        time.sleep(0.5)
     _sudo(["systemctl", "disable", unit], check=False)
+
+
+def _scenario_python_patterns(scenario: Scenario) -> list[str]:
+    """pgrep patterns that match any python process this scenario could own."""
+    return [
+        # MCP-process agents — match the systemd ExecStart cmdline.
+        f"python -m agent .*{scenario.name}-",
+        # Watchdog processes — match the systemd ExecStart cmdline.
+        f"python -m deploy.watchdog .*{scenario.name}-",
+    ]
+
+
+def _purge_orphans(scenario: Scenario) -> None:
+    """Kill any leftover delftclaw worker process that systemd lost track of.
+
+    Sweeps every TCP port the scenario manifest declares (mcp / redteam)
+    plus every UDP port (ipv8), plus pgrep-by-cmdline as a belt-and-
+    braces fallback. Runs BEFORE ``_enable_unit`` so a half-dead
+    previous run can't hold the ports we're about to ask the new
+    services to bind.
+
+    Idempotent. Cheap (<1s) when the host is clean.
+    """
+    # Collect every port this scenario will try to bind. We don't know
+    # what the previous run actually held, but binding the new run's
+    # ports is the only thing we need to clear.
+    tcp_ports: list[int] = []
+    udp_ports: list[int] = []
+    for agent in scenario.agents.values():
+        tcp_ports.append(agent.mcp_port)
+        if agent.redteam_port:
+            tcp_ports.append(agent.redteam_port)
+        udp_ports.append(agent.ipv8_port)
+
+    # ``fuser -k`` sends SIGKILL to any process holding a given port.
+    # ``-n tcp`` / ``-n udp`` picks the address family. We invoke
+    # silently and ignore exit codes — a port being unbound is the
+    # success case and fuser returns 1 there.
+    for port in tcp_ports:
+        _sudo(["fuser", "-k", "-s", f"{port}/tcp"], check=False)
+    for port in udp_ports:
+        _sudo(["fuser", "-k", "-s", f"{port}/udp"], check=False)
+
+    # Belt + braces: pkill anything that looks like a scenario worker
+    # whose ports we somehow missed (e.g. a worker that already crashed
+    # mid-bind and is in zombie state with no port).
+    for pattern in _scenario_python_patterns(scenario):
+        _sudo(["pkill", "-9", "-f", pattern], check=False)
+
+    # Brief settle so the kernel actually releases the sockets before
+    # the next systemctl start tries to bind. SO_REUSEADDR mitigates
+    # the TIME_WAIT race but not all UDP setups honour it.
+    time.sleep(0.5)
+    c_ok(f"{scenario.name}: purged orphan workers + freed scenario ports")
 
 
 # ---------------------------------------------------------------------------
@@ -382,9 +540,10 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
 
     sudo_env = ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}"]
 
-    # (1) Patch the agent's openclaw.json so the Ollama provider is registered
-    # before any model lookup happens. Without this, ``openclaw agent --local
-    # --model ollama/qwen2.5-coder:7b`` can't resolve the model.
+    # (1) Patch the agent's openclaw.json so the configured provider is
+    # registered before any model lookup happens. Without this,
+    # ``openclaw agent --local --model <provider>/<model>`` can't resolve
+    # the model.
     #
     # ``agents.defaults.timeoutSeconds`` is the *inner* LLM call timeout (the
     # subprocess-level timeout we pass via --timeout is unrelated). qwen3.6:27b
@@ -392,48 +551,47 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # always fire on turn 1. Set this generously below the watchdog tick
     # ``interval_s`` so timeouts surface as turn errors rather than truncated
     # responses mid-call.
-    provider_patch = json.dumps({
-        "agents": {
-            "defaults": {
-                "timeoutSeconds": 150,
+    provider_key, api_type, provider_base = _provider_for(LLM_BASE_URL)
+    new_provider = {
+        "baseUrl": provider_base,
+        "api": api_type,
+        # OpenClaw refuses to register a provider without an apiKey;
+        # we write a literal value rather than relying on env-var
+        # interpolation (which this field doesn't support).
+        "apiKey": LLM_API_KEY,
+        "models": [
+            {
+                "id": LLM_MODEL,
+                "name": LLM_MODEL,
+                "reasoning": False,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 32768,
+                "maxTokens": 4096,
             },
-        },
-        "models": {
-            "mode": "merge",
-            "providers": {
-                "ollama": {
-                    "baseUrl": _ollama_base_from(QWEN_BASE_URL),
-                    "api": "ollama",
-                    # OpenClaw refuses to register a provider without an
-                    # apiKey. Ollama accepts anything as Bearer; we write a
-                    # literal value here rather than relying on openclaw to
-                    # interpolate an env var into this field (it doesn't).
-                    "apiKey": OLLAMA_API_KEY,
-                    "models": [
-                        {
-                            "id": QWEN_MODEL,
-                            "name": QWEN_MODEL,
-                            "reasoning": False,
-                            "input": ["text"],
-                            "cost": {"input": 0, "output": 0,
-                                     "cacheRead": 0, "cacheWrite": 0},
-                            "contextWindow": 32768,
-                            "maxTokens": 4096,
-                        },
-                    ],
-                },
-            },
-        },
-    })
-    # ``--replace-path models.providers.ollama.models`` so we overwrite the
-    # whole model list each run; openclaw config patch otherwise refuses to
-    # drop existing entries (e.g. a stale qwen2.5-coder:7b from a prior boot).
-    c_info(f"{agent.name}: openclaw config patch (ollama provider)")
+        ],
+    }
+
+    openclaw_json = state / ".openclaw" / "openclaw.json"
+
+    # First, ensure openclaw.json exists by running a trivial patch
+    # (the ``agents.defaults`` field doesn't shrink the file so it
+    # doesn't trip openclaw's size-drop safety check). This also
+    # sets the inner-LLM timeout to 150s, well below the watchdog
+    # interval, so cold-starts don't surface as truncated responses.
     subprocess.run(
-        [*sudo_env, "openclaw", "config", "patch", "--stdin",
-         "--replace-path", "models.providers.ollama.models"],
-        input=provider_patch, text=True, check=True,
+        [*sudo_env, "openclaw", "config", "patch", "--stdin"],
+        input=json.dumps({"agents": {"defaults": {"timeoutSeconds": 150}}}),
+        text=True, check=True,
     )
+
+    # Now overwrite the providers map directly. ``openclaw config patch``
+    # has a "size-drop" safety check that rejects writes shrinking the
+    # file by more than a threshold, which fires when wiping stale
+    # providers from prior boots. Sidestep it by editing openclaw.json
+    # in place — that's the only file openclaw reads at startup.
+    c_info(f"{agent.name}: openclaw config patch ({provider_key} / api={api_type})")
+    _direct_patch_openclaw_json(openclaw_json, provider_key, new_provider)
 
     # (2) Register the MCP server in this HOME's openclaw.json.
     mcp_value = json.dumps({"url": mcp_url, "transport": "streamable-http"})
@@ -469,7 +627,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
-             "--model", f"ollama/{QWEN_MODEL}"],
+             "--model", f"{provider_key}/{LLM_MODEL}"],
             check=True,
         )
 
@@ -586,13 +744,24 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         for agent in scenario.agents.values():
             instance = scenario.instance_id(agent.name)
             c_dry(f"  would openclaw mcp set {instance} (HOME=/var/lib/delftclaw/{scenario.name}/{agent.name})")
-            c_dry(f"  would openclaw agents add {instance} --non-interactive --model ollama/{QWEN_MODEL}")
+            _pk, _api, _ = _provider_for(LLM_BASE_URL)
+            c_dry(f"  would openclaw agents add {instance} --non-interactive --model {_pk}/{LLM_MODEL}")
         c_dry("would call MCP peer_add for cross-introductions:")
         for agent in scenario.agents.values():
             for peer_name in agent.peers:
                 c_dry(f"  {agent.name}.peer_add({peer_name})")
         c_dry(f"would systemctl start delftclaw-watchdog@<instance> for {list(scenario.agents)}")
         return 0
+
+    # Phase 1.5: purge any worker process or port-holder the previous
+    # run left behind. Without this, a zombie ``delftclaw-mcp@`` worker
+    # whose systemctl stop never fully landed will keep holding the
+    # ports the new services are about to ask the kernel for, and only
+    # one of the four agents (whichever port happens to be free) will
+    # actually come up — caught live in the seek_cc 20:46 session
+    # where ``ss -ltnp`` showed exactly one redteam port bound out of
+    # four. Idempotent + cheap on a clean host.
+    _purge_orphans(scenario)
 
     # Phase 2: start MCP services + wait for them to come up.
     for agent in scenario.agents.values():
@@ -720,6 +889,11 @@ def _teardown(scenario: Scenario, dry_run: bool) -> int:
         env_path = _instance_env_path(scenario, agent)
         if env_path.exists():
             _sudo(["rm", "-f", str(env_path)])
+    # Final sweep — kill any worker that the per-instance stop missed.
+    # ``_stop_unit`` already SIGKILLs the unit's main PID on hang, but
+    # a child process orphaned by an asyncio.create_task that the
+    # parent never awaited can survive and keep holding ports.
+    _purge_orphans(scenario)
     c_ok(f"scenario '{scenario.name}' torn down")
     return 0
 

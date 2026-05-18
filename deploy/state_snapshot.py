@@ -33,6 +33,7 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
         },
         "network": _network_snapshot(agent),
         "wallet": _wallet_snapshot(agent),
+        "community": _community_snapshot(agent),
         "peers": _peers_snapshot(agent),
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
@@ -53,12 +54,40 @@ def _network_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
             "gatekeeper_address": manifest.admission.gatekeeper_address,
             "min_sats": manifest.admission.min_sats,
             "min_confirmations": manifest.admission.min_confirmations,
+            "bootstrap_cap_sats": manifest.admission.effective_bootstrap_cap_sats,
+            "max_agents_per_seedbox": manifest.admission.max_agents_per_seedbox,
+            "seedbox_cost_sats": manifest.admission.seedbox_cost_sats,
         },
         "genesis_peers": [
             {"host": gp.host, "port": gp.port, "pubkey_hex": gp.pubkey_hex}
             for gp in manifest.genesis_peers
         ],
         "default_overlays": list(manifest.default_overlays),
+    }
+
+
+def _community_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
+    """Replayed community-state view: treasury balance, members, threshold,
+    and whether THIS agent is admitted. ``None`` when the agent has no
+    manifest loaded (state can't be replayed without one).
+
+    Folded into the snapshot so the LLM doesn't need to spend a tool call
+    on ``community_treasury_balance`` / ``community_member_count`` every
+    turn — both views read from this same replay anyway.
+    """
+    state = agent.community_state()
+    if state is None:
+        return None
+    manifest = agent.network_manifest
+    me = agent.community_reporter_id
+    threshold_active = state.threshold_active(manifest) if manifest is not None else False
+    return {
+        "balance_sats": int(state.balance_sats),
+        "member_count": int(state.member_count),
+        "seedbox_count": int(state.seedbox_count),
+        "pending_purchases": int(state.pending_purchases),
+        "threshold_active": bool(threshold_active),
+        "my_membership_status": "admitted" if me in state.members else "outsider",
     }
 
 
@@ -93,21 +122,14 @@ def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     return out
 
 
-_HANDLER_SUMMARY_MAX_CHARS = 240
-
-
 def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     """Per-overlay summary the LLM consumes inside the turn prompt.
 
-    Field encodings ARE included so the LLM can call overlay_invoke
-    without an extra tool round-trip. Handler text is truncated per
-    message to keep the prompt bounded — the LLM can call
-    ``overlay_describe`` for the full markdown when it needs it.
-
-    Each entry carries an ``origin`` discriminator (``"markdown"`` or
-    ``"python_class"``) so the LLM knows whether the absent
-    ``handler_summary`` is "operator omitted it" or "no canonical text
-    exists" for that overlay.
+    Field encodings are included so the LLM can call overlay_invoke
+    without an extra tool round-trip. Handler text used to be inlined
+    here too but the per-call token cost was prohibitive; if the LLM
+    needs handler semantics it can call ``overlay_describe`` for the
+    full markdown of one specific overlay.
     """
     out: list[dict[str, Any]] = []
     for community_id in agent.registry.list_loaded():
@@ -124,7 +146,6 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                         {"name": f.name, "encoding": f.encoding}
                         for f in m.fields
                     ],
-                    "handler_summary": _truncate(m.handler_text, _HANDLER_SUMMARY_MAX_CHARS),
                 }
                 for m in parsed.messages
             ]
@@ -141,7 +162,6 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                         {"name": n, "encoding": fmt}
                         for n, fmt in zip(payload_cls.names, payload_cls.format_list)
                     ],
-                    "handler_summary": "",
                 }
                 for msg_name, payload_cls in compiled.payload_classes.items()
             ]
@@ -154,12 +174,6 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             "messages": messages,
         })
     return out
-
-
-def _truncate(text: str, n: int) -> str:
-    if len(text) <= n:
-        return text
-    return text[: n - 3] + "..."
 
 
 def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
