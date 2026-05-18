@@ -14,7 +14,7 @@ echo -e "${YELLOW}Bitcoin Core Installation Script${NC}"
 echo "=================================="
 
 # Detect OS
-if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ -f /proc/version && grep -i microsoft /proc/version ]]; then
+if [[ "$OSTYPE" == "linux-gnu"* ]] || ([[ -f /proc/version ]] && grep -q -i microsoft /proc/version); then
     OS="linux"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     OS="macos"
