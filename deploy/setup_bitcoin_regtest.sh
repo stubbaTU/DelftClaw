@@ -91,6 +91,8 @@ rpcallowip=0.0.0.0/0
 [regtest]
 rpcport=$RPC_PORT
 rpcbind=$RPC_BIND
+rpcuser=admin
+rpcpassword=admin
 
 # Mining + Block generation
 disablewallet=0
