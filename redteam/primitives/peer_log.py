@@ -48,6 +48,8 @@ class PeerLog:
         peer_log_dir: "str | os.PathLike[str]",
         network: str,
         own_id: str | None = None,
+        *,
+        audit_log: SignedAppendOnlyLog | None = None,
     ) -> None:
         # ``Path`` accepts os.PathLike directly, so no need for os.fspath.
         self._dir = Path(peer_log_dir)
@@ -59,6 +61,7 @@ class PeerLog:
         # ``own_id=None`` when the guard isn't relevant; production callers
         # should always pass the receiver's identity hash.
         self._own_id = own_id
+        self._audit_log = audit_log
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -108,6 +111,23 @@ class PeerLog:
             entry, self._network
         )
         if not ok:
+            if (
+                self._audit_log is not None
+                and reporter_id is not None
+                and reporter_id != self._own_id
+            ):
+                self._audit_log.append_event(
+                    reporter_id=self._own_id,
+                    subject_id=reporter_id,
+                    action="log_integrity_failure",
+                    details={
+                        "errors": errors,
+                        "rejected_entry_hash": entry.get("entry_hash"),
+                        "rejected_kind": entry.get("kind"),
+                    },
+                    severity=20,
+                    evidence={"entry": entry},
+                )
             return False, reporter_id, errors, False
 
         # Verification passed → reporter_id is a non-empty hex string.

@@ -261,6 +261,7 @@ def build_app(
     transport_factory: Callable[
         [], tuple[Any, PeerTransport]
     ] | None = None,
+    enable_integrity_audit: bool = False,
 ) -> FastAPI:
     """Return a configured FastAPI app.
 
@@ -295,8 +296,12 @@ def build_app(
     reporter_id = str(identity.identity_hash)
     if peer_log_dir is None:
         peer_log_dir = str(Path(log_path).resolve().parent / "peer_logs")
+    peer_log_kwargs: dict[str, Any] = {}
+    if enable_integrity_audit:
+        peer_log_kwargs["audit_log"] = signed_log
     peer_log = PeerLog(
-        peer_log_dir, network=identity.network, own_id=reporter_id
+        peer_log_dir, network=identity.network, own_id=reporter_id,
+        **peer_log_kwargs,
     )
 
     # Pull-sync wiring: when ``peers`` is non-empty, spin up the pull
