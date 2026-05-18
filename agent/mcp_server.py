@@ -40,7 +40,7 @@ from typing import Any, Callable
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
-from fastmcp.tools.tool import Tool as FastMCPTool
+from fastmcp.tools import Tool as FastMCPTool
 
 from agent.runtime import OpenClawAgent
 from agent.tools import build_tools
@@ -104,6 +104,11 @@ _BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
     "overlay_describe",
     # torrent / bittorrent reads
     "torrent_stats",
+
+    # regtest / on-chain BTC reads
+    "btc_get_balance",
+    "btc_list_utxos",
+    "btc_transaction_status",
 })
 
 

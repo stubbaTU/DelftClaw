@@ -106,6 +106,17 @@ class AgentSpec:
     # loop to fetch from http://127.0.0.1:<redteam_port>.
     redteam_port: int = 0
 
+    # Optional: Bitcoin network mode for this agent's runtime.
+    # Historically this was always forced to "mock" by scenario_boot.
+    # Scenarios that need real Regtest transactions set this to "regtest".
+    btc_network: str = "mock"
+
+    # Optional Regtest RPC config (consumed by agent/cli.py via env vars).
+    # When unset, agents default to BITCOIN_RPC_URL=http://127.0.0.1:18443
+    # and BITCOIN_RPC_WALLET=<agent name>.
+    bitcoin_rpc_url: str = ""
+    bitcoin_rpc_wallet: str = ""
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -296,6 +307,14 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
     else:
         redteam_port = _port(redteam_port_raw, f"agent {name}.redteam_port")
 
+    btc_network = str(d.get("btc_network", d.get("btc-network", "mock")) or "mock").strip()
+    # Keep validation deliberately loose — the runtime decides what it supports.
+    if not btc_network:
+        btc_network = "mock"
+
+    bitcoin_rpc_url = str(d.get("bitcoin_rpc_url", d.get("bitcoin-rpc-url", "")) or "").strip()
+    bitcoin_rpc_wallet = str(d.get("bitcoin_rpc_wallet", d.get("bitcoin-rpc-wallet", "")) or "").strip()
+
     return AgentSpec(
         name=name,
         ipv8_port=ipv8_port,
@@ -307,6 +326,9 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         seed_content=seed_content,
         initial_balance_sats=initial_balance_sats,
         redteam_port=redteam_port,
+        btc_network=btc_network,
+        bitcoin_rpc_url=bitcoin_rpc_url,
+        bitcoin_rpc_wallet=bitcoin_rpc_wallet,
     )
 
 

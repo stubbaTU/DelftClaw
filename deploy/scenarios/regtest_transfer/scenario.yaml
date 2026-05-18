@@ -1,0 +1,55 @@
+# Scenario: regtest_transfer
+#
+# Two agents running on one host, performing a REAL Bitcoin transaction
+# on a local bitcoind regtest node via JSON-RPC.
+#
+# Flow (high level):
+#   1) bob joins the community (community_join_via_peer) which triggers a
+#      PEER_INTRO exchange; bob advertises a real on-chain regtest address.
+#   2) alice mines blocks via regtest RPC (receives spendable coinbase).
+#   3) alice sends a portion of those sats to bob's advertised on-chain address.
+#   4) alice mines one block to confirm the transfer.
+
+name: regtest_transfer
+description: >-
+  Two-agent regtest transaction demo: alice mines spendable regtest BTC via RPC
+  and sends satoshis to bob, then mines a block to confirm.
+
+watchdog:
+  interval_s: 120
+  max_iterations_per_turn: 1
+  max_total_turns: 60
+  max_wall_clock_s: 7200
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/regtest_transfer
+
+agents:
+
+  alice:
+    ipv8_port: 8200
+    mcp_port: 18865
+    publish_overlays:
+      - protocol/examples/content_community.md
+    mission_file: alice/mission.md
+    stop_predicate: never
+    initial_balance_sats: 200000
+    # Keep admission in mock mode (synthetic donation txids) while still
+    # enabling real on-chain regtest RPC via BITCOIN_RPC_* env vars.
+    btc_network: mock
+    # Optional override; defaults to http://127.0.0.1:18443
+    bitcoin_rpc_url: http://127.0.0.1:18443
+
+  bob:
+    ipv8_port: 8201
+    mcp_port: 18866
+    publish_overlays: []
+    mission_file: bob/mission.md
+    stop_predicate: never
+    peers:
+      - alice
+    initial_balance_sats: 100000
+    btc_network: mock
+    bitcoin_rpc_url: http://127.0.0.1:18443
+
+

@@ -83,6 +83,93 @@ from protocol import community_id_from_md
 from protocol.llm import OpenAICompatibleClient, StubLLMClient
 
 
+def _truthy_env(name: str) -> bool:
+    import os
+
+    v = (os.environ.get(name) or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def _resolve_regtest_rpc_from_env() -> tuple[str | None, str | None, str | None, str | None]:
+    """Resolve (rpc_url, wallet_name, username, password) from environment.
+
+    Supports both BITCOIN_* vars (used by deploy/scenario_boot.py) and
+    OPENCLAW_* vars (documented in deploy/REGTEST_SETUP.md).
+    """
+    import os
+
+    rpc_url = (
+        os.environ.get("BITCOIN_RPC_URL")
+        or os.environ.get("OPENCLAW_RPC_URL")
+        or os.environ.get("BITCOIN_REGTEST_RPC_URL")
+    )
+    wallet = (
+        os.environ.get("BITCOIN_RPC_WALLET")
+        or os.environ.get("OPENCLAW_RPC_WALLET")
+    )
+    user = (
+        os.environ.get("BITCOIN_RPC_USER")
+        or os.environ.get("BITCOIN_RPC_USERNAME")
+        or os.environ.get("OPENCLAW_RPC_USER")
+    )
+    pw = (
+        os.environ.get("BITCOIN_RPC_PASSWORD")
+        or os.environ.get("BITCOIN_RPC_PASS")
+        or os.environ.get("OPENCLAW_RPC_PASSWORD")
+    )
+    return rpc_url, wallet, user, pw
+
+
+async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
+    """Best-effort: wrap agent.wallet with RegtestWallet when configured.
+
+    This keeps the default synthetic wallet behaviour (wallet_balance /
+    wallet_send) while enabling the btc_* Regtest tools.
+    """
+    from agent.regtest_wallet import RegtestWallet
+    from agent.bitcoin_rpc import RegtestClient
+
+    import os
+
+    rpc_url, wallet_name, user, pw = _resolve_regtest_rpc_from_env()
+
+    btc_net = (agent.config.btc_network or "").strip().lower()
+    wants_regtest = btc_net == "regtest" or _truthy_env("OPENCLAW_USE_ONCHAIN") or _truthy_env("BITCOIN_USE_ONCHAIN")
+    has_rpc_env = bool(rpc_url and wallet_name)
+    if not (wants_regtest or has_rpc_env):
+        return
+
+    rpc_url = rpc_url or "http://127.0.0.1:18443"
+    wallet_name = wallet_name or os.environ.get("AGENT_NAME") or ""
+    if not wallet_name:
+        print("[boot] regtest requested but no BITCOIN_RPC_WALLET set; skipping RegtestWallet wiring", flush=True)
+        return
+
+    rpc = RegtestClient(
+        rpc_url,
+        username=user or "",
+        password=pw or "",
+        wallet_name=wallet_name,
+    )
+
+    # Wrap the existing synthetic wallet so the rest of the runtime keeps working.
+    agent.wallet = RegtestWallet(agent.wallet, rpc_client=rpc, use_onchain=True)
+
+    # Advertise a *real* on-chain address for PEER_INTRO so peers can send funds.
+    try:
+        onchain_addr = await agent.wallet.get_onchain_address()  # type: ignore[attr-defined]
+        agent.seedbox.configure(wallet_address=onchain_addr)
+        print(
+            f"[boot] regtest wallet enabled (rpc={rpc_url}, wallet={wallet_name}, addr={onchain_addr[:16]}...)",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[boot] regtest wallet enabled but on-chain address fetch failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+
 def _load_seed(args: argparse.Namespace):
     if args.mnemonic:
         return MnemonicSeedSource(args.mnemonic).load()
@@ -386,6 +473,9 @@ async def _run(args: argparse.Namespace) -> int:
     print("[boot] starting IPv8 + SeedboxCommunity", flush=True)
     await agent.start()
     print("[boot] IPv8 up", flush=True)
+
+    # Optional: enable real Bitcoin Regtest RPC support.
+    await _maybe_enable_regtest_wallet(agent)
 
     # Publish overlays at boot (if any). Done before peer-introduction so
     # peers immediately see the descriptor in our published map when they ask.

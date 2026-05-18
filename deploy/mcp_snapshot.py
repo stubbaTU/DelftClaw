@@ -179,8 +179,8 @@ def _peers_section(raw: Any) -> list[dict[str, Any]]:
         out.append({
             "mid_hex": entry.get("mid_hex"),
             "address": entry.get("address"),
-            "wallet_address": None,
-            "known_overlays": [],
+            "wallet_address": entry.get("wallet_address"),
+            "known_overlays": entry.get("known_overlays") or [],
         })
     return out
 

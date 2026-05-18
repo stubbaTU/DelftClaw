@@ -19,12 +19,18 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
+from inspect import isawaitable
 
 from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
-from communication.community import overlay_id
+
+try:
+    # Optional: only used when regtest RPC integration is enabled.
+    from agent.regtest_wallet import RegtestWallet
+except Exception:  # pragma: no cover
+    RegtestWallet = None  # type: ignore[assignment]
 
 
 # Tool-dispatch logger — one line per LLM tool invocation, paired with
@@ -120,16 +126,42 @@ def _resolve_peer(agent: OpenClawAgent, mid_hex_prefix: str) -> Peer:
 def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     """Construct the tool registry bound to ``agent``."""
 
+    async def _maybe_await(value: Any) -> Any:
+        """Await ``value`` if it's awaitable, otherwise return it.
+
+        The default synthetic Wallet API is synchronous; the RegtestWallet
+        wrapper is async (RPC-backed). Tools are async either way, so we can
+        transparently support both.
+        """
+        if isawaitable(value):
+            return await value
+        return value
+
     # ---- Peers ---------------------------------------------------------
 
     async def peers_list() -> list[dict[str, Any]]:
-        return [
-            {
+        """List peers + any PEER_INTRO metadata we have for them.
+
+        The SeedboxCommunity exchanges (wallet_address, known_overlays)
+        in its PEER_INTRO message after admission. Exposing that here
+        lets agents discover each other's advertised wallet address
+        (used by the regtest BTC tools).
+        """
+        meta_by_mid = {}
+        try:
+            meta_by_mid = agent.seedbox.peer_meta
+        except Exception:
+            meta_by_mid = {}
+        out: list[dict[str, Any]] = []
+        for p in agent.known_peers():
+            meta = meta_by_mid.get(p.mid)
+            out.append({
                 "mid_hex": p.mid.hex(),
                 "address": list(p.addresses.values())[0] if p.addresses else None,
-            }
-            for p in agent.known_peers()
-        ]
+                "wallet_address": getattr(meta, "wallet_address", None) if meta else None,
+                "known_overlays": [h.hex() for h in getattr(meta, "known_overlays", ())] if meta else [],
+            })
+        return out
 
     async def peer_add(host: str, port: int, pubkey_hex: str) -> dict[str, Any]:
         try:
@@ -147,10 +179,12 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         return agent.wallet.address()
 
     async def wallet_balance() -> int:
-        return agent.wallet.balance_sats(refresh=True)
+        bal = await _maybe_await(agent.wallet.balance_sats(refresh=True))
+        return int(bal)
 
     async def wallet_send(to_address: str, sats: int) -> str:
-        return agent.wallet.send(to_address, sats)
+        txid = await _maybe_await(agent.wallet.send(to_address, sats))
+        return str(txid)
 
     # ---- Community treasury + signed-log layer (Phase 4) --------------
 
@@ -290,11 +324,17 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         if amount_sats > cap:
             return {"error": f"amount above cap {cap}"}
 
-        # Debit the synthetic wallet so wallet_balance + treasury stay in
-        # sync. Raises ValueError("insufficient funds") if the wallet
-        # was constructed with a tracked balance that can't cover it.
+        # Debit the SYNTHETIC wallet so wallet_balance + treasury stay in sync.
+        # Important: even when regtest RPC tooling is enabled, admission uses
+        # synthetic dclaw1... addresses and a synthetic txid (DonationVerifier
+        # mock mode). If we attempted an on-chain send here we'd fail address
+        # validation and/or leak real funds.
         try:
-            agent.wallet.send(manifest.admission.gatekeeper_address, amount_sats)
+            send_synth = getattr(agent.wallet, "send_synthetic", None)
+            if callable(send_synth):
+                await _maybe_await(send_synth(manifest.admission.gatekeeper_address, amount_sats))
+            else:
+                await _maybe_await(agent.wallet.send(manifest.admission.gatekeeper_address, amount_sats))
         except ValueError as exc:
             return {"error": f"wallet_send_failed: {exc}"}
 
@@ -365,6 +405,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         )
         if signed_entry is None:
             return {"error": "signed_entry_not_found_in_local_log"}
+        signed_entry = cast(dict[str, Any], signed_entry)
 
         # Step 3 — find the peer and send. The wire reply is a
         # best-effort fast-path; its absence is not a failure.
@@ -372,7 +413,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             peer = _resolve_peer(agent, gatekeeper_mid)
         except KeyError as exc:
             return {"error": f"peer_not_found:{exc}"}
-        future = agent.seedbox.request_community_join(peer, signed_entry)
+        seedbox = agent.seedbox
+        if seedbox is None:
+            return {"error": "seedbox_not_started"}
+        future = seedbox.request_community_join(peer, signed_entry)
         try:
             accepted, reason = await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
@@ -713,7 +757,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
     P_NONE = {"type": "object", "properties": {}, "additionalProperties": False}
 
-    return ToolRegistry([
+    tools: list[Tool] = [
         Tool("peers_list",
              "List peers verified on any overlay this agent runs.",
              P_NONE, peers_list),
@@ -928,4 +972,30 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         Tool("torrent_stats",
              "Snapshot of all currently-known torrents (downloads + seeds).",
              P_NONE, torrent_stats),
-    ])
+
+    ]
+
+    # ---- Optional: real Bitcoin Regtest RPC tools ----------------------
+    # These are implemented in agent/bitcoin_tools.py and are intentionally
+    # kept out of the default surface unless the agent's wallet has been
+    # wrapped as a RegtestWallet (see agent/cli.py wiring).
+    try:
+        if (
+            RegtestWallet is not None
+            and isinstance(agent.wallet, RegtestWallet)
+            and getattr(agent.wallet, "_rpc", None) is not None
+        ):
+            from agent.bitcoin_tools import build_regtest_tools
+
+            for name, fn, params_schema in build_regtest_tools(agent.wallet):
+                tools.append(Tool(
+                    name=name,
+                    description=fn.__doc__ or name,
+                    parameters=params_schema,
+                    fn=fn,
+                ))
+    except Exception:
+        # Never fail agent boot because regtest tooling couldn't be wired.
+        pass
+
+    return ToolRegistry(tools)

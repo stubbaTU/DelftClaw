@@ -98,6 +98,10 @@ class RegtestClient:
         self.wallet_name = wallet_name
         self.timeout_s = timeout_s
         self._auth_cache: tuple[str, str] | None = None
+        # Wallet-scoped RPC endpoints (/wallet/<name>) error if the wallet
+        # doesn't exist or isn't loaded. Scenario runs frequently start from a
+        # fresh regtest datadir, so we lazily ensure the wallet exists.
+        self._wallet_ready: set[str] = set()
 
     def _candidate_datadirs(self) -> list[Path]:
         """Return plausible Bitcoin Core data directories for the host OS."""
@@ -222,9 +226,24 @@ class RegtestClient:
             "params": params,
         }
 
-        # Build URL with wallet route if specified
+        # Build URL with wallet route if specified.
+        #
+        # ``wallet=None`` means "use the client's default wallet".
+        # ``wallet=""`` means "do NOT scope this call to any wallet" (base RPC).
         url = self.rpc_url
-        wallet_target = wallet or self.wallet_name
+        wallet_target = self.wallet_name if wallet is None else wallet
+
+        # Lazily ensure wallet exists for wallet-scoped calls. Skip for wallet
+        # management / global introspection methods to avoid recursion.
+        if wallet_target and wallet_target not in self._wallet_ready and method not in {
+            "listwallets",
+            "listwalletdir",
+            "createwallet",
+            "loadwallet",
+            "unloadwallet",
+        }:
+            await self._ensure_wallet_loaded(wallet_target)
+
         if wallet_target:
             url = f"{url}/wallet/{wallet_target}"
 
@@ -233,24 +252,94 @@ class RegtestClient:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    auth=auth,
-                )
-                response.raise_for_status()
-                data = response.json()
+                response = await client.post(url, json=payload, auth=auth)
 
-                if data.get("error") is not None:
+                # Bitcoin Core often returns HTTP 500 *with* a JSON-RPC error
+                # body. Don't raise_for_status() before we decode the body.
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as exc:
+                    # If the body isn't JSON, report a short preview.
+                    preview = (response.text or "").strip().replace("\n", " ")[:200]
                     raise RPCError(
-                        f"RPC error: {data['error'].get('message', 'unknown error')}"
-                    )
+                        f"Invalid JSON response (HTTP {response.status_code}): {preview}"
+                    ) from exc
+
+                if response.status_code >= 400:
+                    err = data.get("error") if isinstance(data, dict) else None
+                    if isinstance(err, dict):
+                        code = err.get("code")
+                        msg = err.get("message", "unknown error")
+                        raise RPCError(f"RPC error (HTTP {response.status_code}, code={code}): {msg}")
+                    raise RPCError(f"HTTP {response.status_code}: {data!r}")
+
+                if isinstance(data, dict) and data.get("error") is not None:
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        code = err.get("code")
+                        msg = err.get("message", "unknown error")
+                        raise RPCError(f"RPC error (code={code}): {msg}")
+                    raise RPCError(f"RPC error: {err!r}")
+
+                if not isinstance(data, dict):
+                    raise RPCError(f"Invalid RPC response: {data!r}")
 
                 return data.get("result")
+
         except httpx.HTTPError as exc:
             raise RPCError(f"HTTP error: {exc}") from exc
-        except json.JSONDecodeError as exc:
-            raise RPCError(f"Invalid JSON response: {exc}") from exc
+
+
+    async def _ensure_wallet_loaded(self, wallet_name: str) -> None:
+        """Best-effort ensure ``wallet_name`` exists and is loaded.
+
+        Regtest scenarios frequently run against a fresh datadir, so the per-agent
+        wallet (alice/bob) may not exist yet. Bitcoin Core requires wallet-scoped
+        endpoints to target an existing loaded wallet.
+
+        This uses base RPC calls (no /wallet/<name> route) to:
+          1) check listwallets
+          2) attempt loadwallet
+          3) attempt createwallet
+        """
+        if not wallet_name or wallet_name in self._wallet_ready:
+            return
+
+        async def _listwallets() -> list[str]:
+            result = await self._call_rpc("listwallets", wallet="")
+            if isinstance(result, list):
+                return [str(x) for x in result]
+            return []
+
+        wallets = await _listwallets()
+        if wallet_name in wallets:
+            self._wallet_ready.add(wallet_name)
+            return
+
+        # Try to load an existing wallet from disk.
+        try:
+            await self._call_rpc("loadwallet", [wallet_name], wallet="")
+        except RPCError:
+            pass
+
+        wallets = await _listwallets()
+        if wallet_name in wallets:
+            self._wallet_ready.add(wallet_name)
+            return
+
+        # Create (and load) the wallet if it doesn't exist.
+        try:
+            await self._call_rpc("createwallet", [wallet_name], wallet="")
+        except RPCError:
+            # Already exists / already loaded are fine.
+            pass
+
+        wallets = await _listwallets()
+        if wallet_name in wallets:
+            self._wallet_ready.add(wallet_name)
+            return
+
+        raise RPCError(f"wallet not loaded/created: {wallet_name}")
 
     async def get_block_count(self) -> int:
         """Get the current block height."""
