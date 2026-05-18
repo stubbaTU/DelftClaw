@@ -31,41 +31,31 @@ VERSION="${1:-${BITCOIN_VERSION:-26.0}}"
 # helper: attempt package manager install fallback
 attempt_package_install() {
     echo "Attempting package-manager installation fallback..."
-    # Debian/Ubuntu (attempt PPA)
-    if command -v apt-get &> /dev/null; then
-        echo "Detected apt-get. Trying Ubuntu PPA (bitcoin/bitcoin)..."
-        sudo apt-get update -y || true
-        if ! command -v add-apt-repository &> /dev/null; then
-            echo "Installing software-properties-common to add PPA..."
-            sudo apt-get install -y software-properties-common || true
-        fi
-        if command -v add-apt-repository &> /dev/null; then
-            sudo add-apt-repository -y ppa:bitcoin/bitcoin || true
-            sudo apt-get update -y || true
-            sudo apt-get install -y bitcoind bitcoin-cli || {
-                echo -e "${YELLOW}Could not install via apt. Please install manually:${NC}"
-                echo "See: https://bitcoin.org/en/download"
-                return 1
-            }
-            echo -e "${GREEN}✓ Bitcoin Core installed via apt${NC}"
+
+    # Ubuntu/Debian: prefer official snap package when available
+    if command -v snap &> /dev/null; then
+        echo "Detected snap. Trying official bitcoin-core snap..."
+        if sudo snap install bitcoin-core; then
+            echo -e "${GREEN}✓ Bitcoin Core installed via snap${NC}"
             return 0
         fi
+        echo -e "${YELLOW}Snap install failed; continuing to other fallbacks.${NC}"
     fi
 
     # macOS Homebrew
     if [[ "$OS" == "macos" ]] && command -v brew &> /dev/null; then
         echo "Detected Homebrew. Installing bitcoin-core via brew..."
-        brew install bitcoin-core || {
-            echo -e "${YELLOW}brew install failed. Please install manually:${NC}"
-            echo "See: https://bitcoin.org/en/download"
-            return 1
-        }
-        echo -e "${GREEN}✓ Bitcoin Core installed via brew${NC}"
-        return 0
+        if brew install bitcoin-core; then
+            echo -e "${GREEN}✓ Bitcoin Core installed via brew${NC}"
+            return 0
+        fi
+        echo -e "${YELLOW}brew install failed. Please install manually:${NC}"
+        echo "See: https://bitcoincore.org/en/download/"
+        return 1
     fi
 
     echo -e "${YELLOW}No suitable package-manager fallback found. Please install Bitcoin Core manually:${NC}"
-    echo "  https://bitcoin.org/en/download"
+    echo "  https://bitcoincore.org/en/download/"
     return 1
 }
 
@@ -79,7 +69,8 @@ case $OS in
         cd "$TMPDIR"
 
         # Build download URL (allow overriding arch if needed later)
-        DOWNLOAD_URL="https://bitcoin.org/bin/bitcoin-core-${VERSION}/bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
+        DOWNLOAD_BASE="https://bitcoincore.org/bin/bitcoin-core-${VERSION}"
+        DOWNLOAD_URL="${DOWNLOAD_BASE}/bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
 
         # Download (gracefully handle 404 / failure and fall back to package manager)
         DL_OK=0
@@ -100,7 +91,6 @@ case $OS in
         fi
 
         if [ "$DL_OK" -ne 1 ]; then
-            # cleanup temp dir before fallback attempt
             cd - >/dev/null 2>&1 || true
             rm -rf "$TMPDIR"
             if attempt_package_install; then
@@ -126,7 +116,7 @@ case $OS in
         ;;
 
     macos)
-        echo "Downloading Bitcoin Core 26.0 (macOS)..."
+        echo "Downloading Bitcoin Core ${VERSION} (macOS)..."
 
         # Create temp directory
         TMPDIR=$(mktemp -d)
@@ -140,14 +130,25 @@ case $OS in
         fi
 
         # Download
-        curl -fsSL "https://bitcoin.org/bin/bitcoin-core-26.0/bitcoin-26.0-${ARCH}-apple-darwin.tar.gz" -o bitcoin.tar.gz
+        DOWNLOAD_URL="https://bitcoincore.org/bin/bitcoin-core-${VERSION}/bitcoin-${VERSION}-${ARCH}-apple-darwin.tar.gz"
+        if ! curl -fSL "$DOWNLOAD_URL" -o bitcoin.tar.gz; then
+            echo -e "${YELLOW}Download from $DOWNLOAD_URL failed.${NC}"
+            cd - >/dev/null 2>&1 || true
+            rm -rf "$TMPDIR"
+            if attempt_package_install; then
+                exit 0
+            else
+                echo -e "${RED}Automatic installation failed. Exiting.${NC}"
+                exit 1
+            fi
+        fi
 
         # Extract
         tar -xzf bitcoin.tar.gz
 
         # Install to /usr/local/bin
         echo "Installing Bitcoin Core to /usr/local/bin..."
-        sudo install -m 0755 -o root -g wheel -t /usr/local/bin bitcoin-26.0/bin/*
+        sudo install -m 0755 -o root -g wheel -t /usr/local/bin bitcoin-${VERSION}/bin/*
 
         # Cleanup
         cd -
