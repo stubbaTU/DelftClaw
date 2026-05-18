@@ -3,8 +3,8 @@
 Target: **Hostinger KVM 2** (Ubuntu 24.04, 8 GB RAM, 2 vCPU).
 
 **Compiler LLM (v5.1 canonical):** external GPU host reached over
-Tailscale CGNAT — `QWEN_BASE_URL=http://100.73.168.12:11434/v1`,
-`QWEN_MODEL=qwen3.6:27b`. The VPS itself does **not** run the model;
+Tailscale CGNAT — `LLM_BASE_URL=http://100.73.168.12:11434/v1`,
+`LLM_MODEL=qwen3.6:27b`. The VPS itself does **not** run the model;
 the local Ollama installed by `setup_vps.sh` is a dev/CI fallback only.
 
 **Reasoning LLM:** whatever OpenClaw's chat session uses. The watchdog
@@ -78,8 +78,8 @@ and are independent of the four templated MCPs.
 
 Every developer copies `configs/host.env.example` to
 `configs/host.env` (gitignored) and edits ONLY the variables that
-differ on their machine: Tailscale GPU IP, `QWEN_BASE_URL` /
-`QWEN_MODEL`, `BTC_NETWORK`. Both `scenario_boot.py` and
+differ on their machine: Tailscale GPU IP, `LLM_BASE_URL` /
+`LLM_MODEL`, `BTC_NETWORK`. Both `scenario_boot.py` and
 `bootstrap_security_identity.sh` read this file at boot; explicit
 process env vars on the make/bash invocation still win for one-off
 overrides.
@@ -110,7 +110,7 @@ the reasoning LLM can distinguish them from markdown-derived overlays.
 
 ## Pointing the agents at a different LLM endpoint
 
-`scenario_boot.py` reads `QWEN_BASE_URL` and `QWEN_MODEL` from its
+`scenario_boot.py` reads `LLM_BASE_URL` and `LLM_MODEL` from its
 environment and bakes them into each agent's instance env file. So:
 
 ```bash
@@ -118,18 +118,18 @@ environment and bakes them into each agent's instance env file. So:
 make scenario NAME=seek_cc
 
 # Local-Ollama fallback (e.g. if Tailscale is down):
-QWEN_BASE_URL=http://127.0.0.1:11434/v1 \
-QWEN_MODEL=qwen2.5-coder:7b \
+LLM_BASE_URL=http://127.0.0.1:11434/v1 \
+LLM_MODEL=qwen2.5-coder:7b \
 make scenario NAME=seek_cc
 
 # Some other external endpoint (vLLM, TGI, llama.cpp, ...):
-QWEN_BASE_URL=https://my-vllm:8000/v1 \
-QWEN_MODEL=qwen3.6:27b \
+LLM_BASE_URL=https://my-vllm:8000/v1 \
+LLM_MODEL=qwen3.6:27b \
 make scenario NAME=seek_cc
 ```
 
 To make the change permanent for every future scenario, edit
-`deploy/scenario_boot.py:QWEN_BASE_URL` / `QWEN_MODEL`. To change the
+`deploy/scenario_boot.py:LLM_BASE_URL` / `LLM_MODEL`. To change the
 endpoint of an already-running agent, edit
 `/etc/delftclaw/instances/<instance>.env` on the VPS and
 `systemctl restart 'delftclaw-mcp@<instance>.service'`.
@@ -143,7 +143,7 @@ One-shot, idempotent, runs as root. Walks through:
    instructions if the VPS is not yet on a tailnet
    (`tailscale up` is interactive; rerun the script afterwards).
 3. **Ollama install + model pull** — the *fallback* compiler-LLM. Only
-   used when `QWEN_BASE_URL` is unset.
+   used when `LLM_BASE_URL` is unset.
 4. **openclaw CLI** — `npm install -g openclaw`; required because the
    watchdog drives `openclaw agent` as a subprocess.
 5. **User + dirs** — creates `delftclaw` system user,
@@ -181,7 +181,7 @@ seek_cc` on the VPS:
 2. Creates `/var/lib/delftclaw/<scenario>/<agent>/` per agent.
 3. Generates a deterministic BIP-39 seed file if missing.
 4. Writes per-instance env files under `/etc/delftclaw/instances/`,
-   each carrying `QWEN_BASE_URL` + `QWEN_MODEL` + the per-agent ports.
+   each carrying `LLM_BASE_URL` + `LLM_MODEL` + the per-agent ports.
 5. Stages the scenario tree (incl. each `mission.md`) under
    `/etc/delftclaw/scenarios/<instance>/`.
 6. `systemctl enable --now delftclaw-mcp@<instance>` per agent.
@@ -288,8 +288,8 @@ sudo tail -f /var/log/delftclaw/scenarios/seek_cc/bob.jsonl | jq
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Watchdog turn 1 hangs ~30s then times out | Tailscale not connected, can't reach the GPU host | `make ssh; tailscale status` — should show `100.x.x.x`. If not: `tailscale up`. |
-| `Connection refused` to Ollama port on GPU host | The remote Ollama is down | `curl http://100.73.168.12:11434/api/tags` from the VPS. As fallback: `QWEN_BASE_URL=http://127.0.0.1:11434/v1 make scenario NAME=…` |
-| `model not found` from Ollama | `QWEN_MODEL` doesn't match a pulled tag on the endpoint | check `ollama list` on the host serving the endpoint |
+| `Connection refused` to Ollama port on GPU host | The remote Ollama is down | `curl http://100.73.168.12:11434/api/tags` from the VPS. As fallback: `LLM_BASE_URL=http://127.0.0.1:11434/v1 make scenario NAME=…` |
+| `model not found` from Ollama | `LLM_MODEL` doesn't match a pulled tag on the endpoint | check `ollama list` on the host serving the endpoint |
 | Watchdog exits with code 3 | N consecutive `openclaw agent` failures | inspect last turn in the JSONL; check Qwen endpoint health |
 | `ProtocolCompileError: test vector encode mismatch` | The compiler LLM produced wire-incompatible code for a new `.md` | tighten `protocol/compiler.py:SYSTEM_PROMPT`, or pre-load via stub source |
 | `ScenarioError: ... persona_file ... removed in v5.1` | Scenario YAML still uses pre-v5.1 keys | replace `persona_file:` + `goal_file:` with a single `mission_file:` per agent; see `deploy/mission_schema.md` |
@@ -298,14 +298,14 @@ sudo tail -f /var/log/delftclaw/scenarios/seek_cc/bob.jsonl | jq
 ## Pulling a different model later
 
 For the supervisor's GPU host: `ollama pull <tag>` on the GPU box,
-then set `QWEN_MODEL=<tag>` for future `make scenario` invocations
-(or edit `deploy/scenario_boot.py:QWEN_MODEL`).
+then set `LLM_MODEL=<tag>` for future `make scenario` invocations
+(or edit `deploy/scenario_boot.py:LLM_MODEL`).
 
 For the on-VPS fallback Ollama:
 
 ```bash
 make ssh
 ollama pull qwen2.5:3b           # smaller, faster, may struggle with codegen
-# edit /etc/delftclaw/instances/<instance>.env, change QWEN_MODEL
+# edit /etc/delftclaw/instances/<instance>.env, change LLM_MODEL
 sudo systemctl restart 'delftclaw-mcp@<instance>.service'
 ```

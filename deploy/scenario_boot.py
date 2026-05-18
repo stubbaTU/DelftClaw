@@ -82,13 +82,13 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
     return out
 
 
-DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
-DEFAULT_QWEN_MODEL = "qwen3.6:27b"
-DEFAULT_OLLAMA_API_KEY = "ollama"
+DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
+DEFAULT_LLM_MODEL = "qwen3.6:27b"
+DEFAULT_LLM_API_KEY = "ollama"
 
 
-def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
-    """Resolve QWEN_BASE_URL + QWEN_MODEL + OLLAMA_API_KEY.
+def _resolve_llm(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
+    """Resolve LLM_BASE_URL + LLM_MODEL + LLM_API_KEY.
 
     Order: process env var → configs/host.env (if present) →
     hard-coded default. Exposed as a function so tests can stub the
@@ -96,29 +96,29 @@ def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
     """
     host_env = _load_host_env(host_env_file)
     base = os.environ.get(
-        "QWEN_BASE_URL",
-        host_env.get("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL),
+        "LLM_BASE_URL",
+        host_env.get("LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
     )
     model = os.environ.get(
-        "QWEN_MODEL",
-        host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
+        "LLM_MODEL",
+        host_env.get("LLM_MODEL", DEFAULT_LLM_MODEL),
     )
     api_key = os.environ.get(
-        "OLLAMA_API_KEY",
-        host_env.get("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY),
+        "LLM_API_KEY",
+        host_env.get("LLM_API_KEY", DEFAULT_LLM_API_KEY),
     )
     return base, model, api_key
 
 
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
-# ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
-QWEN_BASE_URL, QWEN_MODEL, OLLAMA_API_KEY = _resolve_qwen()
+# ``HOST_ENV_FILE`` then re-call ``_resolve_llm`` directly.
+LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
 
 
-def _ollama_base_from(qwen_base_url: str) -> str:
+def _native_base_from(base_url: str) -> str:
     """Strip the trailing ``/v1`` from an OpenAI-compat URL to get Ollama's native base."""
-    return qwen_base_url.rstrip("/").removesuffix("/v1")
+    return base_url.rstrip("/").removesuffix("/v1")
 
 
 def _direct_patch_openclaw_json(path: Path, provider_key: str, provider_cfg: dict) -> None:
@@ -154,7 +154,7 @@ def _direct_patch_openclaw_json(path: Path, provider_key: str, provider_cfg: dic
     )
 
 
-def _provider_for(qwen_base_url: str) -> tuple[str, str, str]:
+def _provider_for(base_url: str) -> tuple[str, str, str]:
     """Resolve (provider_key, api_type, base_url) from a configured URL.
 
     OpenClaw validates ``api`` against a fixed list — ``"ollama"`` for
@@ -172,10 +172,10 @@ def _provider_for(qwen_base_url: str) -> tuple[str, str, str]:
     with its built-in defaults. ``compat`` is a generic placeholder
     that doesn't collide.
     """
-    trimmed = qwen_base_url.rstrip("/")
+    trimmed = base_url.rstrip("/")
     if trimmed.endswith("/v1"):
         return ("compat", "openai-completions", trimmed)
-    return ("ollama", "ollama", _ollama_base_from(qwen_base_url))
+    return ("ollama", "ollama", _native_base_from(base_url))
 
 
 def c_info(msg: str) -> None: print(f"\033[1;36m[boot]\033[0m {msg}", flush=True)
@@ -259,17 +259,17 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
         # process's agent, not the watchdog's separate snapshot collector.
         f"MANIFEST_FILE={_manifest_file_path(scenario, agent)}",
-        f"QWEN_BASE_URL={QWEN_BASE_URL}",
-        f"QWEN_MODEL={QWEN_MODEL}",
+        f"LLM_BASE_URL={LLM_BASE_URL}",
+        f"LLM_MODEL={LLM_MODEL}",
         # Mirror of the literal ``apiKey`` written into openclaw.json. Kept
         # here too so any code path that reads the env var (rather than the
         # openclaw config) sees the same value.
-        f"OLLAMA_API_KEY={OLLAMA_API_KEY}",
-        # The watchdog passes ``--model {OPENCLAW_PROVIDER_KEY}/{QWEN_MODEL}``
+        f"LLM_API_KEY={LLM_API_KEY}",
+        # The watchdog passes ``--model {OPENCLAW_PROVIDER_KEY}/{LLM_MODEL}``
         # to ``openclaw agent``. The key must match what we wrote into the
         # agent's openclaw.json providers map (``compat`` for OpenAI-compat
         # endpoints, ``ollama`` for native Ollama).
-        f"OPENCLAW_PROVIDER_KEY={_provider_for(QWEN_BASE_URL)[0]}",
+        f"OPENCLAW_PROVIDER_KEY={_provider_for(LLM_BASE_URL)[0]}",
         f"LOG_DIR={scenario.log_dir}",
         f"WATCHDOG_INITIAL_DELAY_S={initial_delay_s:.2f}",
     ]
@@ -540,9 +540,10 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
 
     sudo_env = ["sudo", "-u", SERVICE_USER, "env", f"HOME={state}"]
 
-    # (1) Patch the agent's openclaw.json so the Ollama provider is registered
-    # before any model lookup happens. Without this, ``openclaw agent --local
-    # --model ollama/qwen2.5-coder:7b`` can't resolve the model.
+    # (1) Patch the agent's openclaw.json so the configured provider is
+    # registered before any model lookup happens. Without this,
+    # ``openclaw agent --local --model <provider>/<model>`` can't resolve
+    # the model.
     #
     # ``agents.defaults.timeoutSeconds`` is the *inner* LLM call timeout (the
     # subprocess-level timeout we pass via --timeout is unrelated). qwen3.6:27b
@@ -550,18 +551,18 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # always fire on turn 1. Set this generously below the watchdog tick
     # ``interval_s`` so timeouts surface as turn errors rather than truncated
     # responses mid-call.
-    provider_key, api_type, provider_base = _provider_for(QWEN_BASE_URL)
+    provider_key, api_type, provider_base = _provider_for(LLM_BASE_URL)
     new_provider = {
         "baseUrl": provider_base,
         "api": api_type,
         # OpenClaw refuses to register a provider without an apiKey;
         # we write a literal value rather than relying on env-var
         # interpolation (which this field doesn't support).
-        "apiKey": OLLAMA_API_KEY,
+        "apiKey": LLM_API_KEY,
         "models": [
             {
-                "id": QWEN_MODEL,
-                "name": QWEN_MODEL,
+                "id": LLM_MODEL,
+                "name": LLM_MODEL,
                 "reasoning": False,
                 "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
@@ -626,7 +627,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
-             "--model", f"{provider_key}/{QWEN_MODEL}"],
+             "--model", f"{provider_key}/{LLM_MODEL}"],
             check=True,
         )
 
@@ -743,8 +744,8 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         for agent in scenario.agents.values():
             instance = scenario.instance_id(agent.name)
             c_dry(f"  would openclaw mcp set {instance} (HOME=/var/lib/delftclaw/{scenario.name}/{agent.name})")
-            _pk, _api, _ = _provider_for(QWEN_BASE_URL)
-            c_dry(f"  would openclaw agents add {instance} --non-interactive --model {_pk}/{QWEN_MODEL}")
+            _pk, _api, _ = _provider_for(LLM_BASE_URL)
+            c_dry(f"  would openclaw agents add {instance} --non-interactive --model {_pk}/{LLM_MODEL}")
         c_dry("would call MCP peer_add for cross-introductions:")
         for agent in scenario.agents.values():
             for peer_name in agent.peers:

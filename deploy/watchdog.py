@@ -353,7 +353,7 @@ async def _drive(
         # but is now provider-dependent: ``ollama`` for native Ollama,
         # ``compat`` for OpenAI-compatible endpoints (Anthropic / OpenAI /
         # Groq / etc. via the local llm proxy). Pull both from env.
-        model_name = os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b")
+        model_name = os.environ.get("LLM_MODEL", "qwen2.5-coder:7b")
         provider_key = os.environ.get("OPENCLAW_PROVIDER_KEY", "ollama")
         # Cross-agent lock — only one watchdog runs an openclaw turn at a
         # time across the whole scenario. Eliminates concurrent LLM

@@ -24,7 +24,7 @@ set -Eeuo pipefail
 REPO_DIR="${DELFTCLAW_REPO_DIR:-/opt/delftclaw}"
 
 # Sourcing configs/host.env (if present) lets the operator override
-# QWEN_BASE_URL / QWEN_MODEL / BTC_NETWORK / TAILSCALE_* once for the host
+# LLM_BASE_URL / LLM_MODEL / BTC_NETWORK / TAILSCALE_* once for the host
 # and have both scenario_boot.py and this script pick them up. Existing
 # environment variables win — same precedence as scenario_boot.py.
 HOST_ENV_FILE="${HOST_ENV_FILE:-$REPO_DIR/configs/host.env}"

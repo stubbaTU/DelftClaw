@@ -8,7 +8,7 @@ just text?
 
 Usage::
 
-    # Local Ollama (default — uses host.env's QWEN_MODEL):
+    # Local Ollama (default — uses host.env's LLM_MODEL):
     python scripts/probe_tool_calling.py
 
     # Local Ollama, explicit model:
@@ -150,13 +150,13 @@ def _probe(base: str, model: str, api_key: str, *, force: bool, verbose: bool) -
 
 def main(argv: list[str]) -> int:
     host_env = _load_host_env()
-    default_base = host_env.get("QWEN_BASE_URL", DEFAULT_BASE)
+    default_base = host_env.get("LLM_BASE_URL", DEFAULT_BASE)
     # The host.env points at the SSH tunnel (port 11500); for a direct
     # laptop test we want the bare Ollama port. If the URL looks like
     # the tunnel, hint at the direct port for clarity.
     if "11500" in default_base:
         default_base = default_base.replace("11500", "11434")
-    default_model = host_env.get("QWEN_MODEL", "qwen2.5-coder:7b")
+    default_model = host_env.get("LLM_MODEL", "qwen2.5-coder:7b")
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default=default_base,
@@ -165,7 +165,7 @@ def main(argv: list[str]) -> int:
                         help=f"model id (default: {default_model})")
     parser.add_argument("--api-key", default=None,
                         help="API key sent as 'Authorization: Bearer'. "
-                             "Defaults to OLLAMA_API_KEY or ANTHROPIC_API_KEY env vars, "
+                             "Defaults to LLM_API_KEY or ANTHROPIC_API_KEY env vars, "
                              "or the literal 'ollama' if neither is set.")
     parser.add_argument("--anthropic", action="store_true",
                         help="shortcut: target Anthropic's OpenAI-compatible endpoint "
@@ -188,7 +188,7 @@ def main(argv: list[str]) -> int:
                 return 2
 
     if args.api_key is None:
-        args.api_key = (os.environ.get("OLLAMA_API_KEY")
+        args.api_key = (os.environ.get("LLM_API_KEY")
                         or os.environ.get("ANTHROPIC_API_KEY")
                         or "ollama")
 
