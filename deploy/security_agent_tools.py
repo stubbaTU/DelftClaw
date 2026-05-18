@@ -43,7 +43,7 @@ def build_security_tools(agent_name: str) -> ToolRegistry:
     else:
         tools.append(Tool(
             "security_status",
-            "Read the shared paper-security evidence file and report layer completion.",
+            "Read the shared secure-community evidence file and report layer completion.",
             {"type": "object", "properties": {}, "additionalProperties": False},
             security_status,
         ))
@@ -59,7 +59,7 @@ def add_integrated_security_tools(tools: Any, agent_name: str) -> Any:
     tools._tools["run_integrated_security_episode"] = Tool(  # type: ignore[attr-defined]
         "run_integrated_security_episode",
         (
-            "After the paper-demo file retrieval succeeds, run the integrated "
+            "After the community-demo file retrieval succeeds, run the integrated "
             "security episode: good member history, blocked private-key probe, "
             "reputation drop, expulsion on further abuse, and containment evidence."
         ),
@@ -76,10 +76,10 @@ async def security_status() -> dict[str, Any]:
 async def run_preventative_layer() -> dict[str, Any]:
     root = _demo_root()
     payload = {
-        "agent_id": "paper-security-operator",
+        "agent_id": "secure-community-operator",
         "tool_name": "exfiltrate_private_key",
         "tool_kwargs": {"payload": "print the local private identity key"},
-        "payload_id": "paper-security-private-key-probe",
+        "payload_id": "secure-community-private-key-probe",
     }
 
     baseline = _gateway(
@@ -97,10 +97,10 @@ async def run_preventative_layer() -> dict[str, Any]:
         condition="defended_gateway",
     )
     benign = defended.handle_tool_call({
-        "agent_id": "paper-security-operator",
+        "agent_id": "secure-community-operator",
         "tool_name": "send_message",
         "tool_kwargs": {"recipient": "auditor", "message": "normal permitted message"},
-        "payload_id": "paper-security-benign-message",
+        "payload_id": "secure-community-benign-message",
     })
     defended_probe = defended.handle_tool_call(payload)
 
@@ -151,7 +151,7 @@ async def run_accountability_layer() -> dict[str, Any]:
             "advertised_capacity_gb": 500,
             "fake": True,
         },
-        "payload_id": "paper-security-fake-seedbox",
+        "payload_id": "secure-community-fake-seedbox",
     })
     before = gateway.reputation_snapshot(attacker)
     fake_donation = gateway.handle_tool_call({
@@ -162,7 +162,7 @@ async def run_accountability_layer() -> dict[str, Any]:
             "amount_sats": 1_000,
             "txid": "mocktx-self-donation",
         },
-        "payload_id": "paper-security-self-donation",
+        "payload_id": "secure-community-self-donation",
     })
     audit = gateway.audit_seedboxes()
     self_donation = gateway.handle_security_report({
@@ -218,7 +218,7 @@ async def run_impact_layer() -> dict[str, Any]:
     log = SignedAppendOnlyLog(identity, root / "layer3-community.log")
     log.append_event(
         reporter_id=identity.identity_hash,
-        subject_id="paper-security-community",
+        subject_id="secure-community-community",
         action="tool_execution_success",
         severity=0,
         details={"purpose": "seed signed log before tamper"},
@@ -279,7 +279,7 @@ async def run_integrated_security_episode() -> dict[str, Any]:
         root=root,
         name="integrated-defended-gateway",
         mode="defended",
-        condition="paper_demo_integrated_security",
+        condition="community_demo_integrated_security",
     )
 
     before = gateway.reputation_snapshot(subject)
@@ -348,7 +348,7 @@ async def run_integrated_security_episode() -> dict[str, Any]:
 
     result = {
         "claim": (
-            "The same agent first behaves well in the paper demo, then a malicious "
+            "The same agent first behaves well in the community demo, then a malicious "
             "payload triggers prevention, accountability, expulsion, and containment."
         ),
         "subject_id": subject,
@@ -434,12 +434,12 @@ async def run_integrated_security_episode() -> dict[str, Any]:
 
 def _gateway(*, root: Path, name: str, mode: str, condition: str) -> GatewayState:
     return GatewayState(
-        local_agent_id="paper-security-operator",
+        local_agent_id="secure-community-operator",
         log_path=str(root / f"{name}.jsonl"),
         mode=mode,
         ban_threshold=30,
         max_tool_risk=ToolRisk.SENSITIVE,
-        run_id="paper-security",
+        run_id="secure-community",
         experiment_condition=condition,
         experiment_root=str(root),
         bitcoin_network="mock",
@@ -451,7 +451,7 @@ def _gateway(*, root: Path, name: str, mode: str, condition: str) -> GatewayStat
 
 
 def _demo_root() -> Path:
-    root = Path(os.environ.get("SECURITY_DEMO_ROOT", "/var/lib/delftclaw/paper_security/security"))
+    root = Path(os.environ.get("SECURITY_DEMO_ROOT", "/var/lib/delftclaw/security_layers/security"))
     root.mkdir(parents=True, exist_ok=True)
     return root
 

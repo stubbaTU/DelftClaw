@@ -1,12 +1,12 @@
-# Scenario: paper_security
+# Scenario: security_layers
 #
 # Real watchdog-driven security showcase for Act 2 of Paper - Demo.txt.
 # Each agent gets a narrow security tool surface through the direct driver
 # and writes signed/structured evidence into a shared scenario evidence file.
 
-name: paper_security
+name: security_layers
 description: >-
-  Four watchdog-driven agents demonstrate the paper demo security story:
+  Four watchdog-driven agents demonstrate the community demo security story:
   preventative gateway controls, accountability and reputation updates, and
   impact containment through proxy-only integrity protection.
 
@@ -17,7 +17,7 @@ watchdog:
   max_wall_clock_s: 1800
 
 observability:
-  log_dir: /var/log/delftclaw/scenarios/paper_security
+  log_dir: /var/log/delftclaw/scenarios/security_layers
 
 agents:
 

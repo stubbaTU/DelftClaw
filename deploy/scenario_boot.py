@@ -208,11 +208,11 @@ def _state_dir(scenario_name: str, agent_name: str) -> Path:
 
 def _prepare_shared_state(scenario: Scenario) -> None:
     """Create scenario-level writable state that is shared across agents."""
-    if scenario.name not in {"paper_security", "paper_integrated_security"}:
+    if scenario.name not in {"security_layers", "secure_community_demo"}:
         return
     security_root = STATE_ROOT / scenario.name / "security"
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
-    if scenario.name == "paper_integrated_security":
+    if scenario.name == "secure_community_demo":
         try:
             from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
 
@@ -301,15 +301,15 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
         f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
         f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
-        f"WATCHDOG_DRIVER={'direct' if scenario.name in {'paper_security', 'paper_integrated_security'} else OPENCLAW_LLM['watchdog_driver']}",
+        f"WATCHDOG_DRIVER={'direct' if scenario.name in {'security_layers', 'secure_community_demo'} else OPENCLAW_LLM.get('watchdog_driver', 'openclaw')}",
         *(
             [
-                f"DIRECT_TOOL_ALLOWLIST={'paper_security' if scenario.name == 'paper_security' else 'paper_integrated_security'}",
+                f"DIRECT_TOOL_ALLOWLIST={'security_layers' if scenario.name == 'security_layers' else 'secure_community_demo'}",
                 f"SECURITY_DEMO_ROOT={security_root}",
                 f"SECURITY_EVIDENCE_PATH={security_root / 'security_evidence.json'}",
                 "INTEGRATED_ATTACKER_ID=agent_2",
             ]
-            if scenario.name in {"paper_security", "paper_integrated_security"} else []
+            if scenario.name in {"security_layers", "secure_community_demo"} else []
         ),
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
@@ -425,7 +425,7 @@ def _write_seed_content_file(scenario: Scenario, agent: AgentSpec) -> None:
         safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in item.name)
         content_path = content_dir / safe_name
         payload = (
-            "DelftClaw paper demo seed content\n"
+            "DelftClaw community demo seed content\n"
             f"name={item.name}\n"
             f"magnet={item.magnet}\n"
         )

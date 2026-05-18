@@ -68,7 +68,7 @@ EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
 
-PAPER_DEMO_TOOL_ALLOWLIST = {
+COMMUNITY_DEMO_TOOL_ALLOWLIST = {
     "peers_list",
     "wallet_address",
     "wallet_balance",
@@ -93,7 +93,7 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Trim prompt-only state for low request-size providers.
 
     Stop predicates and JSONL still receive the full snapshot; this is only
-    what the LLM sees. The paper demo's normal flow can reason from the
+    what the LLM sees. The community demo's normal flow can reason from the
     manifest/admission, wallet, community summary, peers, and torrent status
     without embedding every overlay message schema on every turn.
     """
@@ -301,24 +301,24 @@ async def _invoke_direct_tool_loop(
         timeout_s=max(30, timeout_s - 15),
         extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
     )
-    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "paper_demo").strip().lower()
-    if tool_allowlist == "paper_security":
+    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "community_demo").strip().lower()
+    if tool_allowlist == "security_layers":
         tools = build_security_tools(agent_name)
     else:
         tools = build_tools(agent)
-    if tool_allowlist == "paper_integrated_security":
+    if tool_allowlist == "secure_community_demo":
         tools = add_integrated_security_tools(tools, agent_name)
-    if tool_allowlist == "paper_demo":
+    if tool_allowlist == "community_demo":
         tools._tools = {  # type: ignore[attr-defined]
             name: tool
             for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in PAPER_DEMO_TOOL_ALLOWLIST
+            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
         }
-    if tool_allowlist == "paper_integrated_security":
+    if tool_allowlist == "secure_community_demo":
         tools._tools = {  # type: ignore[attr-defined]
             name: tool
             for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in PAPER_DEMO_TOOL_ALLOWLIST
+            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
         }
     try:
         text = await asyncio.wait_for(

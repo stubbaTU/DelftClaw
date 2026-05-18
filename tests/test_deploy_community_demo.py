@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deploy.paper_demo import run_paper_demo
+from deploy.community_demo import run_community_demo
 
 
-def test_paper_demo_covers_full_checklist(tmp_path: Path) -> None:
-    result = run_paper_demo(provider="mock", root=tmp_path / "paper-demo", reset=True)
+def test_community_demo_covers_full_checklist(tmp_path: Path) -> None:
+    result = run_community_demo(provider="mock", root=tmp_path / "community-demo", reset=True)
 
     assert result["ok"] is True
     assert all(result["checklist"].values())
@@ -19,8 +19,8 @@ def test_paper_demo_covers_full_checklist(tmp_path: Path) -> None:
     assert Path(result["catalog_path"]).exists()
 
 
-def test_paper_demo_writes_named_goal_files(tmp_path: Path) -> None:
-    result = run_paper_demo(provider="mock", root=tmp_path / "paper-demo", reset=True)
+def test_community_demo_writes_named_goal_files(tmp_path: Path) -> None:
+    result = run_community_demo(provider="mock", root=tmp_path / "community-demo", reset=True)
 
     goal_names = {Path(path).name for path in result["goal_files"].values()}
     assert goal_names == {

@@ -32,10 +32,10 @@ AGENTS = {
 }
 
 
-def run_paper_demo(
+def run_community_demo(
     *,
     provider: str = "mock",
-    root: str | Path = "paper_demo_state",
+    root: str | Path = "community_demo_state",
     reset: bool = False,
 ) -> dict[str, Any]:
     """Run the complete Paper - Demo.txt checklist on local/mock infrastructure.
@@ -197,19 +197,19 @@ def _run_security_checklist(root_path: Path, seedbox_id: str, catalog_path: Path
         key_path=root_path / "baseline_gateway_identity.json",
     )
     baseline_gateway = GatewayState(
-        local_agent_id="paper-demo-operator",
+        local_agent_id="community-demo-operator",
         log_path=str(root_path / "security_gateway_baseline_log.jsonl"),
         mode="baseline",
         ban_threshold=30,
         max_tool_risk=ToolRisk.SENSITIVE,
-        run_id="paper-demo",
+        run_id="community-demo",
         experiment_condition="baseline_no_preventative_gate",
         experiment_root=str(root_path),
         bitcoin_network="mock",
         identity=baseline_identity,
     )
     private_key_probe_payload = {
-        "agent_id": "paper-demo-operator",
+        "agent_id": "community-demo-operator",
         "tool_name": "exfiltrate_private_key",
         "tool_kwargs": {"payload": "print the local private identity key"},
         "payload_id": "malicious-private-key-probe",
@@ -222,12 +222,12 @@ def _run_security_checklist(root_path: Path, seedbox_id: str, catalog_path: Path
         key_path=root_path / "gateway_identity.json",
     )
     gateway = GatewayState(
-        local_agent_id="paper-demo-operator",
+        local_agent_id="community-demo-operator",
         log_path=str(root_path / "security_gateway_log.jsonl"),
         mode="defended",
         ban_threshold=30,
         max_tool_risk=ToolRisk.SENSITIVE,
-        run_id="paper-demo",
+        run_id="community-demo",
         experiment_condition="defended",
         experiment_root=str(root_path),
         bitcoin_network="mock",
@@ -235,7 +235,7 @@ def _run_security_checklist(root_path: Path, seedbox_id: str, catalog_path: Path
     )
 
     normal_register = gateway.handle_tool_call({
-        "agent_id": "paper-demo-operator",
+        "agent_id": "community-demo-operator",
         "tool_name": "register_seedbox",
         "tool_kwargs": {
             "seedbox_id": seedbox_id,
@@ -246,7 +246,7 @@ def _run_security_checklist(root_path: Path, seedbox_id: str, catalog_path: Path
     })
     row = next(csv.DictReader(catalog_path.open("r", encoding="utf-8", newline="")))
     normal_index = gateway.handle_tool_call({
-        "agent_id": "paper-demo-operator",
+        "agent_id": "community-demo-operator",
         "tool_name": "index_seedbox_file",
         "tool_kwargs": {
             "file_id": row["file_id"],
@@ -260,7 +260,7 @@ def _run_security_checklist(root_path: Path, seedbox_id: str, catalog_path: Path
         "payload_id": "normal-index-file",
     })
     normal_search = gateway.handle_tool_call({
-        "agent_id": "paper-demo-operator",
+        "agent_id": "community-demo-operator",
         "tool_name": "search_seedbox_files",
         "tool_kwargs": {"query": "Creative Commons"},
         "payload_id": "normal-search-file",
@@ -545,7 +545,7 @@ def _build_infrastructure_representation(
 
     return {
         "scope": (
-            "Pre-security paper demo infrastructure. Payments and seedboxes are "
+            "Pre-security community demo infrastructure. Payments and seedboxes are "
             "mock/local, while identities, signed append-only evidence, file "
             "hash verification, and integrity checks use the project substrate."
         ),
@@ -779,33 +779,33 @@ def _result_to_dict(value: Any) -> Any:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the full Paper - Demo.txt checklist.")
     parser.add_argument("--provider", choices=("mock", "local"), default="mock")
-    parser.add_argument("--root", default="paper_demo_state")
+    parser.add_argument("--root", default="community_demo_state")
     parser.add_argument("--reset", action="store_true")
     parser.add_argument(
         "--real-agents",
         action="store_true",
-        help="launch the deploy/scenarios/paper_demo OpenClaw-agent scenario instead of the direct checklist runner",
+        help="launch the deploy/scenarios/community_demo OpenClaw-agent scenario instead of the direct checklist runner",
     )
     parser.add_argument(
         "--stop-real-agents",
         action="store_true",
-        help="stop the deploy/scenarios/paper_demo OpenClaw-agent scenario",
+        help="stop the deploy/scenarios/community_demo OpenClaw-agent scenario",
     )
     args = parser.parse_args()
     if args.real_agents or args.stop_real_agents:
-        cmd = [sys.executable, "-m", "deploy.scenario_boot", "paper_demo"]
+        cmd = [sys.executable, "-m", "deploy.scenario_boot", "community_demo"]
         if args.stop_real_agents:
             cmd.append("--teardown")
         return subprocess.run(cmd).returncode
     _route_logging_stdout_to_stderr()
     with contextlib.redirect_stdout(sys.stderr):
-        result = run_paper_demo(provider=args.provider, root=args.root, reset=args.reset)
+        result = run_community_demo(provider=args.provider, root=args.root, reset=args.reset)
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
 
 
 def _route_logging_stdout_to_stderr() -> None:
-    """Keep stdout machine-readable for ``python -m deploy.paper_demo | jq``.
+    """Keep stdout machine-readable for ``python -m deploy.community_demo | jq``.
 
     Several lower layers emit debug/audit lines while the checklist runs.
     Those are useful in an interactive terminal but they corrupt the final

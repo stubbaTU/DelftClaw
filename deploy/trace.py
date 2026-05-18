@@ -408,7 +408,7 @@ def _format_content_row(row: dict) -> str:
 
 
 def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario not in {"paper_demo", "paper_integrated_security"}:
+    if scenario not in {"community_demo", "secure_community_demo"}:
         return
 
     community = _community_snapshot(summaries)
@@ -430,11 +430,11 @@ def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
     seedbox_index = _content_overlay_rows(a1, "local_index")
     seeker_responses = _content_overlay_rows(a2, "response_cache")
 
-    _print_header("paper story checklist")
-    if scenario == "paper_integrated_security":
-        print("  This section maps the live real-agent run to Paper - Demo.txt with the security episode embedded.")
+    _print_header("community story checklist")
+    if scenario == "secure_community_demo":
+        print("  This section maps the live real-agent community demo to Paper - Demo.txt with the security episode embedded.")
     else:
-        print("  This section maps the live real-agent run to Paper - Demo.txt before the security experiments.")
+        print("  This section maps the live real-agent community demo to Paper - Demo.txt before the security experiments.")
     print(f"  1. Founder, wallet, treasury, first seedbox: {_ok_wait(member_count >= 1)}  "
           f"members={member_count} treasury_sats={treasury} seedboxes={seedbox_count} "
           f"join_fee={min_sats} seedbox_cost={seedbox_cost} capacity={capacity}")
@@ -484,7 +484,7 @@ def _security_snapshot(summaries: dict[str, dict]) -> dict:
 
 
 def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario != "paper_security":
+    if scenario != "security_layers":
         return
 
     security = _security_snapshot(summaries)
@@ -525,7 +525,7 @@ def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
 
 
 def _render_integrated_security_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario != "paper_integrated_security":
+    if scenario != "secure_community_demo":
         return
 
     security = _security_snapshot(summaries)
@@ -547,7 +547,7 @@ def _render_integrated_security_story(scenario: str, summaries: dict[str, dict])
     iptables = real.get("iptables") or {}
 
     _print_header("integrated security episode")
-    print("  This section shows the security layers firing inside the normal four-agent paper story.")
+    print("  This section shows the security layers firing inside the normal four-agent community story.")
     print(f"  7. Good member earns trust first: {_ok_wait(bool(good))}  "
           f"subject={story.get('subject_id', 'agent_2')} "
           f"trust={good.get('trust_score')} risk={good.get('risk_score')} banned={good.get('banned')}")

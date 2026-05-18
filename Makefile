@@ -29,7 +29,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
              --exclude='*.key' --exclude='ec*.pem' --exclude=.venv
 
 .PHONY: help deploy push bootstrap scenario scenarios watch watch-ipv8 trace stop \
-        ssh test clean check-name
+        community-demo community-demo-real community-demo-stop ssh test clean check-name
 
 help:
 	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -85,6 +85,19 @@ trace: check-name ## Snapshot per-agent demo state (turns, tools, IPv8 events, c
 stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
+
+community-demo: push ## Run the direct community demo checklist on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo \
+		--provider mock --root /var/lib/delftclaw/community_demo --reset"
+
+community-demo-real: push ## Start the real-agent community_demo scenario on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --real-agents"
+
+community-demo-stop: ## Stop the real-agent community_demo scenario on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --stop-real-agents"
 
 # ---------------------------------------------------------------------------
 # Operator extras

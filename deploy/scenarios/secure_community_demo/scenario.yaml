@@ -1,31 +1,30 @@
-# Scenario: paper_demo
+# Scenario: secure_community_demo
 #
-# Real OpenClaw-agent version of Paper - Demo.txt. This is not the
-# direct Python checklist runner in deploy.paper_demo; it launches
-# actual per-agent MCP services and watchdog-driven OpenClaw prompts.
+# Combined run: the full four-agent community demo story plus an embedded
+# malicious episode from the previously-good file seeker.
 
-name: paper_demo
+name: secure_community_demo
 description: >-
-  Four real OpenClaw agents: agent_1 founds and seeds Creative Commons
-  content; agent_2 and agent_3 donate to join; agent_2 searches and
-  retrieves the file; agent_4 joins and records the mock second seedbox
-  once the capacity threshold is active.
+  Four real OpenClaw agents run the community demo story. After agent_2
+  joins, searches, and retrieves the Creative Commons file, the same agent
+  demonstrates the defense-in-depth security episode: prevention, reputation
+  drop and expulsion, then containment.
 
 watchdog:
-  interval_s: 240
+  interval_s: 60
   max_iterations_per_turn: 12
   max_total_turns: 36
   max_wall_clock_s: 10800
 
 observability:
-  log_dir: /var/log/delftclaw/scenarios/paper_demo
+  log_dir: /var/log/delftclaw/scenarios/secure_community_demo
 
 agents:
 
   agent_1:
-    ipv8_port: 8194
-    mcp_port: 18770
-    redteam_port: 28770
+    ipv8_port: 8394
+    mcp_port: 18970
+    redteam_port: 28970
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: agent_1/mission.md
@@ -39,20 +38,20 @@ agents:
     initial_balance_sats: 200000
 
   agent_2:
-    ipv8_port: 8195
-    mcp_port: 18771
-    redteam_port: 28771
+    ipv8_port: 8395
+    mcp_port: 18971
+    redteam_port: 28971
     publish_overlays: []
     mission_file: agent_2/mission.md
-    stop_predicate: torrent_progress_gte_1
+    stop_predicate: integrated_security_done
     peers:
       - agent_1
     initial_balance_sats: 100000
 
   agent_3:
-    ipv8_port: 8196
-    mcp_port: 18772
-    redteam_port: 28772
+    ipv8_port: 8396
+    mcp_port: 18972
+    redteam_port: 28972
     publish_overlays: []
     mission_file: agent_3/mission.md
     stop_predicate: community_member_count_gte_N(n=3)
@@ -61,9 +60,9 @@ agents:
     initial_balance_sats: 100000
 
   agent_4:
-    ipv8_port: 8197
-    mcp_port: 18773
-    redteam_port: 28773
+    ipv8_port: 8397
+    mcp_port: 18973
+    redteam_port: 28973
     publish_overlays: []
     mission_file: agent_4/mission.md
     stop_predicate: community_seedbox_count_gte_N(n=2)

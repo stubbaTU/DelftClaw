@@ -8,9 +8,9 @@
 #   bash deploy/vps/demo_seek_cc.sh logs
 #   bash deploy/vps/demo_seek_cc.sh mcp-config
 #   bash deploy/vps/demo_seek_cc.sh probe
-#   bash deploy/vps/demo_seek_cc.sh paper-demo
-#   bash deploy/vps/demo_seek_cc.sh paper-demo-real
-#   bash deploy/vps/demo_seek_cc.sh paper-demo-stop
+#   bash deploy/vps/demo_seek_cc.sh community-demo
+#   bash deploy/vps/demo_seek_cc.sh community-demo-real
+#   bash deploy/vps/demo_seek_cc.sh community-demo-stop
 #   bash deploy/vps/demo_seek_cc.sh stop
 
 set -Eeuo pipefail
@@ -115,22 +115,22 @@ probe_demo() {
   done
 }
 
-paper_demo() {
-  local root="${PAPER_DEMO_ROOT:-/var/lib/delftclaw/paper_demo}"
-  local provider="${PAPER_DEMO_PROVIDER:-mock}"
-  echo "[demo] running full Paper - Demo.txt checklist"
+community_demo() {
+  local root="${COMMUNITY_DEMO_ROOT:-/var/lib/delftclaw/community_demo}"
+  local provider="${COMMUNITY_DEMO_PROVIDER:-mock}"
+  echo "[demo] running full community demo checklist"
   echo "[demo] provider=${provider} root=${root}"
-  "$PYTHON" -m deploy.paper_demo --provider "$provider" --root "$root" --reset
+  "$PYTHON" -m deploy.community_demo --provider "$provider" --root "$root" --reset
 }
 
-paper_demo_real() {
-  echo "[demo] launching real OpenClaw-agent paper_demo scenario"
-  "$PYTHON" -m deploy.paper_demo --real-agents
+community_demo_real() {
+  echo "[demo] launching real OpenClaw-agent community_demo scenario"
+  "$PYTHON" -m deploy.community_demo --real-agents
 }
 
-paper_demo_stop() {
-  echo "[demo] stopping real OpenClaw-agent paper_demo scenario"
-  "$PYTHON" -m deploy.paper_demo --stop-real-agents
+community_demo_stop() {
+  echo "[demo] stopping real OpenClaw-agent community_demo scenario"
+  "$PYTHON" -m deploy.community_demo --stop-real-agents
 }
 
 stop_demo() {
@@ -145,9 +145,9 @@ case "${1:-}" in
   logs) logs_demo ;;
   mcp-config) ports_json ;;
   probe) probe_demo ;;
-  paper-demo) paper_demo ;;
-  paper-demo-real) paper_demo_real ;;
-  paper-demo-stop) paper_demo_stop ;;
+  community-demo) community_demo ;;
+  community-demo-real) community_demo_real ;;
+  community-demo-stop) community_demo_stop ;;
   stop) stop_demo ;;
   *) usage; exit 2 ;;
 esac
