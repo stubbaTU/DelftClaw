@@ -95,9 +95,26 @@ def build_turn_prompt(
         "yourself, ask clarifying questions, or describe what you would",
         "do.",
         "",
-        "If the state already satisfies the mission, call ONE cheap",
-        "no-op (e.g. wallet_balance) and end. The harness tears you down",
-        "on the next tick once your stop_predicate is satisfied.",
+        "PROGRESS DISCIPLINE:",
+        "The CURRENT STATE block below already contains everything you",
+        "can observe this turn: your wallet, the network/admission",
+        "policy, the community treasury + your membership status, your",
+        "peers, the loaded protocol overlays, and your torrents. It was",
+        "collected for you. Calling a read-only tool to fetch any of",
+        "that again is NOT progress and wastes your only action.",
+        "",
+        "Your turn must MOVE THE MISSION FORWARD. If your stop",
+        "predicate is not yet satisfied, your one tool call must CHANGE",
+        "STATE — not observe it. Compare CURRENT STATE to your mission's",
+        "end goal, find the single biggest gap, and take the one action",
+        "that closes it. Re-reading state you already have is the one",
+        "thing that guarantees no progress.",
+        "",
+        "If — and only if — CURRENT STATE already satisfies your",
+        "mission's stop condition, do nothing: emit an empty assistant",
+        "message with NO tool call and end. The harness tears you down",
+        "on the next tick once your stop_predicate is satisfied. Do NOT",
+        "call a read tool as a stand-in for doing nothing.",
         "",
         "MISSION:",
         mission_text.rstrip(),
@@ -116,9 +133,10 @@ def build_turn_prompt(
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
     sections.append("")
     sections.append(
-        "Reminder: ONE tool call this turn, then STOP. The MCP server "
-        "will reject any subsequent tool call in this session with "
-        "tool_budget_exhausted."
+        "Reminder: exactly ONE state-CHANGING tool call this turn, then "
+        "STOP. Re-reading state you were already given is not progress "
+        "and is not an acceptable action. The MCP server rejects any "
+        "subsequent tool call in this session with tool_budget_exhausted."
     )
     return "\n".join(sections)
 
