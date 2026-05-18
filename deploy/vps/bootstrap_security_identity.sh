@@ -137,9 +137,8 @@ run_root chown "root:${SERVICE_USER}" "$ENV_FILE"
 
 echo "[3/5] Preparing experiment workspace (${EXPERIMENT_ROOT})"
 run_root install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$EXPERIMENT_ROOT"
-run_as_service_user env PYTHONPATH="$REPO_DIR" \
-  "$REPO_DIR/venv/bin/python" -m security.real_experiments.setup_canaries \
-  --root "$EXPERIMENT_ROOT" || true
+run_root install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$EXPERIMENT_ROOT/responses"
+run_root install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$EXPERIMENT_ROOT/secrets"
 
 echo "[4/5] Writing OpenClaw MCP config (${MCP_CONFIG})"
 mkdir -p "$(dirname "$MCP_CONFIG")"

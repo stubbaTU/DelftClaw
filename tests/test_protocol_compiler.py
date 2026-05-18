@@ -12,6 +12,8 @@ These exercise the full ``compile_overlay`` flow without a live LLM:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from protocol import (
@@ -28,9 +30,8 @@ from protocol import (
 from protocol.examples.echo_overlay_stub import ECHO_OVERLAY_SOURCE
 
 
-ECHO_MD = open(
-    __file__.replace("tests/test_protocol_compiler.py", "protocol/examples/echo_overlay.md")
-).read()
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ECHO_MD = (REPO_ROOT / "protocol" / "examples" / "echo_overlay.md").read_text(encoding="utf-8")
 ECHO_CID = community_id_from_md(ECHO_MD).hex()
 
 

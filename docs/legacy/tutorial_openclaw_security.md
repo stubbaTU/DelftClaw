@@ -485,7 +485,7 @@ sudo systemctl status delftclaw-seedbox-audit.service --no-pager
 Run the pre-experiment doctor:
 
 ```bash
-python3 -m security.real_experiments.infrastructure_doctor --env configs/vuk.local.env
+python3 -m security.integration.doctor --base-url http://127.0.0.1:8765 --agent-id vuk-vps-agent
 ```
 
 ## 10. Prepare SubQ3 Sandbox Infrastructure
