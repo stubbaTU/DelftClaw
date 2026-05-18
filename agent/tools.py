@@ -14,7 +14,9 @@ lives in the LLM loop's reasoning, not in glue code.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -22,6 +24,8 @@ from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
 from communication.community import overlay_id
+from identity.openclaw_identity import OpenClawIdentity
+from redteam.primitives.signed_log import _canonical_bytes, _stable_hash
 
 
 # ---------------------------------------------------------------------------
@@ -276,19 +280,88 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         except ValueError as exc:
             return {"error": f"wallet_send_failed: {exc}"}
 
+        oc_identity = OpenClawIdentity.from_agent_identity(agent.identity)
+        donor_id = oc_identity.identity_hash
+        details = {
+            "network_id_hex": manifest.network_id.hex(),
+            "amount_sats": amount_sats,
+        }
         entry = agent.community_log.append_event(
-            reporter_id=me,
-            subject_id=me,
+            reporter_id=donor_id,
+            subject_id=donor_id,
             action="donation_intent",
-            details={
-                "network_id_hex": manifest.network_id.hex(),
-                "amount_sats": amount_sats,
-            },
+            details=details,
         )
+
+        subject_claim = {
+            "kind": "claim",
+            "version": 1,
+            "subject_id": donor_id,
+            "action": "donation_intent",
+            "details_hash": _stable_hash(details),
+            "claim_timestamp": datetime.now(timezone.utc).isoformat(),
+            "nonce": secrets.token_hex(16),
+        }
+        subject_signature = oc_identity.sign(_canonical_bytes(subject_claim))
+
         return {
             "entry_hash": entry["entry_hash"],
             "amount_sats": amount_sats,
             "network_id_hex": manifest.network_id.hex(),
+            "subject_claim": subject_claim,
+            "subject_signature_hex": subject_signature.hex(),
+            "subject_pubkey_hex": oc_identity.public_key.hex(),
+        }
+
+    async def community_witness_event(
+        action: str,
+        details: dict,
+        subject_claim: dict,
+        subject_signature_hex: str,
+        subject_pubkey_hex: str,
+    ) -> dict[str, Any]:
+        """Append a witness entry to our community log: record an action
+        taken by another agent, attested by their signed claim envelope.
+
+        Generic over action type — pass-through to ``append_witness_event``,
+        which verifies (i) reporter pubkey/signature lengths, (ii) the
+        ``SHA256(pubkey || network) == subject_id`` binding, (iii) that
+        ``subject_claim.action == action`` and
+        ``subject_claim.details_hash == _stable_hash(details)``, and (iv)
+        the Ed25519 signature over canonical(subject_claim).
+        """
+        if not isinstance(action, str):
+            return {"error": f"action must be a string; got {type(action).__name__}"}
+        if not isinstance(details, dict):
+            return {"error": f"details must be a dict; got {type(details).__name__}"}
+        if not isinstance(subject_claim, dict) or "subject_id" not in subject_claim:
+            return {"error": "subject_claim missing or invalid"}
+
+        try:
+            sig_bytes = bytes.fromhex(subject_signature_hex)
+        except (TypeError, ValueError) as exc:
+            return {"error": f"bad_hex:subject_signature_hex: {exc}"}
+        try:
+            pubkey_bytes = bytes.fromhex(subject_pubkey_hex)
+        except (TypeError, ValueError) as exc:
+            return {"error": f"bad_hex:subject_pubkey_hex: {exc}"}
+
+        try:
+            entry = agent.community_log.append_witness_event(
+                reporter_id=agent.community_reporter_id,
+                subject_id=subject_claim["subject_id"],
+                subject_pubkey=pubkey_bytes,
+                subject_claim=subject_claim,
+                subject_signature=sig_bytes,
+                action=action,
+                details=details,
+            )
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+        return {
+            "entry_hash": entry["entry_hash"],
+            "subject_id": subject_claim["subject_id"],
         }
 
     async def community_join_via_peer(
@@ -791,6 +864,25 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["amount_sats"],
               "additionalProperties": False},
              community_donate_and_join),
+
+        Tool("community_witness_event",
+             "Append a witness entry to our community log: record an action taken by another agent, attested by their signed claim envelope. Generic over action type; append_witness_event verifies the donor's signature, identity binding, action match, and details_hash before writing.",
+             {"type": "object",
+              "properties": {
+                  "action": {"type": "string",
+                              "description": "the action being witnessed (must match subject_claim.action), e.g. donation_intent"},
+                  "details": {"type": "object",
+                               "description": "the details dict the subject_claim committed to via details_hash"},
+                  "subject_claim": {"type": "object",
+                                    "description": "the signed claim envelope produced by the subject's tool call"},
+                  "subject_signature_hex": {"type": "string",
+                                             "description": "subject's ed25519 signature over canonical(subject_claim), hex"},
+                  "subject_pubkey_hex": {"type": "string",
+                                          "description": "subject's ed25519 public key, hex (32 bytes / 64 hex chars)"},
+              },
+              "required": ["action", "details", "subject_claim", "subject_signature_hex", "subject_pubkey_hex"],
+              "additionalProperties": False},
+             community_witness_event),
 
         Tool("seedbox_purchase_propose",
              "Sign + append a seedbox_purchase_intent entry. First-comer "

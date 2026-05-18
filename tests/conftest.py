@@ -14,7 +14,15 @@ are skipped so ``pytest tests/`` is green.
 
 from __future__ import annotations
 
+import ctypes
 import importlib.util
+import sys
+from pathlib import Path
+
+if sys.platform.startswith("win"):
+    _dll_path = Path(__file__).parent.parent / "libsodium.dll"
+    if _dll_path.exists():
+        ctypes.cdll.LoadLibrary(str(_dll_path))
 
 
 # (test-file basename, module-it-imports) pairs. If the module can't be
