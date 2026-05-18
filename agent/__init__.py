@@ -9,6 +9,10 @@ tool surface:
     loop used by the test suite and by ``examples/run_two_agents.py``.
 """
 
+# Setup libsodium early for Windows compatibility
+from agent.libsodium_setup import setup_libsodium
+setup_libsodium()
+
 from agent.loop import (
     OpenAICompatibleToolLLM,
     StubToolLoopLLM,

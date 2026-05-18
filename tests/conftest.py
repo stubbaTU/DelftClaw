@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import importlib.util
 
+# Setup libsodium early for Windows compatibility (before any IPv8 imports)
+from agent.libsodium_setup import setup_libsodium
+setup_libsodium()
+
 
 # (test-file basename, module-it-imports) pairs. If the module can't be
 # imported, the test file is skipped at collection time.

@@ -56,6 +56,40 @@ Bob donates to Alice, fetches `content_community.md`, runs SEARCH,
 downloads the magnet, exits via `torrent_progress_gte_1`. Expected
 runtime: 5-10 minutes on a Hostinger KVM 2 with cold-loaded Qwen.
 
+## Bitcoin Regtest / RPC Quick Setup
+
+If you already have `bitcoind --regtest` running in another terminal, start with the wallet command below.
+The Python RPC client will auto-discover Bitcoin Core's regtest cookie auth from the default data dir.
+
+### Windows PowerShell
+
+```powershell
+# 1) Fund or initialize demo wallets against the running regtest node
+python .\deploy\init_regtest_wallets.py --agents alice bob charlie dave --initial-balance 500000
+
+# 2) Start an agent backed by regtest RPC
+python -m agent.example_regtest_setup --agent alice --use-regtest
+
+# 3) Verify the node and wallet
+bitcoin-cli -regtest getblockcount
+bitcoin-cli -regtest -rpcwallet=alice getbalance
+```
+
+### Linux / WSL Bash
+
+```bash
+# Start Bitcoin only if needed
+bitcoind -regtest -daemon
+
+# Then run the same wallet + agent flow
+python deploy/init_regtest_wallets.py --agents alice bob charlie dave --initial-balance 500000
+python -m agent.example_regtest_setup --agent alice --use-regtest
+bitcoin-cli -regtest getblockcount
+bitcoin-cli -regtest -rpcwallet=alice getbalance
+```
+
+Expected result: the wallet script prints a funded wallet summary, and the agent reports both synthetic and on-chain balances without RPC errors.
+
 ## Repository Layout
 
 ```text
