@@ -314,27 +314,45 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         }
 
     async def community_join_via_peer(
-        gatekeeper_mid: str, amount_sats: int, timeout_s: float = 30.0,
+        gatekeeper_mid: str, amount_sats: int, timeout_s: float = 8.0,
     ) -> dict[str, Any]:
         """Sign + append + ship a donation_intent to ``gatekeeper_mid``.
 
-        End-to-end Phase 5 admission path:
+        v5.2 no-treasurer admission. The IMPORTANT step is (1): writing
+        the signed entry to our own log. Membership is decided by every
+        peer replaying the union of all signed logs (the redteam pull
+        loop replicates ours to them within one ``pull_interval_s``).
+        The IPv8 ``CommunityJoinRequest`` round-trip in step (3) is a
+        *latency optimisation* — a fast-path accept/reject — NOT the
+        source of truth. If the wire reply never comes, admission still
+        happens via replication; we just don't get the instant
+        confirmation.
 
+        Steps:
           1. ``community_donate_and_join(amount_sats)`` writes the signed
              entry to our local community log (debits wallet, runs
-             local pre-checks).
-          2. Find the peer by mid prefix, then send the entry over the
-             new ``COMMUNITY_JOIN_REQUEST`` wire message.
-          3. Wait for the gatekeeper's accept/reject response. The
-             gatekeeper validates the entry against its own
-             community-state replay.
+             local pre-checks). THIS is what actually admits us.
+          2. Find the peer by mid prefix; ship the entry over the
+             ``COMMUNITY_JOIN_REQUEST`` wire message.
+          3. Briefly await the gatekeeper's accept/reject. Default
+             ``timeout_s`` is 8s — bounded low ON PURPOSE: this tool is
+             called under the cross-agent LLM turn lock, so a long block
+             here stalls every other agent in the scenario. A loopback
+             reply returns sub-second when the wire path is healthy; if
+             it hasn't come in 8s it isn't coming this turn, and the
+             entry is already replicating regardless.
 
-        Returns ``{"entry_hash": str, "accepted": bool, "reason": str,
-        "amount_sats": int}`` on success, or ``{"error": str}`` on
-        local pre-check failure.
+        Returns ``{"entry_hash", "amount_sats", "accepted", "reason"}``.
+        On wire timeout returns ``accepted=None`` with
+        ``reason="wire_reply_timeout_admission_via_replication_pending"``
+        — NOT an ``error`` key, because the local write succeeded and
+        membership will resolve on the next replay. The LLM should treat
+        a timed-out join as done, not retry it (retrying re-debits the
+        wallet and writes a duplicate intent that replay rejects).
         """
         # Step 1 — sign + append locally. Reuses the pre-existing tool
         # so wallet debit, double-join check, cap check, etc. all run.
+        # This is the load-bearing step: it admits us via replay.
         donate_result = await community_donate_and_join(amount_sats)
         if "error" in donate_result:
             return donate_result
@@ -348,7 +366,8 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         if signed_entry is None:
             return {"error": "signed_entry_not_found_in_local_log"}
 
-        # Step 3 — find the peer and send.
+        # Step 3 — find the peer and send. The wire reply is a
+        # best-effort fast-path; its absence is not a failure.
         try:
             peer = _resolve_peer(agent, gatekeeper_mid)
         except KeyError as exc:
@@ -357,7 +376,23 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         try:
             accepted, reason = await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
-            return {"error": f"community_join_timeout_after_{timeout_s}s"}
+            return {
+                "entry_hash": donate_result["entry_hash"],
+                "amount_sats": amount_sats,
+                "accepted": None,
+                "reason": "wire_reply_timeout_admission_via_replication_pending",
+                "note": (
+                    "Local donation_intent written + debited. The "
+                    "gatekeeper's wire ack did not arrive within "
+                    f"{timeout_s}s, but membership is decided by signed-log "
+                    "replay, not this ack. Your entry is replicating to "
+                    "all peers now. Treat this turn as DONE — do NOT "
+                    "call community_join_via_peer or community_donate_and_join "
+                    "again (that re-debits your wallet and writes a "
+                    "duplicate intent that replay rejects). Check "
+                    "state.community.my_membership_status on a later tick."
+                ),
+            }
 
         return {
             "entry_hash": donate_result["entry_hash"],

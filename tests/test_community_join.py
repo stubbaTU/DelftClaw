@@ -282,3 +282,80 @@ async def test_community_join_callback_returns_no_manifest_when_unloaded(tmp_pat
         assert reason == "no_manifest_loaded"
     finally:
         await a.stop()
+
+
+# ---------------------------------------------------------------------------
+# Regression: a timed-out wire ack must NOT look like a failure.
+#
+# v5.2 admission is decided by signed-log replay, not by the IPv8
+# CommunityJoinResponse. Caught live in the seek_cc 16:07 run: every
+# joiner's community_join_via_peer blocked the full 30s on a wire reply
+# that never arrived, holding the cross-agent LLM turn lock and stalling
+# the whole scenario — even though the donation_intent was already
+# written locally and replicating. The tool must (a) bound the wait low
+# and (b) return a non-error envelope so the LLM treats the turn as done
+# instead of retrying (a retry re-debits the wallet + writes a duplicate
+# intent that replay rejects).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_community_join_timeout_returns_pending_not_error(alice_and_bob, monkeypatch):
+    alice, bob = alice_and_bob
+
+    # Force the wire reply to never arrive: replace request_community_join
+    # with one that ships nothing and returns a future that never resolves.
+    never = asyncio.get_event_loop().create_future()
+
+    def _never_resolves(_gatekeeper, _entry):
+        return never
+
+    monkeypatch.setattr(
+        bob.seedbox, "request_community_join", _never_resolves
+    )
+
+    bob_tools = build_tools(bob)
+    result = await bob_tools.dispatch(
+        "community_join_via_peer",
+        {
+            "gatekeeper_mid": alice.seedbox.my_peer.mid.hex(),
+            "amount_sats": 60_000,
+            "timeout_s": 0.2,   # tiny — we only care about the timeout branch
+        },
+    )
+
+    # NOT a failure envelope — the local write succeeded, admission
+    # proceeds via replication. The LLM must not see an `error` key.
+    assert "error" not in result, f"timeout wrongly surfaced as error: {result}"
+    assert result["accepted"] is None
+    assert result["reason"] == "wire_reply_timeout_admission_via_replication_pending"
+    assert isinstance(result["entry_hash"], str)
+    assert result["amount_sats"] == 60_000
+    # The note must steer the LLM away from re-calling (wallet re-debit).
+    assert "do NOT" in result["note"]
+
+    # The donation_intent really was written locally despite the timeout —
+    # i.e. bob admitted himself via his own log; replay will confirm once
+    # peers pull it.
+    entry = next(
+        e for e in reversed(bob.community_log.read_entries())
+        if e.get("entry_hash") == result["entry_hash"]
+    )
+    assert entry["action"] == "donation_intent"
+    assert entry["details"]["amount_sats"] == 60_000
+
+
+def test_community_join_default_timeout_is_bounded_low():
+    """The default timeout must stay small — it runs under the
+    cross-agent LLM turn lock, so a large default re-introduces the
+    scenario-wide stall this regression fixes."""
+    import inspect
+    from agent.tools import build_tools as _bt  # noqa: F401  (import-site check)
+    # The signature default lives on the inner closure; assert via the
+    # source so we don't have to construct an agent here.
+    import agent.tools as _tools_mod
+    src = inspect.getsource(_tools_mod.build_tools)
+    assert "timeout_s: float = 8.0" in src, (
+        "community_join_via_peer default timeout changed; keep it low "
+        "(<=10s) — it blocks the cross-agent LLM lock"
+    )
