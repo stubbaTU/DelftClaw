@@ -538,35 +538,55 @@ def _render_integrated_security_story(scenario: str, summaries: dict[str, dict])
     }
     good = by_stage.get("joined_and_retrieved_file") or {}
     blocked = by_stage.get("private_key_probe_blocked") or {}
+    privileged = by_stage.get("privileged_command_blocked") or {}
     expelled = by_stage.get("fake_seedbox_self_donation_expelled") or {}
     prevention = story.get("preventative") or {}
     accountability = story.get("accountability") or {}
     impact = story.get("impact") or {}
+    policy = story.get("openclaw_tool_policy") or {}
+    target_secret = story.get("target_secret") or {}
+    trust_basis = story.get("trust_basis") or {}
     real = impact.get("real_guardrails") or {}
     gvisor = real.get("gvisor") or {}
     iptables = real.get("iptables") or {}
+    privileged_attempts = (impact.get("agent_privileged_attempts") or {})
+    no_iso_attempts = privileged_attempts.get("without_isolation") or {}
+    proxy_attempts = privileged_attempts.get("with_proxy_only_isolation") or {}
 
     _print_header("integrated security episode")
     print("  This section shows the security layers firing inside the normal four-agent community story.")
+    print(f"  Tool policy: allowlist={len(policy.get('allowlist') or [])} "
+          f"denylist={len(policy.get('denylist') or [])} driver={policy.get('driver', 'unknown')}")
     print(f"  7. Good member earns trust first: {_ok_wait(bool(good))}  "
           f"subject={story.get('subject_id', 'agent_2')} "
-          f"trust={good.get('trust_score')} risk={good.get('risk_score')} banned={good.get('banned')}")
+          f"trust={good.get('trust_score')} risk={good.get('risk_score')} banned={good.get('banned')} "
+          f"basis='{trust_basis.get('formula', '')}'")
     print(f"  8. Preventative Brain-vs-Hands block: {_ok_wait(bool(prevention.get('private_key_probe_blocked')))}  "
+          f"target={target_secret.get('owner_agent', 'agent_2')}:{target_secret.get('asset', 'private key')} "
           f"blocked={prevention.get('private_key_probe_blocked')} "
           f"attack_success={prevention.get('private_key_attack_success')} "
           f"blocked_count={prevention.get('blocked_count')}")
-    print(f"  9. Reputation falls after first abuse: {_ok_wait(bool(blocked))}  "
+    print(f"  9. Reputation falls after private-key abuse: {_ok_wait(bool(blocked))}  "
           f"trust={blocked.get('trust_score')} risk={blocked.get('risk_score')} banned={blocked.get('banned')}")
-    print(f"  10. More malicious behavior triggers expulsion: {_ok_wait(bool(accountability.get('banned')))}  "
+    print(f"  10. Privileged system command is blocked: {_ok_wait(bool(prevention.get('privileged_command_blocked')))}  "
+          f"tool={prevention.get('privileged_command')} "
+          f"trust={privileged.get('trust_score')} risk={privileged.get('risk_score')} "
+          f"attack_success={prevention.get('privileged_command_attack_success')}")
+    print(f"  11. More malicious behavior triggers expulsion: {_ok_wait(bool(accountability.get('banned')))}  "
           f"trust={expelled.get('trust_score')} "
           f"risk={accountability.get('risk_after_more_malicious_behavior')} "
           f"harm_count={accountability.get('harm_count')} banned={accountability.get('banned')}")
-    print(f"  11. Isolation limits fallout: {_ok_wait(impact.get('with_proxy_only_isolation_passed') is True)}  "
+    print(f"  12. Isolation limits fallout: {_ok_wait(impact.get('with_proxy_only_isolation_passed') is True)}  "
           f"no_isolation_passed={impact.get('without_isolation_passed')} "
           f"proxy_only_passed={impact.get('with_proxy_only_isolation_passed')} "
+          f"key_read_no_iso={no_iso_attempts.get('read_private_key_succeeded')} "
+          f"key_read_proxy={proxy_attempts.get('read_private_key_succeeded')} "
+          f"iptables_no_iso={no_iso_attempts.get('modify_iptables_succeeded')} "
+          f"iptables_proxy={proxy_attempts.get('modify_iptables_succeeded')} "
           f"guardrails={', '.join(impact.get('guardrails') or [])}")
-    print(f"  12. Real gVisor and iptables probe: {_ok_wait(real.get('ok') is True)}  "
-          f"gvisor={gvisor.get('ok')} reason={gvisor.get('reason', '')} "
+    print(f"  13. Real gVisor and iptables probe: {_ok_wait(real.get('ok') is True)}  "
+          f"gvisor={gvisor.get('ok')} rootfs_write_blocked={gvisor.get('rootfs_write_probe_blocked')} "
+          f"network_blocked={gvisor.get('network_probe_blocked')} reason={gvisor.get('reason', '')} "
           f"iptables={iptables.get('ok')} reason={iptables.get('reason', '')}")
     print(f"  Combined demo security outcome: {_ok_wait(bool(story.get('represented')))}  "
           f"evidence={security.get('path', 'none')}")

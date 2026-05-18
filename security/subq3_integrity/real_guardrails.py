@@ -65,6 +65,8 @@ def _gvisor_probe(root: Path, *, timeout_s: int) -> dict[str, Any]:
         "-c",
         (
             "echo ok >/tmp/probe && "
+            "(echo should_not_write >/root/forbidden) 2>/tmp/rootfs_err; "
+            "test $? -ne 0 && "
             "test ! -e /host_marker.txt && "
             "wget -T 1 -qO- http://1.1.1.1 >/tmp/net 2>/tmp/neterr; "
             "test $? -ne 0 && "
@@ -80,6 +82,8 @@ def _gvisor_probe(root: Path, *, timeout_s: int) -> dict[str, Any]:
         "runtime": "runsc",
         "network": "none",
         "read_only_rootfs": True,
+        "rootfs_write_probe_blocked": "GVISOR_PROBE_OK" in proc["stdout"],
+        "network_probe_blocked": "GVISOR_PROBE_OK" in proc["stdout"],
         "tmpfs_tmp": True,
         "host_marker_path": str(marker),
         "command": _redact_cmd(cmd),

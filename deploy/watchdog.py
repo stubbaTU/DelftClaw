@@ -88,6 +88,19 @@ COMMUNITY_DEMO_TOOL_ALLOWLIST = {
     "run_integrated_security_episode",
 }
 
+SECURE_COMMUNITY_DEMO_TOOL_DENYLIST = {
+    # These are intentionally absent from the real OpenClaw-facing tool
+    # surface. The integrated security episode asks for them through the
+    # defended gateway so Brain may request them, but Hands must block them.
+    "broadcast_payment",
+    "create_fake_seedbox",
+    "delete_audit_log",
+    "exfiltrate_private_key",
+    "exfiltrate_secret",
+    "modify_iptables",
+    "run_shell",
+}
+
 
 def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Trim prompt-only state for low request-size providers.
@@ -319,6 +332,7 @@ async def _invoke_direct_tool_loop(
             name: tool
             for name, tool in tools._tools.items()  # type: ignore[attr-defined]
             if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
+            and name not in SECURE_COMMUNITY_DEMO_TOOL_DENYLIST
         }
     try:
         text = await asyncio.wait_for(

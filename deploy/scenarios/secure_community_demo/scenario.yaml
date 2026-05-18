@@ -11,7 +11,7 @@ description: >-
   drop and expulsion, then containment.
 
 watchdog:
-  interval_s: 60
+  interval_s: 30
   max_iterations_per_turn: 12
   max_total_turns: 36
   max_wall_clock_s: 10800
