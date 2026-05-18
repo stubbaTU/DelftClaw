@@ -25,23 +25,90 @@ fi
 
 echo -e "${GREEN}Detected OS: $OS${NC}"
 
+# Allow overriding version via env or first arg
+VERSION="${1:-${BITCOIN_VERSION:-26.0}}"
+
+# helper: attempt package manager install fallback
+attempt_package_install() {
+    echo "Attempting package-manager installation fallback..."
+    # Debian/Ubuntu (attempt PPA)
+    if command -v apt-get &> /dev/null; then
+        echo "Detected apt-get. Trying Ubuntu PPA (bitcoin/bitcoin)..."
+        sudo apt-get update -y || true
+        if ! command -v add-apt-repository &> /dev/null; then
+            echo "Installing software-properties-common to add PPA..."
+            sudo apt-get install -y software-properties-common || true
+        fi
+        if command -v add-apt-repository &> /dev/null; then
+            sudo add-apt-repository -y ppa:bitcoin/bitcoin || true
+            sudo apt-get update -y || true
+            sudo apt-get install -y bitcoind bitcoin-cli || {
+                echo -e "${YELLOW}Could not install via apt. Please install manually:${NC}"
+                echo "See: https://bitcoin.org/en/download"
+                return 1
+            }
+            echo -e "${GREEN}✓ Bitcoin Core installed via apt${NC}"
+            return 0
+        fi
+    fi
+
+    # macOS Homebrew
+    if [[ "$OS" == "macos" ]] && command -v brew &> /dev/null; then
+        echo "Detected Homebrew. Installing bitcoin-core via brew..."
+        brew install bitcoin-core || {
+            echo -e "${YELLOW}brew install failed. Please install manually:${NC}"
+            echo "See: https://bitcoin.org/en/download"
+            return 1
+        }
+        echo -e "${GREEN}✓ Bitcoin Core installed via brew${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}No suitable package-manager fallback found. Please install Bitcoin Core manually:${NC}"
+    echo "  https://bitcoin.org/en/download"
+    return 1
+}
+
 # Download and install Bitcoin Core
 case $OS in
     linux)
-        echo "Downloading Bitcoin Core 26.0 (x86_64-linux)..."
+        echo "Downloading Bitcoin Core ${VERSION} (x86_64-linux)..."
 
         # Create temp directory
         TMPDIR=$(mktemp -d)
         cd "$TMPDIR"
 
-        # Download
+        # Build download URL (allow overriding arch if needed later)
+        DOWNLOAD_URL="https://bitcoin.org/bin/bitcoin-core-${VERSION}/bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
+
+        # Download (gracefully handle 404 / failure and fall back to package manager)
+        DL_OK=0
         if command -v curl &> /dev/null; then
-            curl -fsSL https://bitcoin.org/bin/bitcoin-core-26.0/bitcoin-26.0-x86_64-linux-gnu.tar.gz -o bitcoin.tar.gz
+            if curl -fSL "$DOWNLOAD_URL" -o bitcoin.tar.gz; then
+                DL_OK=1
+            else
+                echo -e "${YELLOW}Download from $DOWNLOAD_URL failed.${NC}"
+            fi
         elif command -v wget &> /dev/null; then
-            wget -q https://bitcoin.org/bin/bitcoin-core-26.0/bitcoin-26.0-x86_64-linux-gnu.tar.gz -O bitcoin.tar.gz
+            if wget -q "$DOWNLOAD_URL" -O bitcoin.tar.gz; then
+                DL_OK=1
+            else
+                echo -e "${YELLOW}Download from $DOWNLOAD_URL failed.${NC}"
+            fi
         else
-            echo -e "${RED}Neither curl nor wget found. Please install one of them.${NC}"
-            exit 1
+            echo -e "${RED}Neither curl nor wget found. Will try package-manager fallback.${NC}"
+        fi
+
+        if [ "$DL_OK" -ne 1 ]; then
+            # cleanup temp dir before fallback attempt
+            cd - >/dev/null 2>&1 || true
+            rm -rf "$TMPDIR"
+            if attempt_package_install; then
+                exit 0
+            else
+                echo -e "${RED}Automatic installation failed. Exiting.${NC}"
+                exit 1
+            fi
         fi
 
         # Extract
@@ -49,7 +116,7 @@ case $OS in
 
         # Install
         echo "Installing Bitcoin Core to /usr/local/bin..."
-        sudo install -m 0755 -o root -g root -t /usr/local/bin bitcoin-26.0/bin/*
+        sudo install -m 0755 -o root -g root -t /usr/local/bin bitcoin-${VERSION}/bin/*
 
         # Cleanup
         cd -
