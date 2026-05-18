@@ -161,6 +161,16 @@ for w in alice bob charlie dave; do
 done
 ```
 
+### Cleanly reset regtest blockchain and wallets
+```bash
+# Stop bitcoind and delete regtest chain state / wallets
+chmod +x deploy/cleanup_bitcoin_regtest.sh
+./deploy/cleanup_bitcoin_regtest.sh --yes
+
+# To also remove bitcoin.conf:
+./deploy/cleanup_bitcoin_regtest.sh --yes --remove-config
+```
+
 ### Stop Bitcoin
 ```bash
 bitcoin-cli -regtest stop

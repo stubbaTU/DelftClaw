@@ -135,6 +135,47 @@ btc_wait() {
     done
 }
 
+wallet_is_loaded() {
+    local wallet_name="$1"
+    btc listwallets 2>/dev/null | grep -q "\"$wallet_name\""
+}
+
+wallet_disk_path() {
+    local wallet_name="$1"
+    local new_path="$BITCOIN_DATA/$REGTEST_CHAIN/wallets/$wallet_name"
+    local legacy_path="$BITCOIN_DATA/$REGTEST_CHAIN/$wallet_name"
+
+    if [ -d "$new_path" ]; then
+        printf '%s\n' "$new_path"
+    elif [ -d "$legacy_path" ]; then
+        printf '%s\n' "$legacy_path"
+    fi
+}
+
+ensure_wallet() {
+    local wallet_name="$1"
+    local wallet_path
+
+    if wallet_is_loaded "$wallet_name"; then
+        echo "  ✓ Wallet '$wallet_name' already loaded"
+        return 0
+    fi
+
+    wallet_path="$(wallet_disk_path "$wallet_name" || true)"
+    if [ -n "$wallet_path" ]; then
+        if btc loadwallet "$wallet_path" >/dev/null 2>&1; then
+            echo "  ✓ Loaded existing wallet '$wallet_name'"
+            return 0
+        fi
+
+        echo "[!] Found existing wallet data for '$wallet_name' at '$wallet_path', but loading failed" >&2
+        return 1
+    fi
+
+    btc createwallet "$wallet_name" >/dev/null
+    echo "  ✓ Created wallet '$wallet_name'"
+}
+
 # Start bitcoind in regtest mode (background)
 echo "[*] Starting bitcoind in -regtest mode..."
 bitcoind -datadir="$BITCOIN_DATA" -regtest -daemon
@@ -156,15 +197,7 @@ done
 # Create named wallets for demo agents
 echo "[*] Creating agent wallets..."
 for agent in alice bob charlie dave; do
-    if btc listwallets 2>/dev/null | grep -q "\"$agent\""; then
-        echo "  ✓ Wallet '$agent' already exists"
-    elif [ -d "$BITCOIN_DATA/$REGTEST_CHAIN/wallets/$agent" ]; then
-        btc loadwallet "$agent" >/dev/null
-        echo "  ✓ Loaded existing wallet '$agent'"
-    else
-        btc createwallet "$agent" >/dev/null
-        echo "  ✓ Created wallet '$agent'"
-    fi
+    ensure_wallet "$agent"
 done
 
 # Get current block count

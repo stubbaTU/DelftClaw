@@ -21,6 +21,7 @@ to each agent.
 import asyncio
 import json
 import logging
+import os
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
@@ -33,6 +34,36 @@ from agent.bitcoin_rpc import RegtestClient, RPCError
 
 logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(__name__)
+
+
+def _wallet_path_candidates(client: RegtestClient, wallet_name: str) -> list[Path]:
+    """Return wallet directory candidates on disk, newest layout first."""
+    candidates: list[Path] = []
+
+    if client.datadir:
+        base = Path(client.datadir).expanduser()
+        candidates.extend([
+            base / "regtest" / "wallets" / wallet_name,
+            base / "regtest" / wallet_name,
+        ])
+
+    for env_name in ("BITCOIN_DATA", "BITCOIN_DATADIR", "BITCOIN_DATA_DIR", "OPENCLAW_BITCOIN_DATA"):
+        raw = os.getenv(env_name)
+        if raw:
+            base = Path(raw).expanduser()
+            candidates.extend([
+                base / "regtest" / "wallets" / wallet_name,
+                base / "regtest" / wallet_name,
+            ])
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
 
 
 async def ensure_wallet_exists(
@@ -51,14 +82,23 @@ async def ensure_wallet_exists(
         Dict with wallet_name, address, balance_sat
     """
     try:
-        # Try to load the wallet if it already exists
+        # Try to load the wallet if it already exists.
+        # Bitcoin Core has used both <datadir>/regtest/wallets/<name> and older
+        # <datadir>/regtest/<name> layouts, so try loadwallet before creating.
         try:
             await client._call_rpc("loadwallet", [wallet_name])
             _logger.info(f"Loaded existing wallet: {wallet_name}")
         except RPCError:
-            # Wallet doesn't exist, create it
-            await client._call_rpc("createwallet", [wallet_name])
-            _logger.info(f"Created new wallet: {wallet_name}")
+            for candidate in _wallet_path_candidates(client, wallet_name):
+                if not candidate.exists():
+                    continue
+                await client._call_rpc("loadwallet", [str(candidate)])
+                _logger.info(f"Loaded existing wallet from path: {candidate}")
+                break
+            else:
+                # Wallet doesn't exist, create it.
+                await client._call_rpc("createwallet", [wallet_name])
+                _logger.info(f"Created new wallet: {wallet_name}")
 
         # Get wallet info
         client.wallet_name = wallet_name
@@ -146,6 +186,7 @@ async def initialize_regtest_wallets(
     rpc_url: str = "http://127.0.0.1:18443",
     initial_balance_sat: int = 500_000,
     output_path: str | None = None,
+    datadir: str | None = None,
 ) -> dict[str, Any]:
     """Initialize Regtest wallets for all agents.
 
@@ -154,11 +195,12 @@ async def initialize_regtest_wallets(
         rpc_url: Bitcoin RPC endpoint
         initial_balance_sat: Target balance per agent
         output_path: Path to write config JSON to
+        datadir: Bitcoin data directory used to resolve legacy wallet paths
 
     Returns:
         Config dict with wallet info and RPC details
     """
-    client = RegtestClient(rpc_url)
+    client = RegtestClient(rpc_url, datadir=datadir)
 
     # Get block count and check connectivity
     try:
@@ -233,6 +275,11 @@ def main() -> int:
         help="Path to write config JSON to",
     )
     parser.add_argument(
+        "--datadir",
+        default=os.getenv("BITCOIN_DATA") or os.getenv("BITCOIN_DATADIR"),
+        help="Bitcoin data directory used to resolve wallet paths",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Verbose output",
@@ -249,6 +296,7 @@ def main() -> int:
             rpc_url=args.rpc_url,
             initial_balance_sat=args.initial_balance,
             output_path=args.output,
+            datadir=args.datadir,
         ))
 
         # Print summary

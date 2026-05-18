@@ -107,6 +107,8 @@ What this script does:
 - Mines enough blocks for coinbase rewards to mature and become spendable
 - Outputs wallet addresses to stdout
 
+If you need a completely fresh regtest state, run `deploy/cleanup_bitcoin_regtest.sh --yes` first to stop Bitcoin Core and remove the `regtest/` chain data and wallets.
+
 **Expected output:**
 ```
 [*] Bitcoin config written to /home/user/.bitcoin/bitcoin.conf
