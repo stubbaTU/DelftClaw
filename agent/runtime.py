@@ -119,6 +119,13 @@ class OpenClawAgent:
         self._pull_stop_event: Optional[asyncio.Event] = None
         self._pull_transport_handle: Any = None
 
+        # Memoised ``CommunityState`` keyed by the union of chain heads
+        # (own log + per-source peer logs). ``None`` = no cached state
+        # yet. Invalidated implicitly when any head advances. Cheap
+        # because head lookup is O(1) after the signed-log + peer-log
+        # head caches landed.
+        self._community_state_cache: tuple[Any, Any] | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -161,7 +168,14 @@ class OpenClawAgent:
             wallet_address=self.wallet.address(),
             community_join_callback=self._handle_community_join,
         )
-        self._registry = OverlayRegistry(self._ipv8, self.llm)
+        # Persist LLM-generated overlay sources under the agent's save
+        # dir so a watchdog restart doesn't re-pay the compiler-LLM
+        # round-trip for overlays we've already seen. One file per
+        # (canonical_md_sha1, model_id) pair.
+        compile_cache = self.config.save_dir / "overlay_compile_cache"
+        self._registry = OverlayRegistry(
+            self._ipv8, self.llm, cache_dir=compile_cache,
+        )
 
         # Phase 6: start the pull loop iff peer URLs were declared.
         # Empty list (the default) → no background task; pure read-only
@@ -443,11 +457,32 @@ class OpenClawAgent:
 
         Returns None when no manifest has been injected yet (an agent
         with no network has no community to score).
+
+        Memoised on (own_log_head, sorted peer-log heads): every call
+        between appends returns the cached state without re-reading
+        any file. Invalidated whenever any head advances — replay then
+        re-runs from disk.
         """
         if self._manifest is None:
             return None
+
+        # Build the cheap cache key. ``latest_hash_for`` is O(1) after
+        # the first read of each source file.
+        own_head = self.community_log.latest_hash()
+        peer_heads = tuple(sorted(
+            (sid, self.peer_log.latest_hash_for(sid))
+            for sid in self.peer_log.list_sources()
+        ))
+        key = (own_head, peer_heads)
+
+        cached = self._community_state_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
         from agent.community_state import replay_community
-        return replay_community(self._manifest, self.all_community_entries())
+        state = replay_community(self._manifest, self.all_community_entries())
+        self._community_state_cache = (key, state)
+        return state
 
     # ------------------------------------------------------------------
     # Community-join admission (Phase 5 — gatekeeper side)

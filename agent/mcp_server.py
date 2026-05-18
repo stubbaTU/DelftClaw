@@ -1,12 +1,20 @@
 """FastMCP streamable-HTTP server wrapping the agent's tool surface.
 
-The actual OpenClaw chat session is the reasoning LLM. This server exposes
-``OpenClawAgent``'s 16 tools (v5.1) so OpenClaw can call them over the wire
-— same deployment shape as the colleague's security gateway, but the tools
-are the communication/network surface (peers, wallet, overlays, manifests,
-torrents) instead of the privilege/accountability surface.
+Single source of truth: ``agent.tools.build_tools(agent)`` produces the
+``ToolRegistry`` used by every other call path (the in-process loop in
+``agent/loop.py`` and now this MCP server). We register every entry of
+that registry verbatim — no hand-translation, no surface drift.
 
-There are now **two LLMs** in the picture, and they do not overlap:
+Previously this module re-declared each tool by hand and silently
+dropped the v5.2 community + comms additions (``community_join_via_peer``,
+``wallet_send``, ``community_treasury_balance``, ``community_member_count``,
+``community_log_list_recent``, ``seedbox_purchase_propose``,
+``seedbox_provisioned``, ``overlay_publish``). Driving the agent over
+MCP without those tools made the LLM unable to actually trigger any
+wire-side admission flow, even when the snapshot said it should. The
+collapse onto ``build_tools`` closes that gap by construction.
+
+There are still **two LLMs** in the picture, and they do not overlap:
 
   - **OpenClaw's LLM** (whatever model OpenClaw is configured with) —
     the agent's brain. Decides *which* tool to call. Talks to this
@@ -22,33 +30,212 @@ Boot via ``python -m agent ... mcp --mcp-host 0.0.0.0 --mcp-port 8765``.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+import functools
+import json
+import logging
+import os
+import time
+from typing import Any, Callable
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context
+from fastmcp.tools.tool import Tool as FastMCPTool
 
 from agent.runtime import OpenClawAgent
-from agent.tools import _resolve_peer  # type: ignore[attr-defined]
-from communication.community import overlay_id
-from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
+from agent.tools import build_tools
+
+
+_tool_logger = logging.getLogger("delftclaw.agent.tools")
+
+
+# ---------------------------------------------------------------------------
+# Per-session tool-call budget
+# ---------------------------------------------------------------------------
+#
+# OpenClaw + Haiku ignore the HARD RULE in the turn prompt and routinely
+# fire 7-8 tool calls per MCP session (== one watchdog turn). Each one
+# costs a Haiku round-trip, blows through the Anthropic Tier-1 token
+# budget, and stretches the watchdog turn lock past a minute.
+#
+# We enforce one-tool-per-turn at the MCP layer instead. The first call
+# in a session runs normally; subsequent calls short-circuit with a
+# ``tool_budget_exhausted`` error that tells the model exactly what to
+# do next. Soft enforcement — the model can still ignore the error and
+# call again, but every extra call returns the same error so the cost
+# is bounded to "openclaw gives up and produces text."
+#
+# Budget keyed by FastMCP's per-session id. ``MCP_TOOL_BUDGET_PER_SESSION``
+# env override exists so a turn that genuinely needs multiple tools
+# (e.g. ``overlay_fetch_and_load`` THEN ``overlay_invoke``) can be
+# unlocked from scenario.yaml without a code change.
+
+DEFAULT_TOOL_BUDGET_PER_SESSION = 1
+
+
+def _budget_per_session() -> int:
+    try:
+        n = int(os.environ.get("MCP_TOOL_BUDGET_PER_SESSION", DEFAULT_TOOL_BUDGET_PER_SESSION))
+    except (TypeError, ValueError):
+        return DEFAULT_TOOL_BUDGET_PER_SESSION
+    return max(1, n)
+
+
+# Read-only / introspection tools that DO NOT count toward the per-session
+# budget. The point of the budget is to stop the LLM from emitting
+# multiple state-changing actions per turn (donate, send, invoke, ...).
+# Letting it freely query state is exactly the pattern we want — fetch
+# the snapshot, decide, do one thing. It also lets the watchdog's
+# ``deploy.mcp_snapshot.collect_state_via_mcp`` issue its 6 sequential
+# introspection calls inside a single MCP session without tripping the
+# gate (the watchdog snapshot is a SEPARATE caller from openclaw and
+# should not consume the LLM's budget at all).
+_BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
+    # local-node introspection
+    "peers_list",
+    "wallet_address",
+    "wallet_balance",
+    # community-state reads (replay over signed log + peer log)
+    "community_treasury_balance",
+    "community_member_count",
+    "community_log_list_recent",
+    # overlay metadata reads
+    "overlays_list",
+    "overlay_describe",
+    # torrent / bittorrent reads
+    "torrent_stats",
+})
+
+
+# Counter: session_id -> tool calls already served this session. Only
+# ``write`` tools (anything not in ``_BUDGET_FREE_TOOLS``) increment it.
+# FastMCP's session manager terminates the underlying transport ~30s
+# after the last call, so leaks are bounded even without explicit cleanup.
+_SESSION_TOOL_COUNT: dict[str, int] = {}
+
+
+def _session_id_or_global() -> str:
+    """Return the current MCP session id, or ``"__global__"`` as a fallback.
+
+    FastMCP's ``get_context()`` raises outside a request scope; this
+    happens in tests that invoke ``add_tool``'d functions directly. The
+    fallback lets the same wrapper be used in-process without surprise.
+    """
+    try:
+        return get_context().session_id or "__global__"
+    except Exception:
+        return "__global__"
+
+
+def _short(value: Any, n: int = 80) -> str:
+    """Compact one-line render for the TOOL audit log."""
+    try:
+        s = json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        s = str(value)
+    return s if len(s) <= n else (s[: n - 1] + "…")
+
+
+def _audit_wrap(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return an async wrapper around ``fn`` that emits the same TOOL
+    log lines ``ToolRegistry.dispatch`` does for the in-process path,
+    and enforces the per-session tool-call budget.
+
+    FastMCP introspects the wrapped function's signature for its JSON
+    schema, so ``functools.wraps`` is load-bearing — it preserves the
+    parameter annotations FastMCP needs. Errors are caught and returned
+    as ``{"error": ...}`` to match the in-process dispatch contract,
+    so a buggy tool surfaces in the MCP response payload rather than
+    crashing the streamable-HTTP session.
+    """
+    is_free = name in _BUDGET_FREE_TOOLS
+
+    @functools.wraps(fn)
+    async def wrapper(**kwargs: Any) -> Any:
+        budget = _budget_per_session()
+        session_id = _session_id_or_global()
+        served = _SESSION_TOOL_COUNT.get(session_id, 0)
+
+        # Read-only tools (peers_list, wallet_balance, *_list, etc.)
+        # bypass the budget entirely. They don't drive LLM state changes
+        # and the watchdog snapshot legitimately needs to call several
+        # of them inside one MCP session every tick.
+        if not is_free and served >= budget:
+            _tool_logger.warning(
+                "TOOL skip name=%s reason=budget session=%s served=%d budget=%d",
+                name, session_id[:8], served, budget,
+            )
+            # ``ToolError`` is FastMCP's way to surface a tool-side
+            # failure to the model without violating the declared
+            # output_schema (the LLM-driven tools have typed returns
+            # like ``int`` for wallet_balance; an envelope dict would
+            # be rejected by the MCP client's schema validator).
+            raise ToolError(
+                f"tool_budget_exhausted: you have already used your "
+                f"{budget} state-changing tool call this turn. STOP calling "
+                "tools and produce your final assistant message now — the "
+                "harness will wake you again with a fresh budget on the "
+                "next tick. (Read-only tools like peers_list / wallet_balance "
+                "/ overlays_list / community_treasury_balance are free.)"
+            )
+
+        t0 = time.monotonic()
+        kind = "free" if is_free else f"{served + 1}/{budget}"
+        _tool_logger.info(
+            "TOOL call name=%s session=%s budget=%s args=%s",
+            name, session_id[:8], kind, _short(kwargs),
+        )
+        # Only state-changing calls consume budget. Reserve the slot
+        # BEFORE awaiting so a concurrent second call racing inside the
+        # same session also trips the cap.
+        if not is_free:
+            _SESSION_TOOL_COUNT[session_id] = served + 1
+        try:
+            result = await fn(**kwargs)
+            _tool_logger.info(
+                "TOOL ok   name=%s session=%s elapsed=%.3fs result=%s",
+                name, session_id[:8], time.monotonic() - t0, _short(result),
+            )
+            return result
+        except ToolError:
+            # Let the budget guard (or any tool-emitted ToolError) flow
+            # back to the client untouched so it materialises as an
+            # ``isError=true`` MCP response instead of getting buried in
+            # a generic envelope dict that the client may schema-reject.
+            raise
+        except Exception as exc:
+            _tool_logger.warning(
+                "TOOL fail name=%s session=%s elapsed=%.3fs error=%s: %s",
+                name, session_id[:8], time.monotonic() - t0,
+                type(exc).__name__, exc,
+            )
+            # Surface unexpected tool failures the same way — the
+            # in-process ToolRegistry returns an envelope dict, but
+            # over MCP we want a typed error so the model sees a
+            # clear failure signal rather than a {"error": …} payload
+            # that fights the output_schema. The in-process path is
+            # unaffected because it never goes through this wrapper.
+            raise ToolError(f"{type(exc).__name__}: {exc}")
+
+    return wrapper
 
 
 SERVER_INSTRUCTIONS = """\
-DelftClaw agent tools. Use these to operate on the P2P content network:
+DelftClaw agent tools. Use these to operate on the P2P content network.
 
-  - peers_list / wallet_* — local-node introspection + Bitcoin ops.
-  - agent_inject_manifest — load a network manifest into the runtime so
-    state.network is populated; pre-introduces every genesis peer.
-  - network_join — one-shot admission: parse manifest (or use cached),
-    fetch default overlays from a genesis peer, donate the required sats,
-    send JOIN_REQUEST. The recommended entry point when state.network is
-    set but you have not yet joined.
-  - seedbox_donate_and_join — the manual decomposition of network_join's
-    last two steps; use only if you want explicit control.
+Surface mirrors the in-process tool registry exactly — every tool the
+in-process loop can call is also callable over this MCP server. Highlights:
+
+  - peers_list / wallet_address / wallet_balance — local-node introspection.
+  - community_donate_and_join — write a signed donation_intent entry to
+    the local log. Treasury balance, member count, and threshold status
+    are already in the state snapshot under ``community`` so no extra
+    tool call is needed to read them.
+  - community_join_via_peer — END-TO-END admission: writes the entry
+    locally AND ships it to the gatekeeper over the wire. Use this once
+    a gatekeeper peer is reachable (peer_add or genesis-peer listing).
   - overlays_list — every loaded overlay's full per-message field schema
     and handler text. Read this before calling overlay_invoke.
-  - overlay_describe — canonical markdown for one overlay (use when
-    handler_text in overlays_list is ambiguous).
   - overlay_fetch_and_load — pull a descriptor from a peer by md_hash and
     compile + register it. After this returns, overlay_invoke works.
   - overlay_invoke — send a message defined by a compiled overlay.
@@ -62,336 +249,30 @@ descriptor first before trying to invoke it.
 def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> FastMCP:
     """Wrap an ``OpenClawAgent`` as a FastMCP server.
 
-    Each of the 16 tools (v5.1) is registered as a typed async function so
-    FastMCP can produce the OpenAI-style JSON schema automatically. The
-    functions close over ``agent``.
+    Iterates the in-process ``ToolRegistry`` so every tool the LLM-loop
+    can call is also exposed over MCP. Each tool's callable already
+    carries typed-async signatures, which FastMCP turns into the
+    OpenAI-style JSON schema; the operator-facing ``description`` from
+    the registry entry is forwarded verbatim.
     """
-    OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
     mcp = FastMCP(name=name, instructions=SERVER_INSTRUCTIONS)
-
-    # ---- Peers ---------------------------------------------------------
-
-    async def peers_list() -> list[dict[str, Any]]:
-        """List peers verified on any overlay this agent runs.
-
-        Returns a list of {mid_hex, address} dicts.
-        """
-        out: list[dict[str, Any]] = []
-        for p in agent.known_peers():
-            addr = list(p.addresses.values())[0] if p.addresses else None
-            out.append({"mid_hex": p.mid.hex(), "address": addr})
-        return out
-
-    mcp.add_tool(peers_list)
-
-    async def peer_add(host: str, port: int, pubkey_hex: str) -> dict[str, Any]:
-        """Introduce a peer to this agent's IPv8 network at runtime.
-
-        ``host``/``port`` is the remote peer's IPv8 UDP endpoint.
-        ``pubkey_hex`` is the serialised IPv8 public key (74 hex chars, the
-        ``ipv8_pubkey_hex`` field of the remote agent's ``info`` output).
-        The peer is added to every currently-loaded overlay's network so
-        bootstrap + protocol overlays can both reach it.
-
-        Returns ``{mid_hex, address}``.
-        """
-        peer = agent.add_peer(host, port, pubkey_hex)
-        return {
-            "mid_hex": peer.mid.hex(),
-            "address": list(peer.addresses.values())[0] if peer.addresses else None,
-        }
-
-    mcp.add_tool(peer_add)
-
-    # ---- Wallet --------------------------------------------------------
-
-    async def wallet_address() -> str:
-        """Return this agent's testnet receiving address (bech32)."""
-        return agent.wallet.address()
-
-    mcp.add_tool(wallet_address)
-
-    async def wallet_balance() -> int:
-        """Return this agent's wallet balance in satoshis (refreshes from network)."""
-        return agent.wallet.balance_sats(refresh=True)
-
-    mcp.add_tool(wallet_balance)
-
-    async def wallet_send(to_address: str, sats: int) -> str:
-        """Send satoshis to a Bitcoin address. Returns the broadcast txid (hex)."""
-        return agent.wallet.send(to_address, sats)
-
-    mcp.add_tool(wallet_send)
-
-    # ---- Seedbox admission --------------------------------------------
-
-    async def seedbox_donate_and_join(
-        gatekeeper_mid: str,
-        sats: int,
-        gatekeeper_address: str,
-    ) -> dict[str, Any]:
-        """Donate satoshis to a gatekeeper's address, then JOIN_REQUEST them.
-
-        Returns {txid, accepted}.
-        """
-        import asyncio
-        peer = _resolve_peer(agent, gatekeeper_mid)
-        txid = agent.wallet.send(gatekeeper_address, sats)
-        future = agent.seedbox.request_join(peer, bytes.fromhex(txid))
-        accepted = await asyncio.wait_for(future, timeout=60)
-        return {"txid": txid, "accepted": bool(accepted)}
-
-    mcp.add_tool(seedbox_donate_and_join)
-
-    # ---- Overlays ------------------------------------------------------
-
-    async def overlays_list() -> list[dict[str, Any]]:
-        """List compiled overlays with full per-message field schemas.
-
-        Each entry is ``{community_id_hex, name, version, description,
-        messages: [{name, msg_id, fields: [{name, encoding, description}],
-        handler_text}], errors, dependencies}``. Read this before calling
-        ``overlay_invoke`` so you know each message's field shape.
-        """
-        from protocol.registry import overlay_to_dict
-        return [
-            overlay_to_dict(agent.registry._compiled[cid])
-            for cid in agent.registry.list_loaded()
-        ]
-
-    mcp.add_tool(overlays_list)
-
-    async def overlay_describe(community_id_hex: str) -> dict[str, Any]:
-        """Return the canonical markdown of a loaded overlay.
-
-        Use when the structured ``handler_text`` in ``overlays_list`` is
-        ambiguous. Capped at 32 KiB; the ``truncated`` flag tells you
-        whether the descriptor was clipped. Returns
-        ``{"error": "no_canonical_md:python_class"}`` for overlays
-        registered via ``register_community(cls)`` — there is no
-        canonical text for a hand-written Python class.
-        """
-        try:
-            community_id = bytes.fromhex(community_id_hex)
-        except ValueError as exc:
-            return {"error": f"bad_hex:{exc}"}
-        compiled = agent.registry._compiled.get(community_id)
-        if compiled is None:
-            return {"error": f"overlay_not_loaded:{community_id_hex}"}
-        if compiled.origin == "python_class":
-            return {"error": "no_canonical_md:python_class"}
-        md_bytes = compiled.canonical_md_bytes
-        truncated = False
-        if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:
-            md_bytes = md_bytes[:OVERLAY_DESCRIBE_MAX_BYTES]
-            truncated = True
-        return {
-            "community_id_hex": community_id_hex,
-            "md_text": md_bytes.decode("utf-8", errors="replace"),
-            "truncated": truncated,
-            "size_bytes": len(compiled.canonical_md_bytes),
-        }
-
-    mcp.add_tool(overlay_describe)
-
-    async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
-        """Ask a peer for an overlay descriptor by md_hash, compile + register it locally.
-
-        Returns {community_id_hex, loaded}.
-        """
-        import asyncio
-        peer = _resolve_peer(agent, peer_mid)
-        md_hash = bytes.fromhex(md_hash_hex)
-        future = agent.seedbox.fetch_overlay(peer, md_hash)
-        md_bytes = await asyncio.wait_for(future, timeout=10)
-        instance = agent.registry.load(md_bytes.decode("utf-8"))
-        return {"community_id_hex": instance.community_id.hex(), "loaded": True}
-
-    mcp.add_tool(overlay_fetch_and_load)
-
-    async def overlay_publish(md_text: str) -> str:
-        """Publish (serve + locally load) a markdown overlay descriptor.
-
-        Returns the 20-byte md_hash as hex.
-        """
-        md_hash = agent.seedbox.publish_overlay(md_text)
-        agent.registry.load(md_text)
-        return md_hash.hex()
-
-    mcp.add_tool(overlay_publish)
-
-    async def overlay_invoke(
-        community_id_hex: str,
-        message_name: str,
-        peer_mid: str,
-        fields: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Send a message defined by a compiled overlay to a peer.
-
-        ``fields`` maps field_name -> value (str / int / list / dict).
-        """
-        community_id = bytes.fromhex(community_id_hex)
-        instance = agent.registry.get(community_id)
-        if instance is None:
-            return {"error": f"overlay_not_loaded:{community_id_hex}"}
-        compiled = agent.registry._compiled[community_id]
-        if message_name not in compiled.payload_classes:
-            return {"error": f"unknown_message:{message_name}"}
-        payload_cls = compiled.payload_classes[message_name]
-        coerced = [_coerce_field_value(v) for v in fields.values()]
-        peer = _resolve_peer(agent, peer_mid)
-        instance.ez_send(peer, payload_cls(*coerced))
-        return {"sent": True}
-
-    mcp.add_tool(overlay_invoke)
-
-    # ---- Network manifest ----------------------------------------------
-
-    async def agent_inject_manifest(md_text: str) -> dict[str, Any]:
-        """Parse + cache a network manifest into this agent's runtime.
-
-        Pre-introduces every genesis peer (skipping self). Idempotent on
-        ``network_id``. If this agent is named as a genesis peer, the
-        manifest is also published into the bootstrap community so future
-        joiners can fetch it via MANIFEST_REQUEST.
-        """
-        from protocol.manifest import ManifestParseError
-        try:
-            manifest = agent.load_manifest(md_text)
-        except ManifestParseError as exc:
-            return {"error": f"manifest_parse_failed: {exc}"}
-        return {
-            "network_id_hex": manifest.network_id.hex(),
-            "name": manifest.identity.get("name", ""),
-            "genesis_peers": len(manifest.genesis_peers),
-            "default_overlays": list(manifest.default_overlays),
-        }
-
-    mcp.add_tool(agent_inject_manifest)
-
-    async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
-        """Join the network end-to-end.
-
-        Steps inside the tool:
-          1. Parse the provided manifest (or use the cached one).
-          2. Pre-introduce every genesis peer (skipping self).
-          3. Fetch + compile + register every default overlay from the
-             first reachable genesis peer.
-          4. ``wallet.send(gatekeeper_address, min_sats)`` — broadcast
-             the donation.
-          5. ``request_join(primary_peer, txid)`` and await the decision.
-
-        Returns ``{network_id_hex, accepted, overlays_loaded, overlay_errors,
-        txid}``. If any stage fails, an ``error`` key surfaces the cause.
-        """
-        import asyncio
-        from protocol.manifest import ManifestParseError
-
-        if manifest_md_text is not None:
-            try:
-                manifest = agent.load_manifest(manifest_md_text)
-            except ManifestParseError as exc:
-                return {"error": f"manifest_parse_failed: {exc}"}
-        else:
-            manifest = agent.network_manifest
-            if manifest is None:
-                return {"error": "no_manifest_loaded"}
-
-        genesis_pubkey_set = {gp.pubkey_hex.lower() for gp in manifest.genesis_peers}
-        genesis_peers = [
-            p for p in agent.known_peers()
-            if p.public_key.key_to_bin().hex().lower() in genesis_pubkey_set
-        ]
-        if not genesis_peers:
-            return {
-                "error": "no_genesis_peers_reachable",
-                "network_id_hex": manifest.network_id.hex(),
-            }
-        primary = genesis_peers[0]
-
-        overlays_loaded: list[str] = []
-        overlay_errors: list[dict[str, str]] = []
-        for h_hex in manifest.default_overlays:
-            h = bytes.fromhex(h_hex)
-            if agent.registry.get(h) is not None:
-                overlays_loaded.append(h_hex)
-                continue
-            try:
-                fut = agent.seedbox.fetch_overlay(primary, h)
-                md_bytes = await asyncio.wait_for(fut, timeout=10)
-                agent.registry.load(md_bytes.decode("utf-8"))
-                overlays_loaded.append(h_hex)
-            except Exception as exc:
-                overlay_errors.append({"sha1": h_hex, "error": str(exc)})
-
-        try:
-            txid = agent.wallet.send(
-                manifest.admission.gatekeeper_address,
-                manifest.admission.min_sats,
+    registry = build_tools(agent)
+    for tool in registry._tools.values():
+        # Wrap each registry callable so MCP-dispatched calls produce
+        # the same ``TOOL call name=… args=…`` / ``TOOL ok …`` /
+        # ``TOOL fail …`` audit lines that ``ToolRegistry.dispatch``
+        # emits for the in-process path. Without the shim the MCP route
+        # silently bypasses ``dispatch`` and the operator loses the
+        # audit trail — the previous symptom was "0 tool calls in
+        # journalctl" even though IPv8 wire traffic proved tools were
+        # actually firing.
+        mcp.add_tool(
+            FastMCPTool.from_function(
+                _audit_wrap(tool.name, tool.fn),
+                name=tool.name,
+                description=tool.description,
             )
-        except Exception as exc:
-            return {
-                "error": f"donation_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-            }
-
-        try:
-            fut = agent.seedbox.request_join(primary, bytes.fromhex(txid))
-            accepted = await asyncio.wait_for(fut, timeout=60)
-        except Exception as exc:
-            return {
-                "error": f"join_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-                "txid": txid,
-            }
-
-        return {
-            "network_id_hex": manifest.network_id.hex(),
-            "accepted": bool(accepted),
-            "overlays_loaded": overlays_loaded,
-            "overlay_errors": overlay_errors,
-            "txid": txid,
-        }
-
-    mcp.add_tool(network_join)
-
-    # ---- BitTorrent ---------------------------------------------------
-
-    async def torrent_seed(path: str) -> str:
-        """Begin seeding a local file. Returns the resulting magnet URI."""
-        return agent.bittorrent.seed(Path(path))
-
-    mcp.add_tool(torrent_seed)
-
-    async def torrent_fetch(magnet_uri: str, timeout_s: float = 600.0) -> str:
-        """Download a magnet URI to local disk; returns the saved path."""
-        import asyncio
-        future = agent.bittorrent.add_magnet(magnet_uri)
-        path = await asyncio.wait_for(future, timeout=timeout_s)
-        return str(path)
-
-    mcp.add_tool(torrent_fetch)
-
-    async def torrent_stats() -> list[dict[str, Any]]:
-        """Snapshot of all currently-known torrents (downloads + seeds)."""
-        return [
-            {
-                "magnet": t.magnet,
-                "name": t.name,
-                "progress": t.progress,
-                "seeding": t.seeding,
-                "save_path": str(t.save_path) if t.save_path else None,
-                "peers": t.peers,
-            }
-            for t in agent.bittorrent.stats()
-        ]
-
-    mcp.add_tool(torrent_stats)
-
+        )
     return mcp
 
 

@@ -60,6 +60,14 @@ class PeerLog:
         # should always pass the receiver's identity hash.
         self._own_id = own_id
         self._lock = threading.Lock()
+        # Per-source dedup index. ``None`` sentinel = file not yet
+        # scanned; first ``_has_entry_hash`` for a source lazy-fills
+        # by scanning the jsonl once, after which membership is O(1).
+        self._seen: dict[str, set[str] | None] = {}
+        # Per-source tail-hash cache. Mirrors ``SignedAppendOnlyLog``'s
+        # ``_latest_hash``; consumed by ``community_state`` memoisation.
+        # ``None`` = not yet read (or source has no entries).
+        self._latest_hash: dict[str, str | None] = {}
 
     # ------------------------------------------------------------------
     # Write path
@@ -116,10 +124,16 @@ class PeerLog:
         source_file = self._dir / f"{source_id}.jsonl"
 
         with self._lock:
-            if self._has_entry_hash(source_file, entry_hash):
+            if self._has_entry_hash(source_file, source_id, entry_hash):
                 return False, source_id, [], True
 
             self._append_line(source_file, entry)
+            # Update both per-source caches under the same lock that
+            # serialised the write. ``setdefault`` handles the
+            # never-scanned case (we know the file is empty-except-this
+            # because ``_has_entry_hash`` already populated the set).
+            self._seen.setdefault(source_id, set()).add(entry_hash)
+            self._latest_hash[source_id] = entry_hash
 
         _logger.debug(
             "peer_log.accept",
@@ -129,23 +143,50 @@ class PeerLog:
         )
         return True, source_id, [], False
 
-    @staticmethod
-    def _has_entry_hash(source_file: Path, entry_hash: str) -> bool:
-        """Linear scan of the per-source file for an existing entry_hash."""
-        if not source_file.exists():
-            return False
-        with open(source_file, "r", encoding="utf-8") as handle:
-            for raw in handle:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    existing = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if existing.get("entry_hash") == entry_hash:
-                    return True
-        return False
+    def _has_entry_hash(
+        self, source_file: Path, source_id: str, entry_hash: str,
+    ) -> bool:
+        """O(1) dedup check after first scan of the source file."""
+        seen = self._seen.get(source_id)
+        if seen is None:
+            # First touch for this source: scan once and populate both
+            # the seen-set and the tail-hash cache.
+            seen = set()
+            tail: str | None = None
+            if source_file.exists():
+                with open(source_file, "r", encoding="utf-8") as handle:
+                    for raw in handle:
+                        line = raw.strip()
+                        if not line:
+                            continue
+                        try:
+                            existing = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        h = existing.get("entry_hash")
+                        if isinstance(h, str):
+                            seen.add(h)
+                            tail = h
+            self._seen[source_id] = seen
+            self._latest_hash[source_id] = tail
+        return entry_hash in seen
+
+    def latest_hash_for(self, source_id: str) -> str | None:
+        """Tail entry_hash of ``<dir>/<source_id>.jsonl``, or ``None`` if empty.
+
+        O(1) after first call thanks to the cache populated by
+        ``_has_entry_hash``. Reads the file on the very first call for
+        a never-seen source. Used by ``community_state`` memoisation
+        to detect when a peer chain has advanced.
+        """
+        if source_id in self._latest_hash:
+            return self._latest_hash[source_id]
+        # Force a scan via _has_entry_hash with a sentinel that cannot
+        # collide with a real sha256 hex digest, populating the caches
+        # as a side effect.
+        source_file = self._dir / f"{source_id}.jsonl"
+        self._has_entry_hash(source_file, source_id, "")
+        return self._latest_hash.get(source_id)
 
     @staticmethod
     def _append_line(source_file: Path, entry: dict) -> None:

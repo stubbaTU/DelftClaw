@@ -64,8 +64,62 @@ def build_turn_prompt(
     every other prompt input is either machine-generated (state snapshot,
     history tail) or content-hashed (the network manifest, which lives
     inside the snapshot).
+
+    The leading ``ROLE`` block is the only framing the agent gets that
+    isn't operator-supplied. It exists because LLMs (especially smaller
+    chat-tuned ones) default to addressing a human user —
+    they introduce themselves, ask "how can I help?", or describe what
+    they would do rather than act. The framing tells the model up front
+    that no human is reading and the only acceptable output is a tool
+    call, which materially reduces narration on small-to-mid-sized
+    models.
     """
-    sections: list[str] = ["MISSION:", mission_text.rstrip(), ""]
+    sections: list[str] = [
+        "HARD CONSTRAINT — READ THIS FIRST:",
+        "EXACTLY ONE tool call this turn. Then STOP.",
+        "  * The MCP server enforces this. The 2nd, 3rd, … tool calls",
+        "    you make this turn will return tool_budget_exhausted and",
+        "    will NOT be executed.",
+        "  * After your one tool call returns, emit an empty assistant",
+        "    message and end the turn immediately. Do NOT plan further",
+        "    actions. Do NOT call another tool 'just in case'. Do NOT",
+        "    explain what you would do next.",
+        "  * The watchdog wakes you again with a fresh state snapshot",
+        "    on the next tick — pick the next action then, not now.",
+        "  * Every extra tool call costs provider rate-limit budget",
+        "    every other agent in this scenario also needs.",
+        "",
+        "ROLE:",
+        "You are an autonomous agent operating without human supervision.",
+        "No user is reading these messages. Do not greet, introduce",
+        "yourself, ask clarifying questions, or describe what you would",
+        "do.",
+        "",
+        "PROGRESS DISCIPLINE:",
+        "The CURRENT STATE block below already contains everything you",
+        "can observe this turn: your wallet, the network/admission",
+        "policy, the community treasury + your membership status, your",
+        "peers, the loaded protocol overlays, and your torrents. It was",
+        "collected for you. Calling a read-only tool to fetch any of",
+        "that again is NOT progress and wastes your only action.",
+        "",
+        "Your turn must MOVE THE MISSION FORWARD. If your stop",
+        "predicate is not yet satisfied, your one tool call must CHANGE",
+        "STATE — not observe it. Compare CURRENT STATE to your mission's",
+        "end goal, find the single biggest gap, and take the one action",
+        "that closes it. Re-reading state you already have is the one",
+        "thing that guarantees no progress.",
+        "",
+        "If — and only if — CURRENT STATE already satisfies your",
+        "mission's stop condition, do nothing: emit an empty assistant",
+        "message with NO tool call and end. The harness tears you down",
+        "on the next tick once your stop_predicate is satisfied. Do NOT",
+        "call a read tool as a stand-in for doing nothing.",
+        "",
+        "MISSION:",
+        mission_text.rstrip(),
+        "",
+    ]
     sections.append("CURRENT STATE:")
     sections.append("```json")
     sections.append(json.dumps(snapshot, indent=2, sort_keys=True))
@@ -78,7 +132,12 @@ def build_turn_prompt(
     else:
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
     sections.append("")
-    sections.append("Now decide what tool to call.")
+    sections.append(
+        "Reminder: exactly ONE state-CHANGING tool call this turn, then "
+        "STOP. Re-reading state you were already given is not progress "
+        "and is not an acceptable action. The MCP server rejects any "
+        "subsequent tool call in this session with tool_budget_exhausted."
+    )
     return "\n".join(sections)
 
 

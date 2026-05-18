@@ -128,6 +128,46 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
         self._identity = identity
         # Serialize concurrent appends so latest_hash + write are atomic.
         self._lock = threading.Lock()
+        # Cached chain head + the (mtime_ns, size) signature of the log
+        # file at the time the cache was filled. ``None`` = not yet
+        # populated.
+        #
+        # CROSS-PROCESS NOTE: the redteam FastAPI server
+        # (agent/cli.py:_start_redteam_server) builds a SEPARATE
+        # SignedAppendOnlyLog instance pointing at the SAME on-disk
+        # community.log as the agent runtime's instance. The runtime
+        # is the writer; the FastAPI ``GET /head`` handler is the
+        # reader. An in-memory-only cache would let the reader serve a
+        # stale head forever — which made every peer's pull loop
+        # short-circuit (``appended=0``) and silently never replicate
+        # the founder's donation_intent. Keying the cache on the file's
+        # stat signature invalidates it whenever ANY instance appends,
+        # because this is an append-only file (size strictly grows).
+        self._latest_hash: str | None = None
+        self._latest_sig: tuple[int, int] | None = None
+
+    def _log_stat_sig(self) -> tuple[int, int] | None:
+        """``(st_mtime_ns, st_size)`` of the log file, or ``None`` if absent."""
+        try:
+            st = os.stat(self.log_path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def latest_hash(self) -> str:
+        """Head lookup. O(1) + one ``os.stat`` when the file is unchanged
+        since the cache was filled; a full rescan only when the file has
+        grown (i.e. some instance — possibly another process sharing the
+        file — appended)."""
+        sig = self._log_stat_sig()
+        if self._latest_hash is not None and sig == self._latest_sig:
+            return self._latest_hash
+        latest = super().latest_hash()
+        self._latest_hash = latest
+        # Re-stat AFTER the scan so a write that lands mid-scan is not
+        # masked by a signature captured before it.
+        self._latest_sig = self._log_stat_sig()
+        return latest
 
     def append_event(
         self,
@@ -341,6 +381,13 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
             handle.write(json.dumps(entry) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # Caller holds ``self._lock``; update the cached head AND the
+        # stat signature so this (writer) instance's own subsequent
+        # ``latest_hash()`` calls stay O(1) and don't trigger a rescan
+        # on the very next read. A different instance sharing the file
+        # sees a changed signature and rescans, which is the point.
+        self._latest_hash = entry.get("entry_hash", self._latest_hash)
+        self._latest_sig = self._log_stat_sig()
 
     @staticmethod
     def _entry_hash(entry: dict) -> str:

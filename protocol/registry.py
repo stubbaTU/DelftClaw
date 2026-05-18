@@ -32,16 +32,29 @@ treats them uniformly — the ``origin`` discriminator on
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import os
 import re
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any, Optional, Type
 
 from ipv8.community import CommunitySettings
 from ipv8.messaging.lazy_payload import VariablePayload
 
-from protocol.compiler import CompiledOverlay, compile_overlay
+from protocol.compiler import (
+    CompiledOverlay,
+    canonicalize_md,
+    community_id_from_md,
+    compile_overlay,
+)
 from protocol.llm import LLMClient
+
+from shared.logging import get_logger
+
+_logger = get_logger(__name__)
 
 
 class OverlayRegistry:
@@ -52,11 +65,26 @@ class OverlayRegistry:
     registering a duplicate community.
     """
 
-    def __init__(self, ipv8: Any, llm: LLMClient) -> None:
+    def __init__(
+        self,
+        ipv8: Any,
+        llm: LLMClient,
+        cache_dir: Path | None = None,
+    ) -> None:
         self._ipv8 = ipv8
         self._llm = llm
         self._compiled: dict[bytes, CompiledOverlay] = {}
         self._instances: dict[bytes, Any] = {}
+        # On-disk cache for LLM-generated overlay source. ``None`` =
+        # disabled (matches every existing test that constructs an
+        # OverlayRegistry without this kwarg). When set, a (canonical_md,
+        # model_id) pair is keyed to a single ``.py`` file so a watchdog
+        # restart skips the Anthropic round-trip on every previously
+        # compiled overlay. Safety gates (sandbox AST + structural check
+        # + test vectors) still run on the cached source.
+        self._cache_dir: Path | None = Path(cache_dir) if cache_dir is not None else None
+        if self._cache_dir is not None:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Markdown-overlay path (v5.1 default)
@@ -66,12 +94,23 @@ class OverlayRegistry:
         """Compile + register a markdown overlay descriptor; return the live instance.
 
         On a second call with the same descriptor, returns the existing
-        instance without recompiling or re-registering.
+        instance without recompiling or re-registering. The cache check
+        runs BEFORE ``compile_overlay`` so a re-load skips the LLM
+        round-trip entirely.
         """
-        compiled = compile_overlay(md_text, self._llm)
-        cid = compiled.community_id
+        # Cheap content-hash derivation; identical canonicalisation as
+        # the one ``compile_overlay`` would do internally, so the
+        # post-compile community_id matches by construction.
+        cid = community_id_from_md(md_text)
         if cid in self._instances:
             return self._instances[cid]
+
+        compiled = self._compile_with_disk_cache(md_text)
+        if compiled.community_id != cid:
+            raise RuntimeError(
+                f"compile_overlay community_id drift: pre-derived {cid.hex()}, "
+                f"post-compile {compiled.community_id.hex()}"
+            )
 
         settings = self._build_settings()
         instance = compiled.community_class(settings)
@@ -80,6 +119,43 @@ class OverlayRegistry:
             self._ipv8.overlays.append(instance)
 
         # Outside the static IPv8 boot path no one will call started() for us.
+        if hasattr(instance, "started"):
+            instance.started()
+
+        self._compiled[cid] = compiled
+        self._instances[cid] = instance
+        return instance
+
+    async def aload(self, md_text: str) -> Any:
+        """Async sibling of ``load`` for use from coroutine call sites.
+
+        The compile step (LLM round-trip + AST whitelist + test vectors)
+        is run via ``asyncio.to_thread`` so the event loop stays
+        responsive during the multi-second LLM call. IPv8 registration
+        is dispatched on the event-loop thread — IPv8 mutates shared
+        state and is not thread-safe in this codebase.
+
+        Cache hits are O(1) on the calling task and never schedule a
+        worker thread.
+        """
+        cid = community_id_from_md(md_text)
+        if cid in self._instances:
+            return self._instances[cid]
+
+        import asyncio
+        compiled = await asyncio.to_thread(self._compile_with_disk_cache, md_text)
+        if compiled.community_id != cid:
+            raise RuntimeError(
+                f"compile_overlay community_id drift: pre-derived {cid.hex()}, "
+                f"post-compile {compiled.community_id.hex()}"
+            )
+
+        settings = self._build_settings()
+        instance = compiled.community_class(settings)
+
+        with self._ipv8.overlay_lock:
+            self._ipv8.overlays.append(instance)
+
         if hasattr(instance, "started"):
             instance.started()
 
@@ -152,6 +228,71 @@ class OverlayRegistry:
 
     def list_loaded(self) -> list[bytes]:
         return list(self._instances.keys())
+
+    # ------------------------------------------------------------------
+    # LLM-output disk cache (optional, opt-in via ``cache_dir``)
+    # ------------------------------------------------------------------
+
+    _MODEL_SLUG_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
+
+    def _cache_path_for(self, md_text: str) -> Path | None:
+        """Return ``<cache_dir>/<sha1>-<model_slug>.py`` or ``None`` if disabled."""
+        if self._cache_dir is None:
+            return None
+        canonical = canonicalize_md(md_text)
+        canon_sha1 = hashlib.sha1(canonical).hexdigest()
+        model_id = getattr(self._llm, "model_id", "unknown")
+        slug = self._MODEL_SLUG_RE.sub("_", str(model_id))
+        return self._cache_dir / f"{canon_sha1}-{slug}.py"
+
+    def _compile_with_disk_cache(self, md_text: str) -> CompiledOverlay:
+        """Compile ``md_text`` reusing cached LLM output when available.
+
+        Cache hit: ``compile_overlay`` is invoked with the cached
+        Python source, skipping the LLM round-trip. The sandbox AST
+        walk, structural-contract check, and test vectors still run —
+        they are the wire-safety boundary, not the cache.
+
+        Cache miss: ``compile_overlay`` runs as normal, then we
+        atomic-write the produced source for the next process.
+        """
+        cache_path = self._cache_path_for(md_text)
+        if cache_path is not None and cache_path.is_file():
+            try:
+                cached_source = cache_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                _logger.warning(
+                    "overlay_cache.read_failed",
+                    path=str(cache_path),
+                    error=str(exc),
+                )
+                cached_source = None
+            if cached_source:
+                _logger.debug("overlay_cache.hit", path=str(cache_path))
+                return compile_overlay(md_text, self._llm, llm_source=cached_source)
+
+        compiled = compile_overlay(md_text, self._llm)
+
+        if cache_path is not None:
+            try:
+                # Atomic write: tempfile in the same dir, then rename.
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".overlay_cache_",
+                    suffix=".py.tmp",
+                    dir=str(cache_path.parent),
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(compiled.source)
+                os.replace(tmp_name, cache_path)
+                _logger.debug("overlay_cache.write", path=str(cache_path))
+            except OSError as exc:
+                _logger.warning(
+                    "overlay_cache.write_failed",
+                    path=str(cache_path),
+                    error=str(exc),
+                )
+
+        return compiled
 
     def _build_settings(self) -> CommunitySettings:
         """Crib peer/endpoint/network from any already-loaded overlay.

@@ -30,10 +30,13 @@ ALLOWED_ROLES = ("seedbox", "seeker", "general")
 TOOL_NAMES: frozenset[str] = frozenset({
     "peers_list", "peer_add",
     "wallet_address", "wallet_balance", "wallet_send",
-    "seedbox_donate_and_join",
+    "community_donate_and_join", "community_treasury_balance",
+    "community_member_count", "community_log_list_recent",
+    "community_join_via_peer",
+    "seedbox_purchase_propose", "seedbox_provisioned",
     "overlays_list", "overlay_describe", "overlay_fetch_and_load",
     "overlay_publish", "overlay_invoke",
-    "network_join", "agent_inject_manifest",
+    "agent_inject_manifest",
     "torrent_seed", "torrent_fetch", "torrent_stats",
 })
 

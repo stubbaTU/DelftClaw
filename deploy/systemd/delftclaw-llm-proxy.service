@@ -1,0 +1,28 @@
+[Unit]
+Description=DelftClaw LLM proxy
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=delftclaw
+Group=delftclaw
+WorkingDirectory=/opt/delftclaw
+# Reads LLM_API_KEYS=key1[,key2,...] from this env file, written by
+# deploy/install_llm_proxy.sh. Same file carries LLM_PROXY_PORT and
+# LLM_PROXY_UPSTREAM (Anthropic by default).
+Environment=PYTHONPATH=/opt/delftclaw
+EnvironmentFile=/etc/delftclaw/llm.env
+ExecStart=/opt/delftclaw/venv/bin/python -m scripts.llm_proxy \
+    --host 127.0.0.1 \
+    --port ${LLM_PROXY_PORT} \
+    --upstream ${LLM_PROXY_UPSTREAM}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
