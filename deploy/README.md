@@ -100,40 +100,30 @@ make scenario VPS_HOST=other.example.com NAME=seek_cc
 
 ## Templated systemd units installed
 
-`setup_vps.sh` installs four templated units under
+`setup_vps.sh` installs two templated scenario units under
 `/etc/systemd/system/`:
 
 | Unit | What it runs |
 |---|---|
 | `delftclaw-mcp@<instance>.service` | the agent's FastMCP server for one scenario instance (e.g. `seek_cc-alice`) |
 | `delftclaw-watchdog@<instance>.service` | the autonomous tick driver paired with the matching mcp unit |
-| `delftclaw-identity-mcp@<instance>.service` | colleague's identity MCP (BIP-44 wallet, MLS, verification tools) |
-| `delftclaw-security-mcp@<instance>.service` | colleague's security MCP (gateway evidence, agentic-command surface) |
 
-All four read their per-instance env file from
+Both read their per-instance env file from
 `/etc/delftclaw/instances/<instance>.env`. `make scenario NAME=…`
-writes that env file for the scenario-runner pair; the
-identity / security pair is written by
-`deploy/vps/bootstrap_security_identity.sh` (see
-`deploy/vps/README.md`).
-
-The colleagues' non-templated gateway + seedbox-audit units are
-installed separately by `deploy/vps/install_security_identity_services.sh`
-and are independent of the four templated MCPs.
+writes that env file for each scenario agent.
 
 ## Per-host overrides (`configs/host.env`)
 
 Every developer copies `configs/host.env.example` to
 `configs/host.env` (gitignored) and edits ONLY the variables that
 differ on their machine: Tailscale GPU IP, `QWEN_BASE_URL` /
-`QWEN_MODEL`, `BTC_NETWORK`. Both `scenario_boot.py` and
-`bootstrap_security_identity.sh` read this file at boot; explicit
-process env vars on the make/bash invocation still win for one-off
-overrides.
+`QWEN_MODEL`, `BTC_NETWORK`. `scenario_boot.py` reads this file at
+boot; explicit process env vars on the make/bash invocation still win
+for one-off overrides.
 
 `configs/template.env` (also tracked) is a DIFFERENT file — it holds
-experiment knobs (gateway mode, ban threshold, run id) the colleagues'
-gateway code reads. See `configs/README.md` for the split.
+experiment knobs for standalone security tools. See `configs/README.md`
+for the split.
 
 ## Hand-written Python Community overlays (optional)
 

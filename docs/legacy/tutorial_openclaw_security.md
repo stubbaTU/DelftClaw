@@ -448,45 +448,12 @@ The tool-call and reputation counters should reflect the actions.
 
 
 
-## 9. Optional VPS Services
+## 9. Current VPS Services
 
-After the manual gateway command works, install the service templates so the
-gateway and audit loop survive SSH disconnects and restarts.
-
-Copy the templates:
-
-```bash
-sudo cp deploy/systemd/delftclaw-gateway.service.template /etc/systemd/system/delftclaw-gateway.service
-sudo cp deploy/systemd/delftclaw-seedbox-audit.service.template /etc/systemd/system/delftclaw-seedbox-audit.service
-```
-
-Edit both files and confirm paths, ports, env file name, and agent id:
-
-```bash
-sudo nano /etc/systemd/system/delftclaw-gateway.service
-sudo nano /etc/systemd/system/delftclaw-seedbox-audit.service
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now delftclaw-gateway.service
-sudo systemctl enable --now delftclaw-seedbox-audit.service
-```
-
-Check status:
-
-```bash
-sudo systemctl status delftclaw-gateway.service --no-pager
-sudo systemctl status delftclaw-seedbox-audit.service --no-pager
-```
-
-Run the pre-experiment doctor:
-
-```bash
-python3 -m security.integration.doctor --base-url http://127.0.0.1:8765 --agent-id vuk-vps-agent
-```
+The old standalone gateway and seedbox-audit service templates have been
+retired. Current demos run through `deploy.scenario_boot`, which starts
+scenario-scoped `delftclaw-mcp@...` and `delftclaw-watchdog@...` units.
+Use the operator flow in `deploy/README.md` for the maintained path.
 
 ## 10. Prepare SubQ3 Sandbox Infrastructure
 
@@ -537,7 +504,4 @@ Only use `--require-gvisor` after Docker and `runsc` are installed on the VPS.
   OpenClaw PoC node itself. If it is `false`, the gateway still works for
   Telegram/OpenClaw tool-call experiments without starting IPv8.
 
-- To run the gateway as a VPS service, copy and edit
-  `deploy/systemd/delftclaw-gateway.service.template`.
-- To run seedbox audits automatically, copy and edit
-  `deploy/systemd/delftclaw-seedbox-audit.service.template`.
+- Current VPS demos should use the scenario runner in `deploy/README.md`.
