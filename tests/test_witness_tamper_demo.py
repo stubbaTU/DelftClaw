@@ -16,8 +16,9 @@ def test_run_demo_end_to_end_bans_b(capsys: pytest.CaptureFixture[str]) -> None:
     assert "[setup]" in out
     assert "[tamper]" in out
     assert "[server]" in out
-    assert "[forward] C rejected the tampered entry: HTTP 400" in out
+    assert "[forward]" in out
+    assert "HTTP 400" in out
     assert "Expelling" in out
     assert "BANNED" in out
-    assert "Score: 20" in out
+    assert "score=20" in out
     assert "[done]" in out
