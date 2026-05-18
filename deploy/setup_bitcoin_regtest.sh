@@ -209,7 +209,7 @@ BLOCKS_NEEDED=101
 if [ "$CURRENT_BLOCKS" -lt "$BLOCKS_NEEDED" ]; then
     BLOCKS_TO_MINE=$((BLOCKS_NEEDED - CURRENT_BLOCKS))
     echo "[*] Mining $BLOCKS_TO_MINE blocks to reach maturity threshold..."
-    btc -regtest generatetoaddress "$BLOCKS_TO_MINE" "$(btc getnewaddress)" > /dev/null
+    btc generatetoaddress "$BLOCKS_TO_MINE" "$(btc -rpcwallet=alice getnewaddress)" > /dev/null
     echo "  ✓ Mined blocks, now at height $(btc getblockcount)"
 fi
 
