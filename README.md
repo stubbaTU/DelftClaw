@@ -82,10 +82,13 @@ bitcoin-cli -regtest -rpcwallet=alice getbalance
 bitcoind -regtest -daemon
 
 # Then run the same wallet + agent flow
-python deploy/init_regtest_wallets.py --agents alice bob charlie dave --initial-balance 500000
-python -m agent.example_regtest_setup --agent alice --use-regtest
+python3 deploy/init_regtest_wallets.py --agents alice bob charlie dave --initial-balance 500000
+python3 -m agent.example_regtest_setup --agent alice --use-regtest
 bitcoin-cli -regtest getblockcount
 bitcoin-cli -regtest -rpcwallet=alice getbalance
+
+#to stop bitcoind when done:
+bitcoin-cli -regtest stop
 ```
 
 Expected result: the wallet script prints a funded wallet summary, and the agent reports both synthetic and on-chain balances without RPC errors.

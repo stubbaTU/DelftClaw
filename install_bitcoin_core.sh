@@ -29,6 +29,24 @@ echo -e "${GREEN}Detected OS: $OS${NC}"
 VERSION="${1:-${BITCOIN_VERSION:-26.0}}"
 
 # helper: attempt package manager install fallback
+ensure_regtest_config() {
+    local bitcoin_conf="/root/.bitcoin/bitcoin.conf"
+
+    echo "Ensuring regtest configuration at $bitcoin_conf..."
+    sudo mkdir -p /root/.bitcoin
+
+    if sudo grep -q '^[[:space:]]*regtest=1[[:space:]]*$' "$bitcoin_conf" 2>/dev/null; then
+        echo -e "${GREEN}✓ regtest=1 already present in $bitcoin_conf${NC}"
+    else
+        if sudo test -f "$bitcoin_conf"; then
+            echo "regtest=1" | sudo tee -a "$bitcoin_conf" >/dev/null
+        else
+            printf "regtest=1\n" | sudo tee "$bitcoin_conf" >/dev/null
+        fi
+        echo -e "${GREEN}✓ Added regtest=1 to $bitcoin_conf${NC}"
+    fi
+}
+
 attempt_package_install() {
     echo "Attempting package-manager installation fallback..."
 
@@ -36,6 +54,7 @@ attempt_package_install() {
     if command -v snap &> /dev/null; then
         echo "Detected snap. Trying official bitcoin-core snap..."
         if sudo snap install bitcoin-core; then
+            ensure_regtest_config
             echo -e "${GREEN}✓ Bitcoin Core installed via snap${NC}"
             return 0
         fi
@@ -107,6 +126,7 @@ case $OS in
         # Install
         echo "Installing Bitcoin Core to /usr/local/bin..."
         sudo install -m 0755 -o root -g root -t /usr/local/bin bitcoin-${VERSION}/bin/*
+        ensure_regtest_config
 
         # Cleanup
         cd -
