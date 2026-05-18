@@ -199,7 +199,7 @@ def _overlays_section(raw: Any) -> list[dict[str, Any]]:
     for ov in raw:
         if not isinstance(ov, dict):
             continue
-        out.append({
+        entry: dict[str, Any] = {
             "community_id_hex": ov.get("community_id_hex"),
             "origin": ov.get("origin", "markdown"),
             "name": ov.get("name", ""),
@@ -217,7 +217,16 @@ def _overlays_section(raw: Any) -> list[dict[str, Any]]:
                 for m in (ov.get("messages") or [])
                 if isinstance(m, dict)
             ],
-        })
+        }
+        # Pass through anything the overlay has received from peers
+        # (e.g. SEARCH_RESPONSE hits in content_community.response_cache).
+        # This is the bridge that lets an agent which fired SEARCH on a
+        # prior turn see the result in THIS turn's prompt and then
+        # torrent_fetch it (concept step 5). Keep it verbatim — the
+        # magnet/name/size the agent needs are inside.
+        if isinstance(ov.get("received"), list) and ov["received"]:
+            entry["received"] = ov["received"]
+        out.append(entry)
     return out
 
 

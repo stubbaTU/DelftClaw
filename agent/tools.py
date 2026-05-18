@@ -545,10 +545,27 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             encodings) is present so ``overlay_invoke`` still works.
         """
         from protocol.registry import overlay_to_dict
-        return [
-            overlay_to_dict(agent.registry._compiled[cid])
-            for cid in agent.registry.list_loaded()
-        ]
+
+        out: list[dict[str, Any]] = []
+        for cid in agent.registry.list_loaded():
+            entry = overlay_to_dict(agent.registry._compiled[cid])
+            # Surface anything this overlay has RECEIVED from peers.
+            # overlay_to_dict only sees the compiled class (static
+            # schema); the live instance is where async responses land
+            # (e.g. content_community.response_cache holds SEARCH hits).
+            # Without this, an agent that fired SEARCH_REQUEST via
+            # overlay_invoke (which is fire-and-forget, returns just
+            # {"sent": true}) has NO way to ever observe the
+            # SEARCH_RESPONSE — the magnet it needs for torrent_fetch
+            # is invisible and concept step 5 (retrieve file) is
+            # structurally unreachable. Cap the list so a chatty
+            # overlay can't blow the prompt's token budget.
+            instance = agent.registry.get(cid)
+            received = getattr(instance, "response_cache", None)
+            if isinstance(received, list) and received:
+                entry["received"] = received[-20:]
+            out.append(entry)
+        return out
 
     OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
 

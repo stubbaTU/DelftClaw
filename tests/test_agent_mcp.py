@@ -297,6 +297,41 @@ async def test_mcp_client_can_publish_fetch_and_invoke_overlay(
         await asyncio.sleep(0.05)
     assert any("Creative Commons" in r["name"] for r in content_b.response_cache)
 
+    # REGRESSION (concept step 5): the SEARCH hit must be observable
+    # through the MCP surface, not just buried on the live overlay
+    # instance. overlay_invoke is fire-and-forget ({"sent": true}); if
+    # overlays_list doesn't expose response_cache, the agent that
+    # searched can NEVER learn the magnet and torrent_fetch is
+    # unreachable. Assert the tool now carries it AND that the
+    # watchdog snapshot section passes it through to the prompt.
+    async with Client(server_b) as client_b2:
+        ovs_raw = await client_b2.call_tool("overlays_list", {})
+    ovs = json.loads(ovs_raw.content[0].text)
+    content_entry = next(
+        o for o in ovs if o["community_id_hex"] == CONTENT_HASH.hex()
+    )
+    assert "received" in content_entry, (
+        "overlays_list must expose the overlay's response_cache so a "
+        "searching agent can see the SEARCH_RESPONSE"
+    )
+    assert any(
+        "Creative Commons" in r.get("name", "")
+        for r in content_entry["received"]
+    )
+
+    # The watchdog snapshot trimmer must NOT drop `received` (it trims
+    # prose-heavy fields but this is load-bearing for step 5).
+    from deploy.mcp_snapshot import _overlays_section
+    section = _overlays_section(ovs)
+    sec_entry = next(
+        o for o in section if o["community_id_hex"] == CONTENT_HASH.hex()
+    )
+    assert "received" in sec_entry
+    assert any(
+        "Creative Commons" in r.get("name", "")
+        for r in sec_entry["received"]
+    )
+
 
 # ---------------------------------------------------------------------------
 # v5.1 manifest tools (the surface scenario_boot drives over MCP)
