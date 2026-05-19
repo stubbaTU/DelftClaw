@@ -16,16 +16,18 @@ StateSnapshot = dict[str, Any]
 Predicate = Callable[[StateSnapshot], bool]
 
 
-# Track wallet balance at scenario start so ``wallet_received_sats`` is a
-# delta-based predicate. The watchdog seeds this via ``set_baseline``.
+# Track wallet balance at scenario start so wallet delta predicates can be
+# evaluated across watchdog ticks. The watchdog seeds this via ``set_baseline``.
 _baseline_wallet: dict[str, int] = {}
+_peak_wallet: dict[str, int] = {}
 
 
 def set_baseline(agent_id: str, snapshot: StateSnapshot) -> None:
-    """Record the wallet baseline so wallet_received_sats can measure deltas."""
+    """Record the wallet baseline so wallet delta predicates can measure changes."""
     sats = snapshot.get("wallet", {}).get("balance_sats")
     if isinstance(sats, int):
         _baseline_wallet[agent_id] = sats
+        _peak_wallet[agent_id] = sats
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,30 @@ def _wallet_received_sats(min_sats: int = 1) -> Predicate:
     return pred
 
 
+def _bitcoin_sent_sats(min_sats: int = 1) -> Predicate:
+    """Trigger after the wallet balance drops by ``min_sats`` from its observed peak.
+
+    Regtest senders usually mine first, so comparing only against the startup
+    baseline would miss the spend. Tracking the peak observed balance lets the
+    watchdog stop once a later tick reflects the outgoing payment plus any fee.
+    """
+    def pred(snapshot: StateSnapshot) -> bool:
+        agent_id = snapshot.get("agent", {}).get("agent_id")
+        sats = snapshot.get("wallet", {}).get("balance_sats")
+        if agent_id is None or not isinstance(sats, int):
+            return False
+        key = str(agent_id)
+        peak = _peak_wallet.get(key)
+        if peak is None:
+            peak = sats
+        if sats > peak:
+            _peak_wallet[key] = sats
+            peak = sats
+        return (peak - sats) >= min_sats
+    pred.__name__ = f"bitcoin_sent_sats_{min_sats}"
+    return pred
+
+
 # ---------------------------------------------------------------------------
 # Registry + resolver
 # ---------------------------------------------------------------------------
@@ -73,6 +99,7 @@ _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "torrent_progress_gte_1": _torrent_progress_gte_1,
     "peer_count_gte_N": _peer_count_gte_N,
     "wallet_received_sats": _wallet_received_sats,
+    "bitcoin_sent_sats": _bitcoin_sent_sats,
 }
 
 
@@ -126,7 +153,11 @@ def _looks_like_factory(obj: Any) -> bool:
     ``__name__``.
     """
     name = getattr(obj, "__name__", "")
-    return name.startswith("_peer_count_gte_N") or name.startswith("_wallet_received_sats")
+    return (
+        name.startswith("_peer_count_gte_N")
+        or name.startswith("_wallet_received_sats")
+        or name.startswith("_bitcoin_sent_sats")
+    )
 
 
 def _parse_kwargs(text: str) -> dict[str, Any]:

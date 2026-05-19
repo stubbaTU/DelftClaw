@@ -204,6 +204,7 @@ Resolved by name from `scenario.yaml`. Available (see
 - `torrent_progress_gte_1` — any torrent finished
 - `peer_count_gte_N(n=…)` — at least N peers
 - `wallet_received_sats(min_sats=…)` — balance increased by min_sats
+- `bitcoin_sent_sats(min_sats=…)` — balance dropped by min_sats from its observed peak
 
 The LLM **does not** decide it's done. The watchdog does.
 

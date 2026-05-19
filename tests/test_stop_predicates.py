@@ -2,8 +2,7 @@
 
   - resolve(spec): handles bare names, parameterised forms, rejects unknown.
   - each predicate returns True/False against a synthetic snapshot.
-  - wallet_received_sats compares against the baseline recorded by
-    ``set_baseline`` so it's a delta predicate.
+  - wallet delta predicates compare against state recorded across ticks.
 """
 
 from __future__ import annotations
@@ -103,7 +102,23 @@ def test_wallet_received_sats_without_baseline_treats_first_snapshot_as_baseline
     assert p(_snap(agent_id="brand-new", balance=999)) is False
 
 
-def test_known_predicate_names_lists_all_four():
+def test_bitcoin_sent_sats_triggers_after_drop_from_peak():
+    sp.set_baseline("sender-1", _snap(agent_id="sender-1", balance=0))
+    p = sp.resolve("bitcoin_sent_sats(min_sats=10000)")
+
+    assert p(_snap(agent_id="sender-1", balance=0)) is False
+    assert p(_snap(agent_id="sender-1", balance=5_000_000_000)) is False
+    assert p(_snap(agent_id="sender-1", balance=4_999_995_001)) is False
+    assert p(_snap(agent_id="sender-1", balance=4_999_990_000)) is True
+
+
+def test_bitcoin_sent_sats_without_peak_treats_first_snapshot_as_peak():
+    p = sp.resolve("bitcoin_sent_sats(min_sats=1)")
+    assert p(_snap(agent_id="new-sender", balance=100_000)) is False
+
+
+def test_known_predicate_names_lists_all_predicates():
     names = sp.known_predicate_names()
     assert set(names) >= {"never", "torrent_progress_gte_1",
-                          "peer_count_gte_N", "wallet_received_sats"}
+                          "peer_count_gte_N", "wallet_received_sats",
+                          "bitcoin_sent_sats"}

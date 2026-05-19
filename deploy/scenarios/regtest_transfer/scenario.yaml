@@ -32,7 +32,7 @@ agents:
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
-    stop_predicate: never
+    stop_predicate: bitcoin_sent_sats(min_sats=10000)
     initial_balance_sats: 200000
     # Keep admission in mock mode (synthetic donation txids) while still
     # enabling real on-chain regtest RPC via BITCOIN_RPC_* env vars.
@@ -45,7 +45,7 @@ agents:
     mcp_port: 18866
     publish_overlays: []
     mission_file: bob/mission.md
-    stop_predicate: never
+    stop_predicate: wallet_received_sats(min_sats=10000)
     peers:
       - alice
     initial_balance_sats: 100000

@@ -9,7 +9,7 @@ recipe. Covers:
   * Intent recipe filter: backtick-quoted tool names, ≥3-step lists.
   * Budget value ranges.
   * Stop predicate resolves via deploy.stop_predicates.
-  * Bundled seek_cc mission files actually parse.
+  * Bundled scenario mission files actually parse.
 """
 
 from __future__ import annotations
@@ -62,12 +62,14 @@ def test_parse_good_mission():
     assert m.stop_predicate == "torrent_progress_gte_1"
 
 
-def test_parse_bundled_seek_cc_missions():
+def test_parse_bundled_scenario_missions():
     """The mission.md files the repo ships parse cleanly."""
-    for agent in ("alice", "bob", "charlie", "dave"):
-        path = REPO_ROOT / "deploy" / "scenarios" / "seek_cc" / agent / "mission.md"
+    scenarios_dir = REPO_ROOT / "deploy" / "scenarios"
+    mission_paths = sorted(scenarios_dir.glob("*/*/mission.md"))
+    assert mission_paths
+    for path in mission_paths:
         m = parse_mission(path.read_text(encoding="utf-8"))
-        assert m.name == agent
+        assert m.name == path.parent.name
 
 
 # ---------------------------------------------------------------------------
