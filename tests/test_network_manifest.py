@@ -94,6 +94,15 @@ def test_parse_good_manifest_extracts_every_field():
     assert len(manifest.network_id) == 20
 
 
+def test_parse_regtest_gatekeeper_address():
+    text = GOOD_MANIFEST.replace(
+        "- gatekeeper_address: tb1qexamplexxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "- gatekeeper_address: bcrt1qexamplexxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    )
+    manifest = parse_manifest(text)
+    assert manifest.admission.gatekeeper_address.startswith("bcrt1")
+
+
 def test_parse_bundled_example_manifest():
     """The example manifest the repo ships parses cleanly."""
     text = (REPO_ROOT / "protocol" / "examples" / "delftclaw_network.md").read_text(

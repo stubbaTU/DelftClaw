@@ -176,6 +176,15 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     # ---- Wallet --------------------------------------------------------
 
     async def wallet_address() -> str:
+        # In regtest mode agent/cli.py configures the seedbox with a real
+        # on-chain address so peers and generated manifests can pay via RPC.
+        # Mock scenarios keep this equal to the synthetic dclaw1... address.
+        try:
+            advertised = agent.seedbox.wallet_address
+            if advertised:
+                return advertised
+        except Exception:
+            pass
         return agent.wallet.address()
 
     async def wallet_balance() -> int:
@@ -324,18 +333,26 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         if amount_sats > cap:
             return {"error": f"amount above cap {cap}"}
 
-        # Debit the SYNTHETIC wallet so wallet_balance + treasury stay in sync.
-        # Important: even when regtest RPC tooling is enabled, admission uses
-        # synthetic dclaw1... addresses and a synthetic txid (DonationVerifier
-        # mock mode). If we attempted an on-chain send here we'd fail address
-        # validation and/or leak real funds.
+        # Debit/broadcast according to the manifest address. Synthetic
+        # dclaw1... admission remains local demo accounting. Real Bitcoin
+        # admission addresses (bcrt1/tb1/bc1) use the RPC-backed wallet.
         try:
-            send_synth = getattr(agent.wallet, "send_synthetic", None)
-            if callable(send_synth):
-                await _maybe_await(send_synth(manifest.admission.gatekeeper_address, amount_sats))
+            gatekeeper_address = manifest.admission.gatekeeper_address
+            donation_txid: str
+            if gatekeeper_address.startswith(("bcrt1", "tb1", "bc1")):
+                send_onchain = getattr(agent.wallet, "send_onchain", None)
+                if not callable(send_onchain):
+                    return {"error": "onchain_admission_requires_regtest_wallet"}
+                donation_txid = str(await _maybe_await(send_onchain(gatekeeper_address, amount_sats)))
             else:
-                await _maybe_await(agent.wallet.send(manifest.admission.gatekeeper_address, amount_sats))
+                send_synth = getattr(agent.wallet, "send_synthetic", None)
+                if callable(send_synth):
+                    donation_txid = str(await _maybe_await(send_synth(gatekeeper_address, amount_sats)))
+                else:
+                    donation_txid = str(await _maybe_await(agent.wallet.send(gatekeeper_address, amount_sats)))
         except ValueError as exc:
+            return {"error": f"wallet_send_failed: {exc}"}
+        except Exception as exc:
             return {"error": f"wallet_send_failed: {exc}"}
 
         entry = agent.community_log.append_event(
@@ -345,11 +362,13 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             details={
                 "network_id_hex": manifest.network_id.hex(),
                 "amount_sats": amount_sats,
+                "donation_txid": donation_txid,
             },
         )
         return {
             "entry_hash": entry["entry_hash"],
             "amount_sats": amount_sats,
+            "donation_txid": donation_txid,
             "network_id_hex": manifest.network_id.hex(),
         }
 

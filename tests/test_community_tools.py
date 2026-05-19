@@ -19,6 +19,7 @@ import pytest
 import pytest_asyncio
 
 from agent import AgentConfig, OpenClawAgent, build_tools
+from agent.regtest_wallet import RegtestWallet
 from communication.bittorrent import StubBitTorrentService
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
@@ -217,6 +218,39 @@ async def test_donate_writes_intent_and_admits_self(agent):
     # Wallet debited by the same amount.
     balance = await tools.dispatch("wallet_balance", {})
     assert balance == 200_000 - 50_000
+
+
+class _FakeRegtestRPC:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, int]] = []
+
+    async def get_balance_sat(self, wallet: str | None = None) -> int:  # noqa: ARG002
+        return 10_000
+
+    async def send_to_address(
+        self,
+        to_address: str,
+        amount_sat: int,
+        wallet: str | None = None,  # noqa: ARG002
+        fee_rate_sat_per_vb: int | None = None,  # noqa: ARG002
+    ) -> str:
+        self.sent.append((to_address, amount_sat))
+        return "b" * 64
+
+
+@pytest.mark.asyncio
+async def test_donate_to_regtest_gatekeeper_broadcasts_onchain(agent):
+    rpc = _FakeRegtestRPC()
+    agent.wallet = RegtestWallet(agent.wallet, rpc_client=rpc, use_onchain=True)
+    regtest_gatekeeper = "bcrt1qexamplexxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    agent.load_manifest(MANIFEST_TEMPLATE.format(gatekeeper_address=regtest_gatekeeper))
+
+    tools = build_tools(agent)
+    result = await tools.dispatch("community_donate_and_join", {"amount_sats": 10_000})
+
+    assert "entry_hash" in result
+    assert result["donation_txid"] == "b" * 64
+    assert rpc.sent == [(regtest_gatekeeper, 10_000)]
 
 
 @pytest.mark.asyncio

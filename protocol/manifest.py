@@ -120,7 +120,8 @@ def _check_required_sections(sections: dict[str, str]) -> None:
 
 _KV_RE = re.compile(r"^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$")
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-# ``tb1``/``bc1`` are real bech32 (testnet / mainnet segwit); body uses
+# ``bcrt1``/``tb1``/``bc1`` are real bech32 (regtest / testnet / mainnet
+# segwit); body uses
 # the bech32 charset (no 1/b/i/o look-alikes).
 # ``dclaw1`` is the synthetic-wallet prefix produced by
 # ``identity.wallet.Wallet.address()`` in mock mode; the body is the
@@ -128,7 +129,7 @@ _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # and other characters bech32 forbids.
 _BECH32_RE = re.compile(
     r"^("
-    r"(tb1|bc1)[02-9ac-hj-np-z]+"      # real segwit bech32
+    r"(bcrt1|tb1|bc1)[02-9ac-hj-np-z]+"  # real segwit bech32
     r"|"
     r"dclaw1[0-9a-f]+"                  # synthetic mock-mode address
     r")$"

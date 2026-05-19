@@ -2,7 +2,7 @@
 
 Two-agent scenario that performs a **real Bitcoin Core regtest** on-chain transfer via JSON-RPC:
 
-- **bob** joins via the normal signed-log admission flow (kept in `BTC_NETWORK=mock` mode so admission stays synthetic).
+- **bob** joins via the normal signed-log admission flow, with the admission donation broadcast through Bitcoin Core regtest RPC.
 - **alice** mines regtest blocks, then sends **10,000 sats** to bob’s advertised on-chain regtest address.
 
 ## Preconditions (on the host/VPS running the scenario)
@@ -33,7 +33,26 @@ rpcport=18443
 - `agent/tools.py` conditionally exposes the real RPC tools from `agent/bitcoin_tools.py`:
   - `btc_get_balance`, `btc_get_address`, `btc_list_utxos`, `btc_send`, `btc_transaction_status`, `btc_mine_blocks`
 
-As of the current implementation, the RPC client auto-creates/loads the configured wallet (`alice` / `bob`) on first use when running against a fresh regtest datadir.
+As of the current implementation, the RPC client auto-creates/loads the configured wallet (`alice` / `bob`) on first use when running against a fresh regtest datadir. Creation/loading is automatic; funding is not.
+
+## Funding
+
+Before starting the scenario, start `bitcoind` and fund the named RPC wallets. Bob should only receive the admission minimum.
+
+```bash
+bitcoind -regtest -daemon
+bitcoin-cli -regtest ping
+
+bitcoin-cli -regtest createwallet alice 2>/dev/null || bitcoin-cli -regtest loadwallet alice
+bitcoin-cli -regtest createwallet bob 2>/dev/null || bitcoin-cli -regtest loadwallet bob
+
+ALICE_ADDR=$(bitcoin-cli -regtest -rpcwallet=alice getnewaddress)
+bitcoin-cli -regtest generatetoaddress 101 "$ALICE_ADDR"
+
+BOB_ADDR=$(bitcoin-cli -regtest -rpcwallet=bob getnewaddress)
+bitcoin-cli -regtest -rpcwallet=alice sendtoaddress "$BOB_ADDR" 0.0001
+bitcoin-cli -regtest generatetoaddress 1 "$(bitcoin-cli -regtest -rpcwallet=alice getnewaddress)"
+```
 
 ## Run
 
@@ -52,6 +71,5 @@ make stop NAME=regtest_transfer
 
 ## Notes
 
-- Admission is kept in `btc_network: mock` mode in `scenario.yaml` because `admission/donation_verifier.py` does not support `regtest` verification.
-- The *on-chain transfer* is still real regtest: it uses the `btc_*` tools and your local `bitcoind -regtest`.
+- Both Bob's admission donation and Alice's later payment use your local `bitcoind -regtest`.
 

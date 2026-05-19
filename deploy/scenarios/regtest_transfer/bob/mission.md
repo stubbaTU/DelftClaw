@@ -13,11 +13,13 @@ receive a confirmed 10,000 sat payment from alice.
 Constraints:
 - Use at most one state-changing tool call per turn.
 - Treat read-only peer and balance checks as available context for deciding what to do next.
+- Join with exactly the admission minimum: 10,000 sats.
+- Use `community_join_via_peer`; in this scenario the manifest gatekeeper address is a real regtest address, so the donation is broadcast through RPC.
 
 # Budget
 
-- max_sats_outbound: 100000
-- max_total_turns: 1
+- max_sats_outbound: 10000
+- max_total_turns: 4
 
 # Stop
 

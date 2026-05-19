@@ -4,8 +4,7 @@
 # on a local bitcoind regtest node via JSON-RPC.
 #
 # Flow (high level):
-#   1) bob joins the community (community_join_via_peer) which triggers a
-#      PEER_INTRO exchange; bob advertises a real on-chain regtest address.
+#   1) bob joins the community via an RPC-backed on-chain donation.
 #   2) alice mines blocks via regtest RPC (receives spendable coinbase).
 #   3) alice sends a portion of those sats to bob's advertised on-chain address.
 #   4) alice mines one block to confirm the transfer.
@@ -34,9 +33,7 @@ agents:
     mission_file: alice/mission.md
     stop_predicate: bitcoin_sent_sats(min_sats=10000)
     initial_balance_sats: 200000
-    # Keep admission in mock mode (synthetic donation txids) while still
-    # enabling real on-chain regtest RPC via BITCOIN_RPC_* env vars.
-    btc_network: mock
+    btc_network: regtest
     # Optional override; defaults to http://127.0.0.1:18443
     bitcoin_rpc_url: http://127.0.0.1:18443
 
@@ -48,8 +45,8 @@ agents:
     stop_predicate: wallet_received_sats(min_sats=10000)
     peers:
       - alice
-    initial_balance_sats: 100000
-    btc_network: mock
+    initial_balance_sats: 10000
+    btc_network: regtest
     bitcoin_rpc_url: http://127.0.0.1:18443
 
 

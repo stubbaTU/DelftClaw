@@ -14,11 +14,14 @@ chain.
 Constraints:
 - Prefer the real regtest Bitcoin tool family over the synthetic wallet tools.
 - Use at most one state-changing tool call per turn; read-only checks are free.
+- If your balance is zero, mine 101 blocks first so the coinbase is spendable.
+- After bob is admitted and his peer metadata contains a wallet address, send him 10,000 sats with `btc_send`.
+- After sending, mine one block with `btc_mine_blocks` to confirm the transfer.
 
 # Budget
 
 - max_sats_outbound: 200000
-- max_total_turns: 1
+- max_total_turns: 6
 
 # Stop
 
