@@ -41,20 +41,20 @@ Example two-agent flow::
     python -m agent --mnemonic 'army van defense ...' --port 8090 \\
         --publish-overlay protocol/examples/content_community.md \\
         --genesis path/to/delftclaw_network.md \\
-        --llm-base-url http://100.73.168.12:11434/v1 --llm-model qwen3.6:27b \\
+        --llm-base-url http://<llm-host>:<port>/v1 --llm-model <model-id> \\
         info
 
     # Terminal 2 — Bob joins via the manifest (no --peer flag needed,
     # the manifest's genesis peer list pre-introduces Alice):
     python -m agent --mnemonic 'abandon abandon abandon ...' --port 8091 \\
         --manifest path/to/delftclaw_network.md \\
-        --llm-base-url http://100.73.168.12:11434/v1 --llm-model qwen3.6:27b \\
+        --llm-base-url http://<llm-host>:<port>/v1 --llm-model <model-id> \\
         run --query "what files are stored on our claw network?"
 
 The ``--llm-base-url`` defaults to ``http://127.0.0.1:11434/v1`` (local
 Ollama, the dev/CI fallback). In production deployments under
 ``deploy/scenario_boot.py`` the endpoint is the supervisor's external
-GPU host reached over Tailscale (``QWEN_BASE_URL=http://100.73.168.12:11434/v1``
+GPU host reached over Tailscale (``LLM_BASE_URL=http://100.73.168.12:11434/v1``
 by default); see ``deploy/README.md``.
 """
 
@@ -651,7 +651,7 @@ def main() -> int:
 
     # LLM endpoint. The defaults point at a local Ollama (matches
     # ``deploy/watchdog.py``'s fallback). In production, scenario_boot
-    # writes ``QWEN_BASE_URL`` + ``QWEN_MODEL`` into each agent's env file
+    # writes ``LLM_BASE_URL`` + ``LLM_MODEL`` into each agent's env file
     # and the systemd unit passes them on the CLI explicitly — so these
     # defaults are only hit when invoking ``python -m agent`` by hand.
     parser.add_argument("--llm-base-url", default="http://127.0.0.1:11434/v1")

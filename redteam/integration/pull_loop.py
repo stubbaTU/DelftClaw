@@ -34,12 +34,19 @@ Algorithm decisions locked in by the test suite:
 from __future__ import annotations
 
 import asyncio
+import time
 
 from redteam.integration.peer_transport import PeerTransport
 from redteam.primitives.peer_log import PeerLog
 from shared.logging import get_logger
 
 _logger = get_logger(__name__)
+
+# Hard cap for the exponential backoff window. Matches the LLM proxy's
+# 60s cooldown — a peer that's been failing for a full minute is almost
+# certainly in a rate-limit window or down for maintenance, and faster
+# retries waste local CPU.
+_BACKOFF_MAX_S: float = 60.0
 
 
 async def pull_once(
@@ -133,9 +140,19 @@ async def run_pull_loop(
     loop for other peers.
     """
     state: dict[str, str] = dict(initial_state or {})
+    # Per-peer exponential backoff. Doubles on every transport error
+    # (cap ``_BACKOFF_MAX_S``); cleared on the next successful pull.
+    # A peer skipped due to active backoff still gets re-checked at the
+    # next interval — we just no-op past it without calling pull_once.
+    backoff: dict[str, float] = {}
+    next_attempt_mono: dict[str, float] = {}
 
     while not stop_event.is_set():
+        now_mono = time.monotonic()
         for peer_url in peer_urls:
+            if next_attempt_mono.get(peer_url, 0.0) > now_mono:
+                # Still cooling down from a prior transport error.
+                continue
             try:
                 new_last, appended, rejs = await pull_once(
                     transport=transport,
@@ -145,22 +162,32 @@ async def run_pull_loop(
                     batch=batch,
                 )
             except Exception as exc:
-                # Per-peer error policy (deliberate v1 — no backoff):
-                # log + skip-this-peer-this-iteration + DO NOT advance
-                # the cursor. This catch covers transport errors
-                # (connection refused, timeout, malformed JSON) AND the
-                # oversized-batch ``ValueError`` from peer_transport. A
-                # consistently-failing peer is therefore retried every
-                # ``interval`` forever — that's intentional. Add
-                # exponential backoff in v2 if it becomes a hot spot.
+                # Per-peer error policy: log + skip + DO NOT advance
+                # the cursor. Covers transport errors (connection
+                # refused, timeout, malformed JSON) AND the
+                # oversized-batch ``ValueError`` from peer_transport.
+                # Backoff doubles each consecutive failure capped at
+                # ``_BACKOFF_MAX_S`` so a persistently-down peer
+                # doesn't burn CPU + sockets every interval.
+                delay = min(
+                    _BACKOFF_MAX_S,
+                    max(interval, backoff.get(peer_url, interval) * 2),
+                )
+                backoff[peer_url] = delay
+                next_attempt_mono[peer_url] = time.monotonic() + delay
                 _logger.warning(
                     "pull_loop.error",
                     peer_url=peer_url,
                     error=str(exc),
                     error_type=type(exc).__name__,
+                    backoff_s=delay,
                 )
                 continue
 
+            # Success: reset backoff so the next failure restarts the
+            # doubling sequence from ``interval``.
+            backoff.pop(peer_url, None)
+            next_attempt_mono.pop(peer_url, None)
             state[peer_url] = new_last
             if appended > 0:
                 _logger.info(

@@ -9,10 +9,10 @@
 #   1.  apt: python, libsodium, build tools, ufw, curl, jq, git
 #   2.  install Ollama (CPU build) if not present  — DEV/CI fallback only.
 #       v5.1 production points the compiler-LLM at an external GPU host via
-#       QWEN_BASE_URL (an OpenAI-compatible endpoint); the local Ollama
+#       LLM_BASE_URL (an OpenAI-compatible endpoint); the local Ollama
 #       install is purely a fallback for air-gapped development and CI.
 #   3.  pull the Qwen model (qwen2.5-coder:7b by default) into the local
-#       Ollama — used only when QWEN_BASE_URL is unset.
+#       Ollama — used only when LLM_BASE_URL is unset.
 #   4.  create the `delftclaw` system user + state dirs
 #   5.  build the project venv + pip install requirements.txt
 #   6.  generate the BIP-39 seed file at /var/lib/delftclaw/seed.txt
@@ -36,7 +36,7 @@ SERVICE_USER=delftclaw
 IPV8_PORT=${IPV8_PORT:-8090}
 MCP_PORT=${MCP_PORT:-8765}
 OLLAMA_PORT=${OLLAMA_PORT:-11434}
-QWEN_MODEL=${QWEN_MODEL:-qwen2.5-coder:7b}
+LLM_MODEL=${LLM_MODEL:-qwen2.5-coder:7b}
 
 # Colour helpers.
 c_blue()  { printf '\033[1;36m[setup] %s\033[0m\n' "$*"; }
@@ -75,8 +75,8 @@ step_ollama() {
         fi
         sleep 0.5
     done
-    c_blue "ollama: pulling ${QWEN_MODEL} (skipped if cached)"
-    ollama pull "${QWEN_MODEL}"
+    c_blue "ollama: pulling ${LLM_MODEL} (skipped if cached)"
+    ollama pull "${LLM_MODEL}"
 }
 
 step_tailscale() {
@@ -232,7 +232,7 @@ Common operator commands:
 
   python -m deploy.scenario_boot seek_cc --teardown           # stop scenario
 
-Ollama : http://127.0.0.1:${OLLAMA_PORT}/v1   (${QWEN_MODEL})
+Ollama : http://127.0.0.1:${OLLAMA_PORT}/v1   (${LLM_MODEL})
 
 ==============================================================================
 EOF

@@ -1082,3 +1082,77 @@ def test_post_log_too_high_severity_rejected(test_client) -> None:
         client, "/log", {"action": "x", "details": {}, "severity": 99}
     )
     assert status == 400
+
+
+# ---------------------------------------------------------------------------
+# Regression: cross-instance / cross-process latest_hash() coherence.
+#
+# The redteam FastAPI server builds its OWN SignedAppendOnlyLog instance
+# pointing at the SAME on-disk community.log as the agent runtime's
+# instance (see agent/cli.py:_start_redteam_server). The audit fix that
+# added an in-memory latest_hash cache silently broke this: the reader
+# instance kept serving a stale head forever, so every peer's pull loop
+# short-circuited with appended=0 and the founder's donation_intent
+# never replicated to bob/charlie/dave. Caught live in the seek_cc
+# 21:17 run (alice saw member_count=2, bob/charlie/dave saw 0).
+# ---------------------------------------------------------------------------
+
+
+def test_latest_hash_reflects_appends_from_a_different_instance(tmp_path: Path) -> None:
+    identity = OpenClawIdentity(
+        network="MAINNET", key_path=str(tmp_path / "key.pem")
+    )
+    log_path = str(tmp_path / "community.log")
+
+    writer = SignedAppendOnlyLog(identity, log_path)
+    reader = SignedAppendOnlyLog(identity, log_path)  # separate instance, same file
+
+    # Prime the reader's cache on the empty log.
+    assert reader.latest_hash() == "GENESIS"
+
+    # A DIFFERENT instance appends — exactly the runtime-writes /
+    # FastAPI-reads split in production.
+    entry = writer.append_event(
+        reporter_id=str(identity.identity_hash),
+        subject_id=str(identity.identity_hash),
+        action="donation_intent",
+        details={"network_id_hex": "deadbeef", "amount_sats": 50000},
+    )
+    appended_hash = entry["entry_hash"]
+    assert appended_hash != "GENESIS"
+
+    # The reader MUST observe the new head despite its primed cache.
+    # Pre-fix this returned "GENESIS" forever and the demo silently
+    # never replicated.
+    assert reader.latest_hash() == appended_hash
+
+    # And a second append from the writer is likewise visible.
+    entry2 = writer.append_event(
+        reporter_id=str(identity.identity_hash),
+        subject_id=str(identity.identity_hash),
+        action="seedbox_purchase_intent",
+        details={"network_id_hex": "deadbeef", "cost_sats": 100000},
+    )
+    assert reader.latest_hash() == entry2["entry_hash"]
+
+
+def test_latest_hash_writer_cache_stays_warm_after_own_append(tmp_path: Path) -> None:
+    """The writer must NOT pay a rescan on the read right after its own
+    append (the stat signature is refreshed in _persist)."""
+    identity = OpenClawIdentity(
+        network="MAINNET", key_path=str(tmp_path / "key.pem")
+    )
+    log_path = str(tmp_path / "community.log")
+    log = SignedAppendOnlyLog(identity, log_path)
+
+    entry = log.append_event(
+        reporter_id=str(identity.identity_hash),
+        subject_id=str(identity.identity_hash),
+        action="donation_intent",
+        details={"network_id_hex": "deadbeef", "amount_sats": 1},
+    )
+    # Cache + signature were set inside _persist; this read must hit
+    # the cache (we assert correctness; the warmth is a perf property
+    # verified by the signature being non-None).
+    assert log.latest_hash() == entry["entry_hash"]
+    assert log._latest_sig is not None

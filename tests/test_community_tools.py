@@ -457,11 +457,10 @@ async def test_purchase_propose_rejects_wrong_cost(two_agents):
 
 
 @pytest.mark.asyncio
-async def test_deprecated_tool_is_still_dispatchable(agent):
-    """seedbox_donate_and_join still appears in the registry — deprecated but
-    available so existing LLM prompts don't break mid-flight."""
+async def test_deprecated_tool_is_removed(agent):
+    """The legacy single-gatekeeper seedbox_donate_and_join was removed
+    from the registry because LLMs repeatedly picked it over the v5.2
+    community_donate_and_join (they gravitated to the more verb-y
+    name even when prompted otherwise). Verify it's gone."""
     tools = build_tools(agent)
-    assert "seedbox_donate_and_join" in tools.names()
-    # Spec carries the DEPRECATED prefix.
-    specs = {s["function"]["name"]: s for s in tools.specs()}
-    assert specs["seedbox_donate_and_join"]["function"]["description"].startswith("DEPRECATED")
+    assert "seedbox_donate_and_join" not in tools.names()

@@ -34,16 +34,20 @@ description: >-
   a second seedbox is authorised.
 
 watchdog:
-  # interval_s is also passed to ``openclaw agent --timeout`` and is the
-  # subprocess soft cap. The 14B coder model on a laptop CPU/iGPU takes
-  # ~60-150s for one chat completion against the 23-tool prompt; 180s
-  # leaves room without making demo iteration painful. Bump back up if
-  # the model runs cold or you switch to a 27B/larger target.
+  # interval_s doubles as the per-turn ``openclaw agent --timeout``.
+  # 180s gives each of 4 agents a 45s slot in the staggered cycle, so
+  # any rolling 60s window only contains 2 agents' worth of LLM calls
+  # (~28K input tokens) — comfortably under Anthropic Tier 1's 50K ITPM
+  # cap. Drop to 90 once we move to Tier 2 (1000 RPM) or to a provider
+  # with higher token throughput.
   interval_s: 180
-  max_iterations_per_turn: 12
-  # 4 agents x more steps each (donate -> wait for pull-loop sync ->
-  # fetch overlay -> SEARCH -> torrent_fetch). Bumped from 20.
-  max_total_turns: 30
+  # Vestigial: openclaw has no flag for this; the equivalent control is
+  # the HARD RULE block in deploy/turn_builder.py asking for exactly
+  # one tool call per turn.
+  max_iterations_per_turn: 1
+  # Bumped to absorb the one-tool-per-turn pacing: ~10 steps per agent
+  # x 4 agents + slack for retries on cache misses.
+  max_total_turns: 120
   max_wall_clock_s: 10800
 
 observability:

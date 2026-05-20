@@ -95,6 +95,41 @@ def validate_ast(source: str) -> None:
     _Walker().visit(tree)
 
 
+# Names from ``builtins`` that the overlay sandbox is allowed to use.
+# Hoisted to module scope so ``safe_exec`` does a per-call shallow copy
+# instead of rebuilding the dict + scanning ``builtins.__dict__`` on
+# every overlay compile.
+_SAFE_BUILTIN_NAMES: tuple[str, ...] = (
+    "abs", "all", "any", "bool", "bytes", "bytearray", "callable",
+    "dict", "enumerate", "filter", "float", "frozenset", "hash",
+    "hex", "int", "isinstance", "issubclass", "iter", "len", "list",
+    "map", "max", "min", "next", "ord", "chr", "pow", "print",
+    "range", "repr", "reversed", "round", "set", "slice", "sorted",
+    "str", "sum", "tuple", "type", "zip",
+    "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+    "AttributeError", "RuntimeError", "NotImplementedError",
+    "StopIteration", "True", "False", "None",
+    "object", "super", "property", "staticmethod", "classmethod",
+    "__build_class__",
+    "__name__",
+)
+
+_BUILTINS_NS = __import__("builtins").__dict__
+_SAFE_BUILTINS_TEMPLATE: dict = {
+    name: _BUILTINS_NS[name]
+    for name in _SAFE_BUILTIN_NAMES
+    if name in _BUILTINS_NS
+}
+
+
+def _restricted_import(name: str, globals_=None, locals_=None, fromlist=(), level=0):
+    """Module-scoped __import__ replacement used by ``safe_exec``."""
+    import importlib
+    if name not in _ALLOWED_MODULES:
+        raise SandboxError(f"runtime import blocked: {name}")
+    return importlib.import_module(name)
+
+
 def safe_exec(source: str) -> dict:
     """Validate then exec ``source`` in a fresh namespace; return the namespace.
 
@@ -104,35 +139,7 @@ def safe_exec(source: str) -> dict:
     """
     validate_ast(source)
 
-    safe_builtins = {
-        name: getattr(__builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__,
-                      name, None) if False else __import__("builtins").__dict__[name]
-        for name in (
-            "abs", "all", "any", "bool", "bytes", "bytearray", "callable",
-            "dict", "enumerate", "filter", "float", "frozenset", "hash",
-            "hex", "int", "isinstance", "issubclass", "iter", "len", "list",
-            "map", "max", "min", "next", "ord", "chr", "pow", "print",
-            "range", "repr", "reversed", "round", "set", "slice", "sorted",
-            "str", "sum", "tuple", "type", "zip",
-            # exception classes the overlay may need to raise/catch:
-            "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
-            "AttributeError", "RuntimeError", "NotImplementedError",
-            "StopIteration", "True", "False", "None",
-            "object", "super", "property", "staticmethod", "classmethod",
-            "__build_class__",  # required for `class Foo(...):` to work
-            "__name__",
-        )
-        if name in __import__("builtins").__dict__
-    }
-    # Imports the compiled overlay is *allowed* to issue must still go
-    # through __import__; provide a wrapper that gates it.
-    import importlib
-
-    def _restricted_import(name: str, globals_=None, locals_=None, fromlist=(), level=0):
-        if name not in _ALLOWED_MODULES:
-            raise SandboxError(f"runtime import blocked: {name}")
-        return importlib.import_module(name)
-
+    safe_builtins = dict(_SAFE_BUILTINS_TEMPLATE)
     safe_builtins["__import__"] = _restricted_import
 
     namespace: dict = {"__builtins__": safe_builtins, "__name__": "overlay_sandbox"}

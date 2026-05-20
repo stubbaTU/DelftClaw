@@ -837,18 +837,25 @@ def _run_test_vector(payload_cls: Type, tv: TestVector) -> None:
 # Structural check (constants + runtime state + lifecycle)
 # ---------------------------------------------------------------------------
 
-def _init_self_assignments(source: str, class_name: str = "GeneratedCommunity") -> set[str]:
+def _init_self_assignments(
+    source: str,
+    class_name: str = "GeneratedCommunity",
+    *,
+    tree: ast.AST | None = None,
+) -> set[str]:
     """Walk ``source``'s AST, return the set of names ``X`` assigned via
     ``self.X = ...`` (any kind of assignment) anywhere inside
     ``<class_name>.__init__``.
 
     The AST whitelist has already run; this is just structural
-    introspection on trusted-ish source.
+    introspection on trusted-ish source. Accepts a pre-parsed ``tree``
+    so ``_check_structural_contract`` can parse once and reuse.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        raise ProtocolCompileError(f"cannot AST-parse generated source: {exc}") from exc
+    if tree is None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            raise ProtocolCompileError(f"cannot AST-parse generated source: {exc}") from exc
 
     init_body: list[ast.stmt] | None = None
     for node in ast.walk(tree):
@@ -879,19 +886,26 @@ def _init_self_assignments(source: str, class_name: str = "GeneratedCommunity") 
     return names
 
 
-def _init_register_task_calls(source: str, class_name: str = "GeneratedCommunity") -> list[dict]:
+def _init_register_task_calls(
+    source: str,
+    class_name: str = "GeneratedCommunity",
+    *,
+    tree: ast.AST | None = None,
+) -> list[dict]:
     """Walk ``source``'s AST, return one record per ``self.register_task(...)``
     call inside ``<class_name>.__init__``.
 
     Each record: ``{"name": <str|None>, "handler": <str|None>, "interval_s": <int|None>}``.
     Fields are ``None`` if they couldn't be statically extracted (e.g. a
     non-literal task name or a handler that wasn't ``self.<attr>``); the
-    structural check treats missing fields as a no-match.
+    structural check treats missing fields as a no-match. Accepts a
+    pre-parsed ``tree`` for caller-side reuse.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
+    if tree is None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
 
     init_body: list[ast.stmt] | None = None
     for node in ast.walk(tree):
@@ -943,12 +957,21 @@ def _init_register_task_calls(source: str, class_name: str = "GeneratedCommunity
     return out
 
 
-def _class_bases(source: str, class_name: str = "GeneratedCommunity") -> set[str]:
-    """Return the base-class names referenced by ``class_name``'s definition."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return set()
+def _class_bases(
+    source: str,
+    class_name: str = "GeneratedCommunity",
+    *,
+    tree: ast.AST | None = None,
+) -> set[str]:
+    """Return the base-class names referenced by ``class_name``'s definition.
+
+    Accepts a pre-parsed ``tree`` for caller-side reuse.
+    """
+    if tree is None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return set()
     bases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
@@ -968,6 +991,14 @@ def _check_structural_contract(
 ) -> None:
     """Enforce the schema's `# Constants` / `# Runtime State` / lifecycle clauses."""
 
+    # Parse the AST once and reuse across the three structural helpers.
+    # Each helper used to call ``ast.parse(source)`` independently — that
+    # tripled the parse cost on every overlay compile.
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ProtocolCompileError(f"cannot AST-parse generated source: {exc}") from exc
+
     # 1. Constants — must exist at class level with the declared value.
     for c in parsed.constants:
         if not hasattr(community_cls, c.name):
@@ -984,7 +1015,7 @@ def _check_structural_contract(
 
     # 2. Runtime state — every slot must be assigned in __init__.
     if parsed.runtime_state:
-        assigned = _init_self_assignments(source)
+        assigned = _init_self_assignments(source, tree=tree)
         missing = [s.name for s in parsed.runtime_state if s.name not in assigned]
         if missing:
             raise ProtocolCompileError(
@@ -996,7 +1027,7 @@ def _check_structural_contract(
     # `self.register_task("name", self.handler, interval=N)` in __init__,
     # and the handler method must exist on the class.
     if parsed.tasks:
-        registered = _init_register_task_calls(source)
+        registered = _init_register_task_calls(source, tree=tree)
         for task in parsed.tasks:
             match = next(
                 (
@@ -1021,7 +1052,7 @@ def _check_structural_contract(
 
     # 4. Lifecycle — peer-observer must subclass PeerObserver and define
     # the three hooks; passive must NOT subclass PeerObserver.
-    bases = _class_bases(source)
+    bases = _class_bases(source, tree=tree)
     if parsed.lifecycle == "peer-observer":
         if "PeerObserver" not in bases:
             raise ProtocolCompileError(
@@ -1071,16 +1102,31 @@ class CompiledOverlay:
     origin: str = "markdown"
 
 
-def compile_overlay(md_text: str, llm: LLMClient) -> CompiledOverlay:
-    """End-to-end compile of an overlay descriptor `.md` to an importable Community class."""
+def compile_overlay(
+    md_text: str,
+    llm: LLMClient,
+    *,
+    llm_source: str | None = None,
+) -> CompiledOverlay:
+    """End-to-end compile of an overlay descriptor `.md` to an importable Community class.
+
+    When ``llm_source`` is provided (e.g. from the registry's disk
+    cache), the LLM round-trip is skipped and that source is used in
+    its place. All downstream safety gates (sandbox AST whitelist,
+    structural-contract check, test vectors) still run unchanged —
+    those are the wire-safety boundary, not the cache.
+    """
     parsed = parse_md(md_text)
     validate_schema(parsed)
     canonical = canonicalize_md(md_text)
     community_id = hashlib.sha1(canonical).digest()[:20]
 
-    user_prompt = _build_user_prompt(parsed, community_id)
-    raw = llm.complete(SYSTEM_PROMPT, user_prompt)
-    source = strip_code_fences(raw).strip()
+    if llm_source is None:
+        user_prompt = _build_user_prompt(parsed, community_id)
+        raw = llm.complete(SYSTEM_PROMPT, user_prompt)
+        source = strip_code_fences(raw).strip()
+    else:
+        source = strip_code_fences(llm_source).strip()
 
     try:
         ns = safe_exec(source)
