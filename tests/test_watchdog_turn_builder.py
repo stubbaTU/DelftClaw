@@ -66,9 +66,16 @@ def test_prompt_orders_sections_correctly():
         history=TurnHistory(),
     )
     mission_idx = out.index("MISSION-BLOCK")
+    contract_idx = out.index("TURN CONTRACT:")
     state_idx = out.index("CURRENT STATE:")
     recent_idx = out.index("RECENT TURNS")
-    assert mission_idx < state_idx < recent_idx
+    assert mission_idx < contract_idx < state_idx < recent_idx
+
+
+def test_prompt_tells_agent_to_do_one_bounded_action():
+    out = build_turn_prompt("m", {}, TurnHistory())
+    assert "Make at most one purposeful DelftClaw MCP tool call" in out
+    assert "Now perform one bounded action for this turn." in out
 
 
 def test_prompt_includes_serialised_snapshot_with_sorted_keys():

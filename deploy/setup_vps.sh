@@ -17,7 +17,7 @@
 #   5.  build the project venv + pip install requirements.txt
 #   6.  generate the BIP-39 seed file at /var/lib/delftclaw/seed.txt
 #       (skipped if one already exists)
-#   7.  install + enable the systemd unit
+#   7.  install the scenario systemd units
 #   8.  open ufw rules for ssh, ipv8 udp, mcp tcp (does not enable ufw)
 #   9.  smoke-test:
 #         - curl Ollama /v1/models  (only meaningful if no external endpoint)
@@ -166,25 +166,12 @@ step_systemd_templates() {
         systemctl disable delftclaw-mcp.service 2>/dev/null || true
         rm -f /etc/systemd/system/delftclaw-mcp.service
     fi
-    # Pre-templated colleagues' units from earlier branches; the templated
-    # form takes over now.
-    for legacy in delftclaw-identity-mcp.service delftclaw-security-mcp.service; do
-        if systemctl list-unit-files | grep -q "^${legacy}\$"; then
-            c_blue "systemd: removing legacy ${legacy}"
-            systemctl stop "${legacy}" 2>/dev/null || true
-            systemctl disable "${legacy}" 2>/dev/null || true
-            rm -f "/etc/systemd/system/${legacy}"
-        fi
-    done
-
-    # Install every templated unit the project ships. Each takes an instance
+    # Install the scenario units. Each takes an instance
     # name via `systemctl enable --now <unit>@<instance>.service` and reads
     # its env file from /etc/delftclaw/instances/<instance>.env.
     for unit in \
         delftclaw-mcp@.service \
-        delftclaw-watchdog@.service \
-        delftclaw-identity-mcp@.service \
-        delftclaw-security-mcp@.service; do
+        delftclaw-watchdog@.service; do
         install -m 0644 -o root -g root \
             "$REPO_ROOT/deploy/systemd/${unit}" \
             "/etc/systemd/system/${unit}"
@@ -203,10 +190,10 @@ step_firewall() {
     fi
     c_blue "ufw: adding rules (does NOT enable the firewall — do that manually)"
     ufw allow 22/tcp >/dev/null
-    # Scenario-allocated IPv8 + MCP ranges. The defaults match seek_cc; if
-    # later scenarios use different ranges, open those manually.
-    ufw allow 8190:8199/udp >/dev/null
-    ufw allow 18765:18774/tcp >/dev/null
+    # Scenario-allocated IPv8 + MCP ranges for seek_cc, community_demo,
+    # security_layers, and secure_community_demo.
+    ufw allow 8190:8399/udp >/dev/null
+    ufw allow 18765:18999/tcp >/dev/null
 }
 
 main() {
@@ -225,34 +212,23 @@ main() {
 ==============================================================================
 DelftClaw infrastructure is installed.
 
-Four templated systemd units are now available, all reading their per-instance
+Two templated scenario systemd units are now available, both reading their per-instance
 env file from /etc/delftclaw/instances/<instance>.env:
 
   delftclaw-mcp@.service           — agent + watchdog scenario MCP (seek_cc, etc.)
   delftclaw-watchdog@.service      — autonomous tick driver for delftclaw-mcp
-  delftclaw-identity-mcp@.service  — colleague's identity MCP (BIP-44 wallet, MLS)
-  delftclaw-security-mcp@.service  — colleague's security MCP (gateway evidence)
 
 Scenario flow (per-agent):
 
   # On the VPS (or via 'make scenario NAME=seek_cc' from your laptop):
   /opt/delftclaw/venv/bin/python -m deploy.scenario_boot seek_cc
 
-Identity/security stack (per-host; <instance> is your VPS handle):
-
-  # 1. write /etc/delftclaw/instances/<instance>.env with NETWORK,
-  #    IDENTITY_MCP_PORT, IDENTITY_PATH, SECURITY_MCP_PORT, PYTHONPATH=/opt/delftclaw
-  # 2. enable the units you need:
-  sudo systemctl enable --now delftclaw-identity-mcp@<instance>.service
-  sudo systemctl enable --now delftclaw-security-mcp@<instance>.service
-
 Common operator commands:
 
   systemctl list-units 'delftclaw-*@*.service'                # all instances
-  journalctl -u 'delftclaw-identity-mcp@<instance>' -f        # tail one
   journalctl -u 'delftclaw-mcp@seek_cc-alice' -f              # tail scenario agent
 
-  ufw enable                            # leave open: 22/tcp, 8190-8199/udp, 18765-18774/tcp
+  ufw enable                            # leave open: 22/tcp, 8190-8399/udp, 18765-18999/tcp
 
   python -m deploy.scenario_boot seek_cc --teardown           # stop scenario
 

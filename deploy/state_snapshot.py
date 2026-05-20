@@ -14,7 +14,10 @@ The snapshot is intentionally:
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,6 +40,7 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
         "peers": _peers_snapshot(agent),
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
+        "security": _security_snapshot(),
     }
 
 
@@ -57,37 +61,13 @@ def _network_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
             "bootstrap_cap_sats": manifest.admission.effective_bootstrap_cap_sats,
             "max_agents_per_seedbox": manifest.admission.max_agents_per_seedbox,
             "seedbox_cost_sats": manifest.admission.seedbox_cost_sats,
+            "seedbox_growth_enabled": manifest.admission.seedbox_growth_enabled,
         },
         "genesis_peers": [
             {"host": gp.host, "port": gp.port, "pubkey_hex": gp.pubkey_hex}
             for gp in manifest.genesis_peers
         ],
         "default_overlays": list(manifest.default_overlays),
-    }
-
-
-def _community_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
-    """Replayed community-state view: treasury balance, members, threshold,
-    and whether THIS agent is admitted. ``None`` when the agent has no
-    manifest loaded (state can't be replayed without one).
-
-    Folded into the snapshot so the LLM doesn't need to spend a tool call
-    on ``community_treasury_balance`` / ``community_member_count`` every
-    turn — both views read from this same replay anyway.
-    """
-    state = agent.community_state()
-    if state is None:
-        return None
-    manifest = agent.network_manifest
-    me = agent.community_reporter_id
-    threshold_active = state.threshold_active(manifest) if manifest is not None else False
-    return {
-        "balance_sats": int(state.balance_sats),
-        "member_count": int(state.member_count),
-        "seedbox_count": int(state.seedbox_count),
-        "pending_purchases": int(state.pending_purchases),
-        "threshold_active": bool(threshold_active),
-        "my_membership_status": "admitted" if me in state.members else "outsider",
     }
 
 
@@ -99,6 +79,46 @@ def _wallet_snapshot(agent: "OpenClawAgent") -> dict[str, Any]:
         return {"address": agent.wallet.address(), "balance_sats": None,
                 "error": f"{type(exc).__name__}: {exc}"}
     return {"address": agent.wallet.address(), "balance_sats": int(balance_sats)}
+
+
+def _community_snapshot(agent: "OpenClawAgent") -> dict[str, Any] | None:
+    """Read-only replay of this agent's signed community-log view."""
+    manifest = agent.network_manifest
+    if manifest is None:
+        return None
+    state = agent.community_state()
+    if state is None:
+        return None
+    me = agent.community_reporter_id
+    recent_entries = []
+    for entry in sorted(
+        agent.all_community_entries(),
+        key=lambda item: (
+            item.get("timestamp", ""),
+            item.get("reporter_id", ""),
+            item.get("entry_hash", ""),
+        ),
+    )[-10:]:
+        details = entry.get("details") or {}
+        recent_entries.append({
+            "action": entry.get("action"),
+            "reporter_id": entry.get("reporter_id"),
+            "entry_hash": entry.get("entry_hash"),
+            "amount_sats": details.get("amount_sats"),
+            "cost_sats": details.get("cost_sats"),
+            "purchase_intent_hash": details.get("purchase_intent_hash"),
+            "seedbox_url": details.get("seedbox_url"),
+        })
+    return {
+        "balance_sats": state.balance_sats,
+        "member_count": state.member_count,
+        "seedbox_count": state.seedbox_count,
+        "pending_purchases": state.pending_purchases,
+        "threshold_active": state.threshold_active(manifest),
+        "my_membership_status": "admitted" if me in state.members else "outsider",
+        "members": sorted(state.members),
+        "recent_log_entries": recent_entries,
+    }
 
 
 def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
@@ -122,14 +142,21 @@ def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     return out
 
 
+_HANDLER_SUMMARY_MAX_CHARS = 240
+
+
 def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     """Per-overlay summary the LLM consumes inside the turn prompt.
 
-    Field encodings are included so the LLM can call overlay_invoke
-    without an extra tool round-trip. Handler text used to be inlined
-    here too but the per-call token cost was prohibitive; if the LLM
-    needs handler semantics it can call ``overlay_describe`` for the
-    full markdown of one specific overlay.
+    Field encodings ARE included so the LLM can call overlay_invoke
+    without an extra tool round-trip. Handler text is truncated per
+    message to keep the prompt bounded — the LLM can call
+    ``overlay_describe`` for the full markdown when it needs it.
+
+    Each entry carries an ``origin`` discriminator (``"markdown"`` or
+    ``"python_class"``) so the LLM knows whether the absent
+    ``handler_summary`` is "operator omitted it" or "no canonical text
+    exists" for that overlay.
     """
     out: list[dict[str, Any]] = []
     for community_id in agent.registry.list_loaded():
@@ -146,6 +173,7 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                         {"name": f.name, "encoding": f.encoding}
                         for f in m.fields
                     ],
+                    "handler_summary": _truncate(m.handler_text, _HANDLER_SUMMARY_MAX_CHARS),
                 }
                 for m in parsed.messages
             ]
@@ -162,18 +190,28 @@ def _overlays_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
                         {"name": n, "encoding": fmt}
                         for n, fmt in zip(payload_cls.names, payload_cls.format_list)
                     ],
+                    "handler_summary": "",
                 }
                 for msg_name, payload_cls in compiled.payload_classes.items()
             ]
 
+        instance = agent.registry.get(community_id)
         out.append({
             "community_id_hex": community_id.hex(),
             "origin": compiled.origin,
             "name": name,
             "version": version,
             "messages": messages,
+            "local_index": list(getattr(instance, "local_index", []))[:10],
+            "response_cache": list(getattr(instance, "response_cache", []))[-10:],
         })
     return out
+
+
+def _truncate(text: str, n: int) -> str:
+    if len(text) <= n:
+        return text
+    return text[: n - 3] + "..."
 
 
 def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
@@ -188,3 +226,32 @@ def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             "peers": int(t.peers),
         })
     return out
+
+
+def _security_snapshot() -> dict[str, Any] | None:
+    path_raw = os.environ.get("SECURITY_EVIDENCE_PATH")
+    if not path_raw:
+        return None
+    path = Path(path_raw)
+    if not path.is_file():
+        return {"ok": False, "layers": {}, "checklist": {}, "path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "layers": {},
+            "checklist": {},
+            "path": str(path),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if isinstance(data, dict):
+        data["path"] = str(path)
+        return data
+    return {
+        "ok": False,
+        "layers": {},
+        "checklist": {},
+        "path": str(path),
+        "error": f"expected object, got {type(data).__name__}",
+    }

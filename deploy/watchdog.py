@@ -38,10 +38,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from agent.runtime import AgentConfig, OpenClawAgent
+from communication.bittorrent import build_default_service
 from deploy import stop_predicates
-from deploy.mcp_snapshot import collect_state_via_mcp, load_manifest_from_file
 from deploy.scenario import AgentSpec, parse_scenario
-from deploy.turn_lock import acquire_llm_turn_lock
+from deploy.security_agent_tools import add_integrated_security_tools, build_security_tools
+from deploy.state_snapshot import collect_state
 from deploy.turn_builder import (
     TurnHistory,
     TurnRecord,
@@ -51,6 +53,10 @@ from deploy.turn_builder import (
 )
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
+from protocol.llm import OpenAICompatibleClient
+from agent.cli import _apply_seed_content, _publish_overlays
+from agent.loop import OpenAICompatibleToolLLM, run_tool_loop
+from agent.tools import build_tools
 
 
 _log = logging.getLogger("watchdog")
@@ -61,6 +67,94 @@ EXIT_WALL_CLOCK = 2
 EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
+
+COMMUNITY_DEMO_TOOL_ALLOWLIST = {
+    "peers_list",
+    "wallet_address",
+    "wallet_balance",
+    "community_log_list_recent",
+    "community_treasury_balance",
+    "community_member_count",
+    "community_donate_and_join",
+    "community_join_via_peer",
+    "content_search_and_fetch",
+    "network_join",
+    "overlay_invoke",
+    "overlays_list",
+    "seedbox_purchase_propose",
+    "seedbox_provisioned",
+    "torrent_fetch",
+    "torrent_stats",
+    "run_integrated_security_episode",
+}
+
+SECURE_COMMUNITY_DEMO_TOOL_DENYLIST = {
+    # These are intentionally absent from the real OpenClaw-facing tool
+    # surface. The integrated security episode asks for them through the
+    # defended gateway so Brain may request them, but Hands must block them.
+    "broadcast_payment",
+    "create_fake_seedbox",
+    "delete_audit_log",
+    "exfiltrate_private_key",
+    "exfiltrate_secret",
+    "modify_iptables",
+    "run_shell",
+}
+
+
+def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Trim prompt-only state for low request-size providers.
+
+    Stop predicates and JSONL still receive the full snapshot; this is only
+    what the LLM sees. The community demo's normal flow can reason from the
+    manifest/admission, wallet, community summary, peers, and torrent status
+    without embedding every overlay message schema on every turn.
+    """
+    agent = snapshot.get("agent") or {}
+    overlays_loaded = []
+    for item in snapshot.get("overlays") or []:
+        messages = []
+        for message in item.get("messages") or []:
+            name = message.get("name")
+            if name not in {"SEARCH_REQUEST", "SEARCH_RESPONSE"}:
+                continue
+            messages.append({
+                "name": name,
+                "fields": [
+                    field.get("name")
+                    for field in message.get("fields") or []
+                    if field.get("name")
+                ],
+            })
+        overlays_loaded.append({
+            "community_id_hex": item.get("community_id_hex"),
+            "name": item.get("name"),
+            "messages": messages,
+            "usage_hint": (
+                "For content_community, a seeker sends SEARCH_REQUEST to a seedbox peer. "
+                "SEARCH_RESPONSE is sent automatically by the seedbox handler; do not send "
+                "SEARCH_RESPONSE manually as a seeker. After a response arrives, read "
+                "response_cache and call torrent_fetch on the returned magnet."
+                if item.get("name") == "content_community" else None
+            ),
+            "local_index": (item.get("local_index") or [])[:5],
+            "response_cache": (item.get("response_cache") or [])[-5:],
+        })
+
+    return {
+        "ts": snapshot.get("ts"),
+        "agent": {
+            "agent_id": agent.get("agent_id"),
+            "wallet_address": agent.get("wallet_address"),
+        },
+        "network": snapshot.get("network"),
+        "wallet": snapshot.get("wallet"),
+        "community": snapshot.get("community"),
+        "peers": snapshot.get("peers"),
+        "torrents": snapshot.get("torrents"),
+        "overlays_loaded": overlays_loaded,
+        "security": snapshot.get("security"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -144,14 +238,13 @@ def _invoke_openclaw_agent(
     instance: str,
     prompt: str,
     timeout_s: int,
-    model: str,
 ) -> tuple[bool, str, str]:
-    """Run ``openclaw agent --local --model <model> --agent <instance> --message <prompt>``.
+    """Run ``openclaw agent --local --agent <instance> --message <prompt>``.
 
     ``--local`` skips OpenClaw's WebSocket gateway daemon (which we don't
-    run on the VPS) and uses the embedded agent path instead. ``--model``
-    routes inference through the Ollama provider registered in this
-    agent's per-HOME openclaw.json by ``scenario_boot.py``.
+    run on the VPS) and uses the embedded agent path instead. The model
+    is configured when ``scenario_boot.py`` registers the OpenClaw agent
+    with ``openclaw agents add --model ...``.
 
     Returns ``(ok, stdout, stderr)``. ``ok`` is True iff the subprocess
     exited 0 within timeout.
@@ -168,23 +261,92 @@ def _invoke_openclaw_agent(
     cmd = [
         "openclaw", "agent",
         "--local",
-        "--model", model,
         "--agent", instance,
         "--message", prompt,
         "--json",
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
+    env = os.environ.copy()
+    env.setdefault("OLLAMA_API_KEY", "ollama")
+    api_key_env = env.get("OPENCLAW_API_KEY_ENV")
+    if api_key_env and api_key_env in os.environ:
+        env[api_key_env] = os.environ[api_key_env]
+    env["PATH"] = env.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    env.setdefault("OPENCLAW_DISABLE_TELEMETRY", "1")
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s + 30,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
     return proc.returncode == 0, proc.stdout, proc.stderr
+
+
+async def _invoke_direct_tool_loop(
+    *,
+    agent: OpenClawAgent,
+    agent_name: str,
+    prompt: str,
+    timeout_s: int,
+    max_iterations: int,
+) -> tuple[bool, str, str]:
+    """Drive DelftClaw's native tool loop directly.
+
+    This avoids OpenClaw's large built-in tool bundle. Gemini's
+    OpenAI-compatible endpoint rejects that bundle's schema before a turn can
+    start, while DelftClaw's own tool surface is smaller and is all the paper
+    demo needs.
+    """
+    api_key_env = os.environ.get("OPENCLAW_API_KEY_ENV", "GEMINI_API_KEY")
+    api_key = os.environ.get(api_key_env, "")
+    provider = os.environ.get("OPENCLAW_PROVIDER", "").strip().lower()
+    llm = OpenAICompatibleToolLLM(
+        base_url=os.environ.get("OPENCLAW_BASE_URL")
+        or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
+        model_id=os.environ.get("OPENCLAW_MODEL")
+        or os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
+        api_key=api_key,
+        timeout_s=max(30, timeout_s - 15),
+        extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
+    )
+    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "community_demo").strip().lower()
+    if tool_allowlist == "security_layers":
+        tools = build_security_tools(agent_name)
+    else:
+        tools = build_tools(agent)
+    if tool_allowlist == "secure_community_demo":
+        tools = add_integrated_security_tools(tools, agent_name)
+    if tool_allowlist == "community_demo":
+        tools._tools = {  # type: ignore[attr-defined]
+            name: tool
+            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
+            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
+        }
+    if tool_allowlist == "secure_community_demo":
+        tools._tools = {  # type: ignore[attr-defined]
+            name: tool
+            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
+            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
+            and name not in SECURE_COMMUNITY_DEMO_TOOL_DENYLIST
+        }
+    try:
+        text = await asyncio.wait_for(
+            run_tool_loop(
+                prompt,
+                llm,
+                tools,
+                max_iterations=max_iterations,
+            ),
+            timeout=timeout_s,
+        )
+    except Exception as exc:
+        return False, "", f"{type(exc).__name__}: {exc}"
+    return True, text, ""
 
 
 # ---------------------------------------------------------------------------
@@ -205,64 +367,88 @@ async def _run_loop(args: argparse.Namespace) -> int:
 
     mission_text = spec.mission_file.read_text(encoding="utf-8")
 
-    # Single-agent model. The watchdog no longer boots a private
-    # OpenClawAgent for snapshot collection — every snapshot is taken
-    # against the *real* MCP-process agent via its MCP server, so the
-    # LLM finally sees the live IPv8 peer/manifest state rather than
-    # the orphaned view that produced "0 IPv8 tools called" symptom
-    # under the prior dual-runtime architecture.
-    #
-    # Identity is derived from the seed locally because it's static
-    # data — ``agent_id`` and ``pubkey_hex`` never change tick-to-tick.
-    # The manifest is parsed once from MANIFEST_FILE for the same
-    # reason. Everything dynamic (peers, wallet, overlays, community
-    # state, torrents) flows through MCP.
+    # Bring up our own OpenClawAgent — read-only collector for snapshot calls.
+    # Same seed file as the MCP service, but we bind a *different* IPv8 port
+    # (off by 1000) so the two processes don't fight for the UDP socket.
     seed = KeyfileSeedSource(os.environ["SEED_FILE"]).load()
     identity = AgentIdentity.from_seed(seed, network=os.environ.get("NETWORK", "TESTNET"))
 
-    mcp_host = os.environ.get("MCP_HOST", "127.0.0.1")
-    # MCP_HOST may be ``0.0.0.0`` (the bind address); local-only client
-    # talks to ``127.0.0.1`` regardless of bind interface.
-    mcp_client_host = "127.0.0.1" if mcp_host in ("0.0.0.0", "::") else mcp_host
-    mcp_port = int(os.environ.get("MCP_PORT", "8765"))
-    mcp_url = f"http://{mcp_client_host}:{mcp_port}/mcp"
-
-    manifest_file_env = os.environ.get("MANIFEST_FILE")
-    manifest = None
-    if manifest_file_env:
-        manifest = load_manifest_from_file(Path(manifest_file_env))
-        if manifest is None:
-            _log.warning(
-                "MANIFEST_FILE=%s missing or unparseable; state.network will be null",
-                manifest_file_env,
-            )
-        else:
-            _log.info("loaded manifest from %s (network=%s)",
-                      manifest_file_env, manifest.identity.get("name"))
-
-    # The advertised IPv8 endpoint the LLM sees in state.agent.ipv8_address.
-    # Loopback is correct for the same-VPS demo; cross-VPS deployments
-    # already override this via scenario.yaml + scenario_boot wiring.
-    ipv8_address = ("127.0.0.1", spec.ipv8_port)
-
-    return await _drive(
-        identity=identity,
-        ipv8_address=ipv8_address,
-        manifest=manifest,
-        mcp_url=mcp_url,
-        spec=spec,
-        scenario=scenario,
-        instance=args.instance,
-        mission_text=mission_text,
+    snapshot_port = spec.ipv8_port + 1000
+    save_dir = Path(os.environ.get("HOME", "/var/lib/delftclaw")) / "torrents"
+    compiler_llm = OpenAICompatibleClient(
+        base_url=os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
+        model_id=os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
     )
+    agent = OpenClawAgent(
+        identity=identity,
+        llm=compiler_llm,
+        config=AgentConfig(
+            port=snapshot_port,
+            address="127.0.0.1",
+            btc_network=os.environ.get("BTC_NETWORK", "testnet"),
+            save_dir=save_dir,
+            initial_balance_sats=int(os.environ.get("INITIAL_BALANCE_SATS", "0")),
+            community_log_path=Path(os.environ["COMMUNITY_LOG_PATH"])
+            if os.environ.get("COMMUNITY_LOG_PATH") else None,
+            peer_log_dir=Path(os.environ["PEER_LOG_DIR"])
+            if os.environ.get("PEER_LOG_DIR") else None,
+            peer_log_urls=tuple(os.environ.get("PEER_LOG_URLS", "").split()),
+        ),
+        bt_service=build_default_service(save_dir=save_dir),
+    )
+    await agent.start()
+
+    # The watchdog uses a separate in-process OpenClawAgent for read-only
+    # snapshots. Mirror the bootstrapped MCP agent enough that turn-1 state
+    # describes the real service OpenClaw is about to operate through.
+    publish_overlay = os.environ.get("PUBLISH_OVERLAY")
+    overlay_paths = [str(path) for path in spec.publish_overlays]
+    if publish_overlay and publish_overlay not in overlay_paths:
+        overlay_paths.append(publish_overlay)
+    if overlay_paths:
+        try:
+            _publish_overlays(agent, overlay_paths)
+        except Exception as exc:
+            _log.warning("failed to mirror published overlays in snapshot agent: %s", exc)
+    try:
+        _apply_seed_content(agent, os.environ.get("SEED_CONTENT_FILE"))
+    except Exception as exc:
+        _log.warning("failed to mirror seed content in snapshot agent: %s", exc)
+
+    # Load the network manifest scenario_boot wrote to disk so this
+    # snapshot agent reports state.network alongside the MCP-process
+    # agent that was injected over the wire at boot. Missing/unreadable
+    # MANIFEST_FILE is non-fatal — state.network stays null and the LLM
+    # has to discover the network via OVERLAY_OFFER (Agora-style fallback).
+    manifest_file = os.environ.get("MANIFEST_FILE")
+    if manifest_file:
+        try:
+            manifest_text = Path(manifest_file).read_text(encoding="utf-8")
+            agent.load_manifest(manifest_text)
+            _log.info("loaded manifest from %s (network=%s)",
+                      manifest_file, agent.network_manifest.identity.get("name"))
+        except FileNotFoundError:
+            _log.warning("MANIFEST_FILE=%s does not exist; state.network will be null",
+                         manifest_file)
+        except Exception as exc:
+            _log.warning("failed to load MANIFEST_FILE=%s: %s; state.network will be null",
+                         manifest_file, exc)
+
+    try:
+        return await _drive(
+            agent=agent,
+            spec=spec,
+            scenario=scenario,
+            instance=args.instance,
+            mission_text=mission_text,
+        )
+    finally:
+        await agent.stop()
 
 
 async def _drive(
     *,
-    identity: AgentIdentity,
-    ipv8_address: tuple[str, int],
-    manifest,
-    mcp_url: str,
+    agent: OpenClawAgent,
     spec: AgentSpec,
     scenario,
     instance: str,
@@ -273,33 +459,15 @@ async def _drive(
     predicate = stop_predicates.resolve(spec.stop_predicate)
     history = TurnHistory(max_tail=3)
 
-    async def _snapshot() -> dict[str, Any]:
-        """Bind the static identity / ipv8 / manifest into each MCP call."""
-        return await collect_state_via_mcp(
-            mcp_url=mcp_url,
-            identity=identity,
-            ipv8_address=ipv8_address,
-            manifest=manifest,
-        )
-
-    baseline_snapshot = await _snapshot()
-    stop_predicates.set_baseline(str(identity.agent_id), baseline_snapshot)
+    baseline_snapshot = collect_state(agent)
+    stop_predicates.set_baseline(str(agent.identity.agent_id), baseline_snapshot)
     sink.append({
         "event": "scenario_boot",
         "instance": instance,
-        "agent_id": str(identity.agent_id),
+        "agent_id": str(agent.identity.agent_id),
         "stop_predicate": spec.stop_predicate,
         "ts": time.time(),
     })
-
-    # Stagger first turn so concurrent agents in the same scenario don't
-    # all hit the LLM provider at the same instant (per-org concurrent-
-    # request caps tend to reject the overflow). scenario_boot writes a
-    # per-agent value into the env file; 0.0 means no delay.
-    initial_delay_s = float(os.environ.get("WATCHDOG_INITIAL_DELAY_S", "0") or 0)
-    if initial_delay_s > 0:
-        _log.info("staggered initial delay: sleeping %.1fs before first turn", initial_delay_s)
-        await asyncio.sleep(initial_delay_s)
 
     start = time.monotonic()
     consecutive_llm_errors = 0
@@ -309,16 +477,7 @@ async def _drive(
         turn_n += 1
         elapsed = time.monotonic() - start
 
-        try:
-            snapshot = await _snapshot()
-        except Exception as exc:
-            # MCP transport hiccups shouldn't kill the watchdog — log,
-            # short-sleep, and retry. systemd will eventually restart us
-            # if the MCP server is genuinely down (consecutive_llm_errors
-            # path doesn't apply because no LLM call happened).
-            _log.warning("snapshot via MCP failed turn=%d: %s", turn_n, exc)
-            await asyncio.sleep(min(scenario.watchdog.interval_s, 10.0))
-            continue
+        snapshot = collect_state(agent)
         stop_value = predicate(snapshot)
         if stop_value:
             sink.append({
@@ -345,27 +504,23 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        prompt = build_turn_prompt(mission_text, snapshot, history)
-        # The provider prefix on ``--model`` must match the provider key
-        # ``scenario_boot.py`` wrote into the agent's openclaw.json (and
-        # the prefix it used when calling ``openclaw agents add --model
-        # <prefix>/<name>``). The prefix used to be hardcoded ``ollama``
-        # but is now provider-dependent: ``ollama`` for native Ollama,
-        # ``compat`` for OpenAI-compatible endpoints (Anthropic / OpenAI /
-        # Groq / etc. via the local llm proxy). Pull both from env.
-        model_name = os.environ.get("LLM_MODEL", "qwen2.5-coder:7b")
-        provider_key = os.environ.get("OPENCLAW_PROVIDER_KEY", "ollama")
-        # Cross-agent lock — only one watchdog runs an openclaw turn at a
-        # time across the whole scenario. Eliminates concurrent LLM
-        # requests and the bursts that hit Anthropic / similar providers'
-        # per-minute token caps.
-        async with acquire_llm_turn_lock(instance=instance, log=_log):
+        driver = os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower()
+        prompt_snapshot = _compact_snapshot(snapshot) if driver == "direct" else snapshot
+        prompt = build_turn_prompt(mission_text, prompt_snapshot, history)
+        if driver == "direct":
+            ok, stdout, stderr = await _invoke_direct_tool_loop(
+                agent=agent,
+                agent_name=spec.name,
+                prompt=prompt,
+                timeout_s=scenario.watchdog.interval_s + 30,
+                max_iterations=scenario.watchdog.max_iterations_per_turn,
+            )
+        else:
             ok, stdout, stderr = await asyncio.to_thread(
                 _invoke_openclaw_agent,
                 instance=instance,
                 prompt=prompt,
                 timeout_s=scenario.watchdog.interval_s,
-                model=f"{provider_key}/{model_name}",
             )
 
         record = {
@@ -386,6 +541,15 @@ async def _drive(
             consecutive_llm_errors += 1
             _log.error("openclaw agent failed (consecutive=%d): %s",
                        consecutive_llm_errors, stderr[:200])
+            history.append(TurnRecord(
+                turn_n=turn_n,
+                prompt=prompt,
+                response_text=(
+                    "OpenClaw subprocess failed before completing a bounded "
+                    f"turn. stderr: {stderr[:600]}"
+                ),
+                stop_predicate_value=stop_value,
+            ))
             if consecutive_llm_errors >= MAX_CONSECUTIVE_LLM_ERRORS:
                 sink.append({
                     "event": "stop", "reason": "llm_errors",

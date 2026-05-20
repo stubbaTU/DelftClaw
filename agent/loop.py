@@ -16,7 +16,7 @@ responses keyed by turn count, mirroring the production protocol.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
 from agent.tools import ToolRegistry
@@ -71,6 +71,7 @@ class OpenAICompatibleToolLLM:
     api_key: str = ""
     temperature: float = 0.0
     timeout_s: float = 120.0
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
     def complete_with_tools(
         self,
@@ -81,25 +82,38 @@ class OpenAICompatibleToolLLM:
     ) -> dict[str, Any]:
         import urllib.request
 
-        body = json.dumps({
+        payload = {
             "model": self.model_id,
             "messages": messages,
             "tools": tools,
             "temperature": self.temperature,
             "max_tokens": max_tokens,
-        }).encode("utf-8")
+        }
+        payload.update(self.extra_body)
+        body = json.dumps(payload).encode("utf-8")
         url = self.base_url.rstrip("/") + "/chat/completions"
         req = urllib.request.Request(
             url,
             data=body,
             headers={
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "DelftClaw/1.0 (+https://github.com/delftclaw)",
                 **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            raise RuntimeError(
+                f"HTTP {exc.code} from {url}: {body[:1000]}"
+            ) from exc
         return {"message": payload["choices"][0]["message"]}
 
 

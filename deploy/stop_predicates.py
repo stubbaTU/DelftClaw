@@ -62,6 +62,54 @@ def _wallet_received_sats(min_sats: int = 1) -> Predicate:
     return pred
 
 
+def _community_seedbox_count_gte_N(n: int = 1) -> Predicate:
+    def pred(snapshot: StateSnapshot) -> bool:
+        community = snapshot.get("community") or {}
+        seedbox_count = community.get("seedbox_count")
+        return isinstance(seedbox_count, int) and seedbox_count >= n
+    pred.__name__ = f"community_seedbox_count_gte_{n}"
+    return pred
+
+
+def _community_member_count_gte_N(n: int = 1) -> Predicate:
+    def pred(snapshot: StateSnapshot) -> bool:
+        community = snapshot.get("community") or {}
+        member_count = community.get("member_count")
+        return isinstance(member_count, int) and member_count >= n
+    pred.__name__ = f"community_member_count_gte_{n}"
+    return pred
+
+
+def _security_layer_done(layer: str | int = "") -> Predicate:
+    key = {
+        "1": "layer1",
+        "2": "layer2",
+        "3": "layer3",
+        "preventative": "layer1",
+        "accountability": "layer2",
+        "impact": "layer3",
+    }.get(str(layer), str(layer))
+
+    def pred(snapshot: StateSnapshot) -> bool:
+        security = snapshot.get("security") or {}
+        checklist = security.get("checklist") or {}
+        return bool(checklist.get(key))
+
+    pred.__name__ = f"security_layer_done_{key}"
+    return pred
+
+
+def _security_all_done(snapshot: StateSnapshot) -> bool:
+    security = snapshot.get("security") or {}
+    return bool(security.get("ok"))
+
+
+def _integrated_security_done(snapshot: StateSnapshot) -> bool:
+    security = snapshot.get("security") or {}
+    checklist = security.get("checklist") or {}
+    return bool(checklist.get("integrated"))
+
+
 # ---------------------------------------------------------------------------
 # Registry + resolver
 # ---------------------------------------------------------------------------
@@ -73,6 +121,11 @@ _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "torrent_progress_gte_1": _torrent_progress_gte_1,
     "peer_count_gte_N": _peer_count_gte_N,
     "wallet_received_sats": _wallet_received_sats,
+    "community_seedbox_count_gte_N": _community_seedbox_count_gte_N,
+    "community_member_count_gte_N": _community_member_count_gte_N,
+    "security_layer_done": _security_layer_done,
+    "security_all_done": _security_all_done,
+    "integrated_security_done": _integrated_security_done,
 }
 
 
@@ -126,7 +179,13 @@ def _looks_like_factory(obj: Any) -> bool:
     ``__name__``.
     """
     name = getattr(obj, "__name__", "")
-    return name.startswith("_peer_count_gte_N") or name.startswith("_wallet_received_sats")
+    return (
+        name.startswith("_peer_count_gte_N")
+        or name.startswith("_wallet_received_sats")
+        or name.startswith("_community_seedbox_count_gte_N")
+        or name.startswith("_community_member_count_gte_N")
+        or name.startswith("_security_layer_done")
+    )
 
 
 def _parse_kwargs(text: str) -> dict[str, Any]:

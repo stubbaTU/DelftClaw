@@ -32,6 +32,7 @@ from communication.community import overlay_id
 # in ``journalctl`` (basicConfig wired in ``agent/cli.py``). Grep:
 #   make watch NAME=… | grep TOOL
 _tool_logger = logging.getLogger("delftclaw.agent.tools")
+_wire_logger = logging.getLogger("delftclaw.communication.wire")
 
 
 def _short(value: Any, n: int = 80) -> str:
@@ -678,11 +679,28 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         compiled = agent.registry._compiled[community_id]
         if message_name not in compiled.payload_classes:
             return {"error": f"unknown_message:{message_name}"}
+        if (
+            compiled.parsed is not None
+            and compiled.parsed.identity.get("name") == "content_community"
+            and message_name == "SEARCH_RESPONSE"
+        ):
+            return {
+                "error": (
+                    "do_not_send_SEARCH_RESPONSE_manually: content seekers must send "
+                    "SEARCH_REQUEST; the seedbox handler sends SEARCH_RESPONSE automatically"
+                )
+            }
         payload_cls = compiled.payload_classes[message_name]
 
         from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
         coerced = [_coerce_field_value(v) for v in fields.values()]
         peer = _resolve_peer(agent, peer_mid)
+        _wire_logger.info(
+            "IPv8 send msg=%s peer=%s overlay=%s via=overlay_invoke",
+            message_name,
+            peer.mid.hex()[:12],
+            compiled.parsed.identity.get("name", compiled.origin) if compiled.parsed else compiled.origin,
+        )
         instance.ez_send(peer, payload_cls(*coerced))
         return {"sent": True}
 
@@ -708,6 +726,89 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             }
             for t in agent.bittorrent.stats()
         ]
+
+    async def content_search_and_fetch(
+        query: str = "Creative Commons Audio",
+        timeout_s: float = 10.0,
+    ) -> dict[str, Any]:
+        """Search content_community peers, wait for a response, then fetch the first magnet."""
+        compiled_item = None
+        overlay = None
+        for community_id in agent.registry.list_loaded():
+            compiled = agent.registry._compiled[community_id]
+            if compiled.parsed is not None and compiled.parsed.identity.get("name") == "content_community":
+                compiled_item = compiled
+                overlay = agent.registry.get(community_id)
+                break
+        if compiled_item is None or overlay is None:
+            return {"error": "content_community_not_loaded"}
+
+        def matching_rows() -> list[dict[str, Any]]:
+            rows = []
+            q = query.lower()
+            for row in getattr(overlay, "response_cache", []) or []:
+                if not isinstance(row, dict):
+                    continue
+                haystack = " ".join([
+                    str(row.get("name", "")),
+                    " ".join(str(t) for t in row.get("tags", []) or []),
+                    str(row.get("magnet", "")),
+                ]).lower()
+                if not q or q in haystack or "creative commons" in haystack:
+                    rows.append(row)
+            return rows
+
+        rows = matching_rows()
+        peers = list(agent.known_peers())
+        sent = False
+        if not rows:
+            payload_cls = compiled_item.payload_classes.get("SEARCH_REQUEST")
+            if payload_cls is None:
+                return {"error": "content_community_missing_SEARCH_REQUEST"}
+            if not peers:
+                return {"error": "no_known_peers_for_content_search"}
+            before = len(getattr(overlay, "response_cache", []) or [])
+            for peer in peers:
+                _wire_logger.info(
+                    "IPv8 send msg=SEARCH_REQUEST peer=%s overlay=content_community via=content_search_and_fetch query=%r",
+                    peer.mid.hex()[:12],
+                    query,
+                )
+                overlay.ez_send(peer, payload_cls(query.encode("utf-8")))
+            sent = True
+
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            while asyncio.get_running_loop().time() < deadline:
+                if len(getattr(overlay, "response_cache", []) or []) > before:
+                    break
+                await asyncio.sleep(0.1)
+            rows = matching_rows()
+
+        if not rows:
+            return {
+                "searched": sent,
+                "peer_count": len(peers),
+                "response_count": len(getattr(overlay, "response_cache", []) or []),
+                "error": "no_matching_content_response",
+            }
+
+        first = rows[0]
+        magnet = first.get("magnet")
+        if not magnet:
+            return {"error": "matching_content_response_missing_magnet", "result": first}
+        _wire_logger.info(
+            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d",
+            len(rows),
+        )
+        path = await torrent_fetch(str(magnet), timeout_s=max(timeout_s, 30.0))
+        return {
+            "searched": sent,
+            "peer_count": len(peers),
+            "result": first,
+            "magnet": magnet,
+            "download_path": path,
+            "torrent_stats": await torrent_stats(),
+        }
 
     # ---- Spec definitions ---------------------------------------------
 
@@ -924,6 +1025,18 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["magnet_uri"],
               "additionalProperties": False},
              torrent_fetch),
+
+        Tool("content_search_and_fetch",
+             "Paper-demo helper: send SEARCH_REQUEST on content_community if needed, "
+             "read response_cache, and fetch the first returned magnet. Use this "
+             "instead of repeating SEARCH_REQUEST when response_cache already has a result.",
+             {"type": "object",
+              "properties": {
+                  "query": {"type": "string", "default": "Creative Commons Audio"},
+                  "timeout_s": {"type": "number", "default": 10.0},
+              },
+              "additionalProperties": False},
+             content_search_and_fetch),
 
         Tool("torrent_stats",
              "Snapshot of all currently-known torrents (downloads + seeds).",
