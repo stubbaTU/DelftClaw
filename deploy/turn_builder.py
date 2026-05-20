@@ -54,18 +54,57 @@ def build_turn_prompt(
 ) -> str:
     """Assemble the LLM-facing prompt for one watchdog tick.
 
-    The order is fixed: ``mission`` first (intent + budget + stop), then
-    the current STATE block (JSON, human-readable indent), then the
-    RECENT TURNS tail. Determinism here is load-bearing — JSONL replay
-    assumes the same builder produces the same bytes from the same
-    inputs.
+    The order is fixed: code-supplied hard constraints first, then
+    ``mission`` (intent + budget + stop), then the current STATE block
+    (JSON, human-readable indent), then the RECENT TURNS tail.
+    Determinism here is load-bearing — JSONL replay assumes the same
+    builder produces the same bytes from the same inputs.
 
     The mission is the *only* operator-supplied prose the LLM sees;
     every other prompt input is either machine-generated (state snapshot,
     history tail) or content-hashed (the network manifest, which lives
     inside the snapshot).
+    The leading framing is the only prose the agent gets that isn't
+    operator-supplied. It exists because small and mid-sized chat models
+    otherwise tend to narrate, ask for confirmation, or spend turns on
+    read-only observation loops instead of making one useful state change.
     """
-    sections: list[str] = ["MISSION:", mission_text.rstrip(), ""]
+    sections: list[str] = [
+        "HARD CONSTRAINT — READ THIS FIRST:",
+        "EXACTLY ONE tool call this turn. Then STOP.",
+        "  * The MCP server enforces this. Further tool calls in this",
+        "    turn can be rejected and will not move the scenario.",
+        "  * After your one tool call returns, emit an empty assistant",
+        "    message and end the turn immediately.",
+        "  * The watchdog wakes you again with a fresh state snapshot",
+        "    on the next tick — pick the next action then, not now.",
+        "",
+        "ROLE:",
+        "You are an autonomous agent operating without human supervision.",
+        "No user is reading these messages. Do not greet, introduce",
+        "yourself, ask clarifying questions, or describe what you would do.",
+        "",
+        "PROGRESS DISCIPLINE:",
+        "The CURRENT STATE block below already contains the state you can",
+        "observe this turn: wallet, network/admission policy, community",
+        "summary, peers, loaded protocol overlays, torrents, and security",
+        "evidence when present. It was collected for you.",
+        "",
+        "Your turn must MOVE THE MISSION FORWARD. If your stop predicate",
+        "is not yet satisfied, your one tool call must CHANGE STATE — not",
+        "observe it. Compare CURRENT STATE to your mission's end goal,",
+        "find the single biggest gap, and take the one action that closes",
+        "it. Re-reading state you already have is NOT progress.",
+        "",
+        "If — and only if — CURRENT STATE already satisfies your mission's",
+        "stop condition, do nothing: emit an empty assistant message with",
+        "NO tool call and end. Do not call a read tool as a stand-in for",
+        "doing nothing.",
+        "",
+        "MISSION:",
+        mission_text.rstrip(),
+        "",
+    ]
     sections.append("TURN CONTRACT:")
     sections.append(
         "- Make at most one purposeful DelftClaw MCP tool call for this turn, "
@@ -92,7 +131,10 @@ def build_turn_prompt(
     else:
         sections.append("RECENT TURNS: (none yet — this is the first turn)")
     sections.append("")
-    sections.append("Now perform one bounded action for this turn.")
+    sections.append(
+        "Now perform one bounded action for this turn. It should change state "
+        "unless the current state already satisfies your mission."
+    )
     return "\n".join(sections)
 
 

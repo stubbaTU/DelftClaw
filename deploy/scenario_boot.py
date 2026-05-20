@@ -86,27 +86,63 @@ DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_QWEN_MODEL = "qwen3.6:27b"
 DEFAULT_OLLAMA_API_KEY = "ollama"
 DEFAULT_OPENCLAW_PROVIDER = "ollama"
+DEFAULT_LLM_BASE_URL = DEFAULT_QWEN_BASE_URL
+DEFAULT_LLM_MODEL = DEFAULT_QWEN_MODEL
+DEFAULT_LLM_API_KEY = DEFAULT_OLLAMA_API_KEY
+
+
+def _resolve_llm(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
+    """Resolve generic LLM_BASE_URL / LLM_MODEL / LLM_API_KEY.
+
+    Master renamed the per-host compiler/reasoning knobs from QWEN_* to
+    provider-neutral LLM_*. Keep this resolver as the canonical interface
+    for tests and new configs while the rest of the deploy stack still
+    emits QWEN_* into per-instance env files for compatibility.
+    """
+    host_env = _load_host_env(host_env_file)
+    base = os.environ.get(
+        "LLM_BASE_URL",
+        host_env.get("LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
+    )
+    model = os.environ.get(
+        "LLM_MODEL",
+        host_env.get("LLM_MODEL", DEFAULT_LLM_MODEL),
+    )
+    api_key = os.environ.get(
+        "LLM_API_KEY",
+        host_env.get("LLM_API_KEY", DEFAULT_LLM_API_KEY),
+    )
+    return base, model, api_key
 
 
 def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
     """Resolve QWEN_BASE_URL + QWEN_MODEL.
 
-    Order: process env var → configs/host.env (if present) →
-    hard-coded default. Exposed as a function so tests can stub the
-    file path without re-executing the whole module body.
+    Backward-compatible wrapper for the historical QWEN_* names. Generic
+    LLM_* values are accepted as fallbacks so a host can use either naming
+    scheme without breaking existing per-instance env generation.
     """
     host_env = _load_host_env(host_env_file)
     base = os.environ.get(
         "QWEN_BASE_URL",
-        host_env.get("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL),
+        os.environ.get(
+            "LLM_BASE_URL",
+            host_env.get("QWEN_BASE_URL", host_env.get("LLM_BASE_URL", DEFAULT_QWEN_BASE_URL)),
+        ),
     )
     model = os.environ.get(
         "QWEN_MODEL",
-        host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL),
+        os.environ.get(
+            "LLM_MODEL",
+            host_env.get("QWEN_MODEL", host_env.get("LLM_MODEL", DEFAULT_QWEN_MODEL)),
+        ),
     )
     api_key = os.environ.get(
         "OLLAMA_API_KEY",
-        host_env.get("OLLAMA_API_KEY", DEFAULT_OLLAMA_API_KEY),
+        os.environ.get(
+            "LLM_API_KEY",
+            host_env.get("OLLAMA_API_KEY", host_env.get("LLM_API_KEY", DEFAULT_OLLAMA_API_KEY)),
+        ),
     )
     return base, model, api_key
 
@@ -124,11 +160,17 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
     ).strip().lower()
     base_url = os.environ.get(
         "OPENCLAW_BASE_URL",
-        host_env.get("OPENCLAW_BASE_URL", host_env.get("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL)),
+        host_env.get(
+            "OPENCLAW_BASE_URL",
+            host_env.get("QWEN_BASE_URL", host_env.get("LLM_BASE_URL", DEFAULT_QWEN_BASE_URL)),
+        ),
     ).strip()
     model = os.environ.get(
         "OPENCLAW_MODEL",
-        host_env.get("OPENCLAW_MODEL", host_env.get("QWEN_MODEL", DEFAULT_QWEN_MODEL)),
+        host_env.get(
+            "OPENCLAW_MODEL",
+            host_env.get("QWEN_MODEL", host_env.get("LLM_MODEL", DEFAULT_QWEN_MODEL)),
+        ),
     ).strip()
     api = os.environ.get("OPENCLAW_API", host_env.get("OPENCLAW_API", "")).strip().lower()
     if not api:
