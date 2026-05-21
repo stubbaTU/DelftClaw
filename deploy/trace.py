@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from deploy.openclaw_output import parse_openclaw_json_stdout
+
 LOG_ROOT = Path("/var/log/delftclaw/scenarios")
 STATE_ROOT = Path("/var/lib/delftclaw")
 
@@ -114,24 +116,31 @@ def _agent_summary(scenario: str, agent: str) -> dict:
 
     last_turn = turn_events[-1] if turn_events else None
     stderr_tail = ""
-    if last_turn and not last_turn.get("openclaw_ok", True):
+    if last_turn:
         stderr_lines = (last_turn.get("openclaw_stderr") or "").strip().splitlines()
         stderr_tail = (stderr_lines[-1][:120] if stderr_lines else "")
 
     last_stdout = ""
+    assistant_text = ""
     if last_turn:
         raw_out = (last_turn.get("openclaw_stdout") or "").strip()
         last_stdout = raw_out[:300]
+        parsed = parse_openclaw_json_stdout(raw_out)
+        assistant_text = parsed.assistant_text[:300]
 
     return {
         "agent_id": (boot or {}).get("agent_id", "?"),
         "stop_predicate": (boot or {}).get("stop_predicate", "?"),
         "turn_count": len(turn_events),
         "last_turn_ok": last_turn.get("openclaw_ok") if last_turn else None,
+        "last_subprocess_ok": last_turn.get("openclaw_subprocess_ok") if last_turn else None,
+        "last_semantic_error": last_turn.get("openclaw_semantic_error") if last_turn else None,
+        "last_json_parse_error": last_turn.get("openclaw_json_parse_error") if last_turn else None,
         "last_turn_n": last_turn.get("turn_n") if last_turn else None,
         "last_stop_value": last_turn.get("stop_predicate_value") if last_turn else None,
         "last_stderr_tail": stderr_tail,
         "last_stdout": last_stdout,
+        "last_assistant_text": assistant_text,
         "stopped": bool(stop_events),
         "total_entries_in_file": len(entries),
     }
@@ -304,6 +313,10 @@ def _render_agent(scenario: str, agent: str, snap: dict) -> None:
 
     if snap["last_stderr_tail"]:
         print(f"    {_C['red']}stderr:{_C['reset']} {snap['last_stderr_tail']}")
+    if snap["last_semantic_error"]:
+        print(f"    {_C['red']}semantic:{_C['reset']} {snap['last_semantic_error']}")
+    if snap["last_json_parse_error"]:
+        print(f"    {_C['yellow']}json:{_C['reset']} {snap['last_json_parse_error']}")
 
     tools = snap.get("_tools", collections.Counter())
     if tools:
@@ -313,7 +326,10 @@ def _render_agent(scenario: str, agent: str, snap: dict) -> None:
     else:
         print(f"    {_C['dim']}no tool calls in journal{_C['reset']}")
 
-    if snap["last_stdout"]:
+    if snap["last_assistant_text"]:
+        text = snap["last_assistant_text"].replace("\n", " ")
+        print(f"    {_C['dim']}assistant_text:{_C['reset']} {text}")
+    elif snap["last_stdout"]:
         text = snap["last_stdout"].replace("\n", " ")
         print(f"    {_C['dim']}last LLM stdout:{_C['reset']} {text}")
 

@@ -40,6 +40,7 @@ from typing import Any
 
 from deploy import stop_predicates
 from deploy.mcp_snapshot import collect_state_via_mcp, load_manifest_from_file
+from deploy.openclaw_output import OpenClawJsonSummary, parse_openclaw_json_stdout
 from deploy.scenario import AgentSpec, parse_scenario
 from deploy.turn_lock import acquire_llm_turn_lock
 from deploy.turn_builder import (
@@ -185,6 +186,22 @@ def _invoke_openclaw_agent(
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
     return proc.returncode == 0, proc.stdout, proc.stderr
+
+
+def _classify_openclaw_turn(
+    *,
+    subprocess_ok: bool,
+    stdout: str,
+    stderr: str,
+) -> tuple[bool, OpenClawJsonSummary, str | None]:
+    """Return ``(turn_ok, parsed_stdout, failure_reason)`` for one turn."""
+    summary = parse_openclaw_json_stdout(stdout)
+    if not subprocess_ok:
+        reason = stderr[:200] or summary.parse_error or "unknown_openclaw_error"
+        return False, summary, reason
+    if summary.semantic_error:
+        return False, summary, summary.semantic_error
+    return True, summary, None
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +385,13 @@ async def _drive(
                 model=f"{provider_key}/{model_name}",
             )
 
+        turn_ok, summary, failure_reason = _classify_openclaw_turn(
+            subprocess_ok=ok,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        semantic_error = summary.semantic_error
+
         record = {
             "event": "turn",
             "turn_n": turn_n,
@@ -376,16 +400,19 @@ async def _drive(
             "snapshot": snapshot,
             "stop_predicate_value": stop_value,
             "prompt": prompt,
-            "openclaw_ok": ok,
+            "openclaw_ok": turn_ok,
+            "openclaw_subprocess_ok": ok,
+            "openclaw_semantic_error": semantic_error,
+            "openclaw_json_parse_error": summary.parse_error,
             "openclaw_stdout": stdout,
             "openclaw_stderr": stderr,
         }
         sink.append(record)
 
-        if not ok:
+        if not turn_ok:
             consecutive_llm_errors += 1
             _log.error("openclaw agent failed (consecutive=%d): %s",
-                       consecutive_llm_errors, stderr[:200])
+                       consecutive_llm_errors, failure_reason)
             if consecutive_llm_errors >= MAX_CONSECUTIVE_LLM_ERRORS:
                 sink.append({
                     "event": "stop", "reason": "llm_errors",

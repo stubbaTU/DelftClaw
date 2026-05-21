@@ -44,6 +44,7 @@ from typing import Iterable
 
 from fastmcp import Client
 
+from deploy.openclaw_output import parse_openclaw_json_stdout
 from deploy.scenario import AgentSpec, Scenario, parse_scenario, REPO_ROOT
 
 
@@ -670,6 +671,65 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
 
 
+def _openclaw_mcp_smoke_check(
+    scenario: Scenario,
+    agent: AgentSpec,
+    *,
+    expected_wallet_address: str,
+    timeout_s: int = 90,
+) -> str | None:
+    """Verify OpenClaw can reach this agent's MCP tools before watchdog boot.
+
+    Returns ``None`` on success, otherwise a concise operator-facing failure
+    reason. The prompt deliberately does not include the expected address; the
+    only legitimate way for OpenClaw to learn it is by calling the read-only
+    ``wallet_address`` tool configured in this agent's per-HOME OpenClaw config.
+    """
+    instance = scenario.instance_id(agent.name)
+    state = _state_dir(scenario.name, agent.name)
+    provider_key, _api_type, _base = _provider_for(LLM_BASE_URL)
+    model = f"{provider_key}/{LLM_MODEL}"
+    prompt = (
+        "Smoke test. Call the wallet_address MCP tool exactly once, then output "
+        "only the returned wallet address. Do not guess."
+    )
+    cmd = [
+        "sudo", "-u", SERVICE_USER, "env", f"HOME={state}",
+        "openclaw", "agent",
+        "--local",
+        "--model", model,
+        "--agent", instance,
+        "--message", prompt,
+        "--json",
+        "--timeout", str(timeout_s),
+        "--thinking", "off",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s + 30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return f"openclaw smoke timed out: {exc}"
+
+    summary = parse_openclaw_json_stdout(proc.stdout)
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or "").strip().splitlines()
+        tail = stderr_tail[-1] if stderr_tail else "no stderr"
+        return f"openclaw smoke subprocess failed rc={proc.returncode}: {tail[:200]}"
+    if summary.semantic_error:
+        return summary.semantic_error
+    haystack = "\n".join([proc.stdout or "", summary.assistant_text])
+    if expected_wallet_address not in haystack:
+        return (
+            "openclaw smoke missing wallet_address evidence: "
+            f"expected {expected_wallet_address!r}"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Network manifest synthesis
 # ---------------------------------------------------------------------------
@@ -825,6 +885,22 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             **info,
         }
         c_ok(f"{agent.name}: wallet={info['wallet_address']}  pubkey={coords[agent.name]['pubkey_hex'][:24]}...")
+
+    # Phase 3b: verify OpenClaw itself can see MCP tools before the autonomous
+    # watchdogs start. Direct FastMCP probes above prove the server is healthy;
+    # this catches OpenClaw config/provider/tool-registration failures that
+    # otherwise show up later as successful turns with literal "ERROR" output.
+    for agent in scenario.agents.values():
+        c_info(f"{agent.name}: OpenClaw->MCP smoke wallet_address")
+        failure = _openclaw_mcp_smoke_check(
+            scenario,
+            agent,
+            expected_wallet_address=str(coords[agent.name]["wallet_address"]),
+        )
+        if failure:
+            c_fail(f"{agent.name}: {failure}")
+            return 1
+        c_ok(f"{agent.name}: OpenClaw->MCP smoke ok")
 
     # Phase 4: cross-introduce peers.
     for agent in scenario.agents.values():
