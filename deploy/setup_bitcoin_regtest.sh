@@ -19,6 +19,7 @@
 #   BITCOIN_CONF          Override Bitcoin config file path
 #   OPENCLAW_SEED         Seed for wallet derivation (hex, 64 chars)
 #   BITCOIN_CHAIN_ID      Network ID (default: regtest)
+#   BOB_TARGET_BALANCE_SATS  Minimum Bob balance (default: 20000)
 #
 # The script will:
 #   1. Ensure bitcoind is running in regtest mode
@@ -37,6 +38,7 @@ RPC_PORT=18443
 RPC_BIND="127.0.0.1"
 BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
 REGTEST_CHAIN="regtest"
+BOB_TARGET_BALANCE_SATS="${BOB_TARGET_BALANCE_SATS:-20000}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -135,6 +137,24 @@ btc_wait() {
     done
 }
 
+btc_to_sats() {
+    python3 - "$1" <<'PY'
+from decimal import Decimal
+import sys
+
+print(int((Decimal(sys.argv[1]) * Decimal(100000000)).to_integral_value()))
+PY
+}
+
+sats_to_btc() {
+    python3 - "$1" <<'PY'
+from decimal import Decimal
+import sys
+
+print(f"{Decimal(int(sys.argv[1])) / Decimal(100000000):.8f}")
+PY
+}
+
 wallet_is_loaded() {
     local wallet_name="$1"
     btc listwallets 2>/dev/null | grep -q "\"$wallet_name\""
@@ -213,6 +233,25 @@ if [ "$CURRENT_BLOCKS" -lt "$BLOCKS_NEEDED" ]; then
     echo "  ✓ Mined blocks, now at height $(btc getblockcount)"
 fi
 
+# Bob's regtest_transfer admission donation is exactly 10,000 sats. Fund him
+# above that amount so Bitcoin Core can also pay the transaction fee.
+BOB_BALANCE_BTC=$(btc -rpcwallet=bob getbalance)
+BOB_BALANCE_SATS=$(btc_to_sats "$BOB_BALANCE_BTC")
+if [ "$BOB_BALANCE_SATS" -lt "$BOB_TARGET_BALANCE_SATS" ]; then
+    FUND_SATS=$((BOB_TARGET_BALANCE_SATS - BOB_BALANCE_SATS))
+    FUND_BTC=$(sats_to_btc "$FUND_SATS")
+    BOB_ADDR=$(btc -rpcwallet=bob getnewaddress)
+    echo "[*] Funding bob with $FUND_SATS sats ($FUND_BTC BTC) for admission + fee headroom..."
+    btc -rpcwallet=alice -named sendtoaddress \
+        address="$BOB_ADDR" \
+        amount="$FUND_BTC" \
+        fee_rate=1 >/dev/null
+    btc generatetoaddress 1 "$(btc -rpcwallet=alice getnewaddress)" >/dev/null
+    echo "  OK Bob balance is now $(btc -rpcwallet=bob getbalance) BTC"
+else
+    echo "[*] Bob already has $BOB_BALANCE_SATS sats; target is $BOB_TARGET_BALANCE_SATS sats"
+fi
+
 # Get addresses for each agent and display summary
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
@@ -267,4 +306,3 @@ echo ""
 echo "RPC connection string for agents:"
 echo "  http://127.0.0.1:$RPC_PORT"
 echo ""
-
