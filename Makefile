@@ -117,6 +117,10 @@ tail-turns: check-name ## Turn-level tail: lock acquire/release + TOOL + IPv8 + 
 		| grep --line-buffered -E \
 		  'llm turn lock|TOOL |IPv8 (send|recv)|ERROR|WARN|FAIL|Traceback|stop_predicate'"
 
+watch-brief: check-name ## Concise Python watcher: tool/action/errors only
+	$(SSH) "PYTHONPATH=$(VPS_ROOT) $(VPS_ROOT)/venv/bin/python \
+		-m deploy.watch_concise $(NAME)"
+
 tools-summary: check-name ## One-shot histogram of TOOL invocations per agent and per tool name
 	$(SSH) "journalctl --no-pager --since '1 hour ago' \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \

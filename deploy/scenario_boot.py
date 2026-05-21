@@ -498,7 +498,28 @@ def _purge_orphans(scenario: Scenario) -> None:
 # MCP introspection
 # ---------------------------------------------------------------------------
 
-async def _await_mcp_up(url: str, timeout_s: float = 60.0) -> None:
+def _unit_active_state(unit: str) -> str | None:
+    proc = subprocess.run(
+        ["systemctl", "is-active", unit],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    state = (proc.stdout or "").strip()
+    return state or None
+
+
+def _journal_tail(unit: str, lines: int = 40) -> str:
+    proc = subprocess.run(
+        ["journalctl", "--no-pager", "-n", str(lines), "-u", unit],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (proc.stdout or proc.stderr or "").strip()
+
+
+async def _await_mcp_up(url: str, *, unit: str | None = None, timeout_s: float = 60.0) -> None:
     """Wait until the MCP server at ``url`` answers ``tools/list``.
 
     Logs the last error every 10s while waiting so a hung MCP unit is
@@ -509,6 +530,14 @@ async def _await_mcp_up(url: str, timeout_s: float = 60.0) -> None:
     last_err: Exception | None = None
     last_report = 0.0
     while time.monotonic() - start < timeout_s:
+        if unit:
+            state = _unit_active_state(unit)
+            if state in {"failed", "inactive"}:
+                tail = _journal_tail(unit)
+                raise RuntimeError(
+                    f"{unit} is {state} while waiting for MCP at {url}.\n"
+                    f"journal tail:\n{tail}"
+                )
         try:
             async with Client(url) as c:
                 await c.list_tools()
@@ -521,7 +550,13 @@ async def _await_mcp_up(url: str, timeout_s: float = 60.0) -> None:
                    f"{type(last_err).__name__}: {last_err}")
             last_report = elapsed
         await asyncio.sleep(1.0)
-    raise TimeoutError(f"MCP at {url} did not come up within {timeout_s}s: {last_err}")
+    detail = f"MCP at {url} did not come up within {timeout_s}s: {last_err}"
+    if unit:
+        detail += f"\n{unit} state={_unit_active_state(unit)}"
+        tail = _journal_tail(unit)
+        if tail:
+            detail += f"\njournal tail:\n{tail}"
+    raise TimeoutError(detail)
 
 
 async def _call_mcp(url: str, tool: str, args: dict) -> dict | str:
@@ -877,9 +912,10 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         _enable_unit(f"delftclaw-mcp@{scenario.instance_id(agent.name)}.service")
 
     for agent in scenario.agents.values():
+        unit = f"delftclaw-mcp@{scenario.instance_id(agent.name)}.service"
         url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
         c_info(f"{agent.name}: waiting for MCP at {url}")
-        await _await_mcp_up(url)
+        await _await_mcp_up(url, unit=unit)
         c_ok(f"{agent.name}: MCP up at {url}")
 
     # Phase 2b: provision the per-agent OpenClaw workspace + MCP config so

@@ -457,15 +457,27 @@ class RegtestClient:
         """
         amount_btc = amount_sat / 1e8
 
-        # Build options dict
-        options = {}
+        params: list[Any] = [to_address, amount_btc]
         if fee_rate_sat_per_vb is not None:
-            # estimatesmartfee returns BTC/vB; convert from sat/vB
-            options["feeRate"] = fee_rate_sat_per_vb / 1e8
+            # Bitcoin Core's sendtoaddress positional fee_rate is BTC/kvB.
+            # 1 sat/vB == 1000 sat/kvB == 0.00001000 BTC/kvB.
+            fee_rate_btc_per_kvb = fee_rate_sat_per_vb / 100_000
+            params = [
+                to_address,
+                amount_btc,
+                "",      # comment
+                "",      # comment_to
+                False,   # subtractfeefromamount
+                False,   # replaceable
+                None,    # conf_target
+                "unset", # estimate_mode
+                False,   # avoid_reuse
+                fee_rate_btc_per_kvb,
+            ]
 
         result = await self._call_rpc(
             "sendtoaddress",
-            [to_address, amount_btc, "", "", False, False, None, "unset", 1, options],
+            params,
             wallet=wallet,
         )
         return str(result)
