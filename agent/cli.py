@@ -136,6 +136,7 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
 
     btc_net = (agent.config.btc_network or "").strip().lower()
     wants_regtest = btc_net == "regtest" or _truthy_env("OPENCLAW_USE_ONCHAIN") or _truthy_env("BITCOIN_USE_ONCHAIN")
+    strict_regtest = btc_net == "regtest"
     has_rpc_env = bool(rpc_url and wallet_name)
     if not (wants_regtest or has_rpc_env):
         return
@@ -143,7 +144,10 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
     rpc_url = rpc_url or "http://127.0.0.1:18443"
     wallet_name = wallet_name or os.environ.get("AGENT_NAME") or ""
     if not wallet_name:
-        print("[boot] regtest requested but no BITCOIN_RPC_WALLET set; skipping RegtestWallet wiring", flush=True)
+        msg = "regtest requested but no BITCOIN_RPC_WALLET set"
+        if strict_regtest:
+            raise RuntimeError(msg)
+        print(f"[boot] {msg}; skipping RegtestWallet wiring", flush=True)
         return
 
     rpc = RegtestClient(
@@ -159,6 +163,8 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
     # Advertise a *real* on-chain address for PEER_INTRO so peers can send funds.
     try:
         onchain_addr = await agent.wallet.get_onchain_address()  # type: ignore[attr-defined]
+        if strict_regtest and not str(onchain_addr).startswith("bcrt1"):
+            raise RuntimeError(f"regtest RPC returned non-bcrt1 address: {onchain_addr!r}")
         agent.seedbox.configure(
             verifier=DonationVerifier(
                 seedbox_address=onchain_addr,
@@ -173,10 +179,10 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
             flush=True,
         )
     except Exception as exc:
-        print(
-            f"[boot] regtest wallet enabled but on-chain address fetch failed: {type(exc).__name__}: {exc}",
-            flush=True,
-        )
+        msg = f"regtest wallet on-chain address fetch failed: {type(exc).__name__}: {exc}"
+        if strict_regtest:
+            raise RuntimeError(msg) from exc
+        print(f"[boot] regtest wallet enabled but {msg}", flush=True)
 
 
 def _load_seed(args: argparse.Namespace):
