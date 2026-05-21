@@ -111,10 +111,10 @@ def test_prompt_orders_hard_constraint_role_then_mission():
     # operator-trust boundary — anything above MISSION: must be code-
     # supplied, never user-supplied.
     lines = out.split("\n")
-    assert "HARD CONSTRAINT — READ THIS FIRST:" in lines
+    assert "HARD CONSTRAINT - READ THIS FIRST:" in lines
     assert "ROLE:" in lines
     assert "MISSION:" in lines
-    hard_idx = lines.index("HARD CONSTRAINT — READ THIS FIRST:")
+    hard_idx = lines.index("HARD CONSTRAINT - READ THIS FIRST:")
     role_idx = lines.index("ROLE:")
     mission_idx = lines.index("MISSION:")
     assert hard_idx < role_idx < mission_idx
@@ -156,11 +156,12 @@ def test_prompt_progress_discipline_does_not_teach_read_loop():
         )
 
     # It must explicitly say re-reading state is not progress, and the
-    # only no-op is an empty message (no tool call). Collapse whitespace
+    # valid no-op is an empty message (no tool call). Collapse whitespace
     # so line-wrapping in the prompt body doesn't break the substring.
     flat = " ".join(out.split())
     assert "NOT progress" in flat
     assert "empty assistant message with NO tool call" in flat
+    assert "waiting for another agent" in flat
 
 
 # ---------------------------------------------------------------------------

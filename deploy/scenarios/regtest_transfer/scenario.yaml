@@ -15,7 +15,7 @@ description: >-
   and sends satoshis to bob, then mines a block to confirm.
 
 watchdog:
-  interval_s: 120
+  interval_s: 240
   max_iterations_per_turn: 1
   max_total_turns: 60
   max_wall_clock_s: 7200

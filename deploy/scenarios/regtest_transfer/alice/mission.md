@@ -6,15 +6,15 @@
 # Intent
 
 You are running in a scenario backed by a local Bitcoin Core regtest node.
-Your goal is to perform a real on-chain regtest payment: obtain spendable
-regtest coins, wait until bob has advertised an on-chain receiving address
-through the peer metadata, send bob 10,000 sats, and confirm the transfer on
-chain. Prefer the real regtest Bitcoin capabilities over the synthetic wallet
-path. Use at most one state-changing action per turn, while treating read-only
-checks as freely available context. If your balance is zero, make the coinbase
-spendable before paying bob; once bob is admitted and his peer metadata contains
-a wallet address, send him 10,000 sats and confirm that payment with one mined
-block.
+Your goal is to perform a real on-chain regtest payment using the Bitcoin RPC
+wallet and node path, not the synthetic wallet path. Treat the current state
+snapshot as your main context and spend your one active turn action on the next
+missing state change. Obtain spendable regtest coins when needed, then wait
+without spending actions until bob is admitted and his peer metadata advertises
+a regtest receiving address. Once that address is available, send bob exactly
+10,000 sats and confirm the payment with one mined block. Avoid balance-only or
+peer-only checks unless the snapshot is missing information required for that
+state-changing action.
 
 # Budget
 

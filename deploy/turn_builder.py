@@ -56,7 +56,7 @@ def build_turn_prompt(
 
     The order is fixed: ``mission`` first (intent + budget + stop), then
     the current STATE block (JSON, human-readable indent), then the
-    RECENT TURNS tail. Determinism here is load-bearing — JSONL replay
+    RECENT TURNS tail. Determinism here is load-bearing - JSONL replay
     assumes the same builder produces the same bytes from the same
     inputs.
 
@@ -67,17 +67,16 @@ def build_turn_prompt(
 
     The leading ``ROLE`` block is the only framing the agent gets that
     isn't operator-supplied. It exists because LLMs (especially smaller
-    chat-tuned ones) default to addressing a human user —
-    they introduce themselves, ask "how can I help?", or describe what
-    they would do rather than act. The framing tells the model up front
-    that no human is reading and the only acceptable output is a tool
-    call, which materially reduces narration on small-to-mid-sized
-    models.
+    chat-tuned ones) default to addressing a human user - they introduce
+    themselves, ask "how can I help?", or describe what they would do
+    rather than act. The framing tells the model up front that no human
+    is reading and the only acceptable output is a tool call or an
+    explicit empty wait when another agent must act.
     """
     sections: list[str] = [
-        "HARD CONSTRAINT — READ THIS FIRST:",
-        "EXACTLY ONE tool call this turn. Then STOP.",
-        "  * The MCP server enforces this. The 2nd, 3rd, … tool calls",
+        "HARD CONSTRAINT - READ THIS FIRST:",
+        "EXACTLY ONE tool call this turn at most. Then STOP.",
+        "  * The MCP server enforces this. The 2nd, 3rd, ... tool calls",
         "    you make this turn will return tool_budget_exhausted and",
         "    will NOT be executed.",
         "  * After your one tool call returns, emit an empty assistant",
@@ -85,7 +84,7 @@ def build_turn_prompt(
         "    actions. Do NOT call another tool 'just in case'. Do NOT",
         "    explain what you would do next.",
         "  * The watchdog wakes you again with a fresh state snapshot",
-        "    on the next tick — pick the next action then, not now.",
+        "    on the next tick - pick the next action then, not now.",
         "  * Every extra tool call costs provider rate-limit budget",
         "    every other agent in this scenario also needs.",
         "",
@@ -104,17 +103,20 @@ def build_turn_prompt(
         "that again is NOT progress and wastes your only action.",
         "",
         "Your turn must MOVE THE MISSION FORWARD. If your stop",
-        "predicate is not yet satisfied, your one tool call must CHANGE",
-        "STATE — not observe it. Compare CURRENT STATE to your mission's",
-        "end goal, find the single biggest gap, and take the one action",
-        "that closes it. Re-reading state you already have is the one",
-        "thing that guarantees no progress.",
+        "predicate is not yet satisfied and you can personally close the",
+        "next gap, your one tool call must CHANGE STATE - not observe",
+        "it. Compare CURRENT STATE to your mission's end goal, find the",
+        "single biggest gap, and take the one action that closes it.",
+        "Re-reading state you already have is the one thing that",
+        "guarantees no progress.",
         "",
-        "If — and only if — CURRENT STATE already satisfies your",
-        "mission's stop condition, do nothing: emit an empty assistant",
-        "message with NO tool call and end. The harness tears you down",
-        "on the next tick once your stop_predicate is satisfied. Do NOT",
-        "call a read tool as a stand-in for doing nothing.",
+        "If CURRENT STATE already satisfies your mission's stop",
+        "condition, or if your mission is waiting for another agent's",
+        "state-changing action and you have no useful state change left",
+        "to make, do nothing: emit an empty assistant message with NO",
+        "tool call and end. The harness tears you down on the next tick",
+        "once your stop_predicate is satisfied. Do NOT call a read tool",
+        "as a stand-in for doing nothing.",
         "",
         "MISSION:",
         mission_text.rstrip(),
@@ -130,13 +132,16 @@ def build_turn_prompt(
         for record in history.tail():
             sections.append(record.summary())
     else:
-        sections.append("RECENT TURNS: (none yet — this is the first turn)")
+        sections.append("RECENT TURNS: (none yet - this is the first turn)")
     sections.append("")
     sections.append(
-        "Reminder: exactly ONE state-CHANGING tool call this turn, then "
-        "STOP. Re-reading state you were already given is not progress "
-        "and is not an acceptable action. The MCP server rejects any "
-        "subsequent tool call in this session with tool_budget_exhausted."
+        "Reminder: make at most ONE state-CHANGING tool call this turn, "
+        "then STOP. If you are waiting for another agent and have no "
+        "useful state change left, emit an empty assistant message with "
+        "NO tool call. Re-reading state you were already given is not "
+        "progress and is not an acceptable action. The MCP server "
+        "rejects any subsequent tool call in this session with "
+        "tool_budget_exhausted."
     )
     return "\n".join(sections)
 
