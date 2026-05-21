@@ -3,7 +3,7 @@
 Two-agent scenario that performs a **real Bitcoin Core regtest** on-chain transfer via JSON-RPC:
 
 - **bob** joins via the normal signed-log admission flow, with the admission donation broadcast through Bitcoin Core regtest RPC.
-- **alice** mines regtest blocks, then sends **10,000 sats** to bob’s advertised on-chain regtest address.
+- **alice** mines regtest blocks, then sends **20,000 sats** to bob's advertised on-chain regtest address.
 
 ## Preconditions (on the host/VPS running the scenario)
 
@@ -23,15 +23,15 @@ rpcport=18443
 # rpcpassword=rpcpass
 ```
 
-## How it’s wired
+## How it's wired
 
 - `deploy/scenario_boot.py` writes per-agent env files that include:
   - `BITCOIN_RPC_URL` (defaults to `http://127.0.0.1:18443`)
   - `BITCOIN_RPC_WALLET` (defaults to the agent name: `alice` / `bob`)
   - `BITCOIN_RPC_USER` / `BITCOIN_RPC_PASSWORD` (optional; cookie auth works too)
-- `agent/cli.py` wraps the agent’s synthetic wallet with `RegtestWallet(..., use_onchain=True)` when RPC env is present.
+- `agent/cli.py` wraps the agent's synthetic wallet with `RegtestWallet(..., use_onchain=True)` when RPC env is present.
 - `agent/tools.py` conditionally exposes the real RPC tools from `agent/bitcoin_tools.py`:
-  - `btc_get_balance`, `btc_get_address`, `btc_list_utxos`, `btc_send`, `btc_transaction_status`, `btc_mine_blocks`
+  - `btc_get_balance`, `btc_get_address`, `btc_list_utxos`, `btc_list_transactions`, `btc_send`, `btc_transaction_status`, `btc_mine_blocks`
 
 As of the current implementation, the RPC client auto-creates/loads the configured wallet (`alice` / `bob`) on first use when running against a fresh regtest datadir. Creation/loading is automatic; funding is not.
 
@@ -50,7 +50,8 @@ ALICE_ADDR=$(bitcoin-cli -regtest -rpcwallet=alice getnewaddress)
 bitcoin-cli -regtest generatetoaddress 101 "$ALICE_ADDR"
 
 BOB_ADDR=$(bitcoin-cli -regtest -rpcwallet=bob getnewaddress)
-bitcoin-cli -regtest -rpcwallet=alice sendtoaddress "$BOB_ADDR" 0.0001
+bitcoin-cli -regtest -rpcwallet=alice -named sendtoaddress \
+  address="$BOB_ADDR" amount=0.0001 fee_rate=1
 bitcoin-cli -regtest generatetoaddress 1 "$(bitcoin-cli -regtest -rpcwallet=alice getnewaddress)"
 ```
 
@@ -72,4 +73,4 @@ make stop NAME=regtest_transfer
 ## Notes
 
 - Both Bob's admission donation and Alice's later payment use your local `bitcoind -regtest`.
-
+- Bob's stop predicate uses confirmed incoming wallet transactions when available, not net balance, so the admission spend cannot mask the later payment.

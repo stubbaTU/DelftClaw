@@ -9,6 +9,7 @@ Tools included:
   - btc_get_balance: Query wallet balance from Regtest
   - btc_get_address: Derive or retrieve a new on-chain address
   - btc_list_utxos: List unspent outputs (UTXOs)
+  - btc_list_transactions: List recent wallet transactions
   - btc_send: Send satoshis to an address (real transaction)
   - btc_transaction_status: Query transaction details and confirmations
   - btc_mine_blocks: Mine blocks to the wallet (for testing)
@@ -104,6 +105,39 @@ def build_regtest_tools(wallet: RegtestWallet | None = None) -> list[tuple[str, 
             }
         except Exception as exc:
             return {"error": f"utxo_list_failed: {exc}"}
+
+    async def btc_list_transactions(count: int = 100) -> dict[str, Any]:
+        """List recent wallet transactions on Regtest.
+
+        The returned summary includes ``confirmed_received_sat``, which
+        lets watchdog stop predicates detect incoming payments even when
+        the wallet's net balance returns to its startup baseline.
+        """
+        try:
+            txs = await wallet.list_transactions(count=count)
+            compact: list[dict[str, Any]] = []
+            confirmed_received_sat = 0
+            for tx in txs:
+                amount_sat = int(round(float(tx.get("amount", 0)) * 1e8))
+                confirmations = int(tx.get("confirmations", 0) or 0)
+                category = str(tx.get("category", ""))
+                if category == "receive" and confirmations > 0 and amount_sat > 0:
+                    confirmed_received_sat += amount_sat
+                compact.append({
+                    "txid": tx.get("txid"),
+                    "category": category,
+                    "amount_sat": amount_sat,
+                    "confirmations": confirmations,
+                    "address": tx.get("address"),
+                    "time": tx.get("time"),
+                })
+            return {
+                "transactions": compact,
+                "count": len(compact),
+                "confirmed_received_sat": confirmed_received_sat,
+            }
+        except Exception as exc:
+            return {"error": f"transaction_list_failed: {exc}"}
 
     async def btc_send(to_address: str, amount_sat: int) -> dict[str, Any]:
         """Send satoshis to a Bitcoin address on Regtest.
@@ -254,6 +288,22 @@ def build_regtest_tools(wallet: RegtestWallet | None = None) -> list[tuple[str, 
                      "minimum": 0,
                      "default": 0,
                      "description": "Minimum confirmations required (0 for Regtest demo)",
+                 },
+             },
+             "additionalProperties": False,
+         }),
+
+        ("btc_list_transactions",
+         btc_list_transactions,
+         {
+             "type": "object",
+             "properties": {
+                 "count": {
+                     "type": "integer",
+                     "minimum": 1,
+                     "maximum": 500,
+                     "default": 100,
+                     "description": "Maximum recent wallet transactions to return",
                  },
              },
              "additionalProperties": False,

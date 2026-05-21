@@ -8,7 +8,7 @@
 You are running in a scenario backed by a local Bitcoin Core regtest node.
 Your goal is to join alice's community through the signed-log admission flow,
 advertise a real on-chain regtest receiving address in your peer metadata, and
-receive a confirmed 10,000 sat payment from alice. Join with exactly the 10,000
+receive a confirmed 20,000 sat payment from alice. Join with exactly the 10,000
 sat admission minimum using the real regtest RPC-backed donation path, and do
 not repeat admission after a donation or join entry has already been submitted.
 After you are joined and your receiving address is advertised, wait with no
@@ -23,4 +23,4 @@ peer-only checks unless it is missing information required to join.
 
 # Stop
 
-- predicate: wallet_received_sats(min_sats=10000)
+- predicate: wallet_received_sats(min_sats=20000)

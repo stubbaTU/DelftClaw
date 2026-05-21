@@ -16,13 +16,17 @@ from deploy import stop_predicates as sp
 # Synthetic snapshot helpers
 # ---------------------------------------------------------------------------
 
-def _snap(*, peers=0, torrents=None, balance=0, agent_id="agent-1") -> dict:
+def _snap(*, peers=0, torrents=None, balance=0, agent_id="agent-1",
+          confirmed_received_sats=None) -> dict:
+    wallet = {"address": "tb1qx", "balance_sats": balance}
+    if confirmed_received_sats is not None:
+        wallet["confirmed_received_sats"] = confirmed_received_sats
     return {
         "agent": {"agent_id": agent_id},
         "peers": [{"mid_hex": f"aa{i:02d}" * 10, "address": ["127.0.0.1", 8000 + i]}
                   for i in range(peers)],
         "torrents": torrents or [],
-        "wallet": {"address": "tb1qx", "balance_sats": balance},
+        "wallet": wallet,
     }
 
 
@@ -100,6 +104,39 @@ def test_wallet_received_sats_without_baseline_treats_first_snapshot_as_baseline
     p = sp.resolve("wallet_received_sats(min_sats=1)")
     # No baseline set; predicate compares against snapshot itself -> 0 delta.
     assert p(_snap(agent_id="brand-new", balance=999)) is False
+
+
+def test_wallet_received_sats_prefers_confirmed_received_total():
+    snap0 = _snap(
+        agent_id="receiver-with-spend",
+        balance=10_000,
+        confirmed_received_sats=10_000,
+    )
+    sp.set_baseline("receiver-with-spend", snap0)
+
+    p = sp.resolve("wallet_received_sats(min_sats=20_000)")
+    # Net balance is unchanged after spending the admission funds and later
+    # receiving a payment, but the monotonic receive total has increased.
+    assert p(_snap(
+        agent_id="receiver-with-spend",
+        balance=10_000,
+        confirmed_received_sats=30_000,
+    )) is True
+
+
+def test_wallet_received_sats_confirmed_received_below_threshold():
+    sp.set_baseline("receiver-below", _snap(
+        agent_id="receiver-below",
+        balance=10_000,
+        confirmed_received_sats=10_000,
+    ))
+
+    p = sp.resolve("wallet_received_sats(min_sats=20_000)")
+    assert p(_snap(
+        agent_id="receiver-below",
+        balance=29_000,
+        confirmed_received_sats=29_000,
+    )) is False
 
 
 def test_bitcoin_sent_sats_triggers_after_drop_from_peak():

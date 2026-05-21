@@ -272,6 +272,17 @@ class RegtestWallet:
         if not self._rpc:
             return []
 
+    async def list_transactions(self, count: int = 100) -> list[dict]:
+        """List recent wallet transactions (on-chain only)."""
+        if not self._rpc:
+            return []
+
+        try:
+            return await self._rpc.list_transactions(count=count)
+        except RPCError as exc:
+            _logger.warning(f"Transaction list failed: {exc}")
+            return []
+
         try:
             utxos = await self._rpc.list_unspent(min_confirmations=min_confirmations)
             return [

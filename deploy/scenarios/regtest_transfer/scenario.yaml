@@ -12,7 +12,7 @@
 name: regtest_transfer
 description: >-
   Two-agent regtest transaction demo: alice mines spendable regtest BTC via RPC
-  and sends satoshis to bob, then mines a block to confirm.
+  and sends 20,000 satoshis to bob, then mines a block to confirm.
 
 watchdog:
   interval_s: 240
@@ -31,7 +31,7 @@ agents:
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
-    stop_predicate: bitcoin_sent_sats(min_sats=10000)
+    stop_predicate: bitcoin_sent_sats(min_sats=20000)
     initial_balance_sats: 200000
     btc_network: regtest
     # Optional override; defaults to http://127.0.0.1:18443
@@ -42,7 +42,7 @@ agents:
     mcp_port: 18866
     publish_overlays: []
     mission_file: bob/mission.md
-    stop_predicate: wallet_received_sats(min_sats=10000)
+    stop_predicate: wallet_received_sats(min_sats=20000)
     peers:
       - alice
     initial_balance_sats: 10000

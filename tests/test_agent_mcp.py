@@ -333,6 +333,27 @@ async def test_mcp_client_can_publish_fetch_and_invoke_overlay(
     )
 
 
+def test_mcp_wallet_section_carries_confirmed_received_summary():
+    from deploy.mcp_snapshot import _wallet_section
+
+    section = _wallet_section(
+        "bcrt1qreceiver",
+        20_000,
+        {
+            "confirmed_received_sat": 30_000,
+            "transactions": [
+                {"txid": str(i), "category": "receive", "amount_sat": i}
+                for i in range(12)
+            ],
+        },
+    )
+
+    assert section["balance_sats"] == 20_000
+    assert section["confirmed_received_sats"] == 30_000
+    assert len(section["recent_transactions"]) == 10
+    assert section["recent_transactions"][0]["txid"] == "2"
+
+
 # ---------------------------------------------------------------------------
 # v5.1 manifest tools (the surface scenario_boot drives over MCP)
 # ---------------------------------------------------------------------------

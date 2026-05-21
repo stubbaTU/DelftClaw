@@ -12,7 +12,7 @@ snapshot as your main context and spend your one active turn action on the next
 missing state change. Obtain spendable regtest coins when needed, then wait
 without spending actions until bob is admitted and his peer metadata advertises
 a regtest receiving address. Once that address is available, send bob exactly
-10,000 sats and confirm the payment with one mined block. Avoid balance-only or
+20,000 sats and confirm the payment with one mined block. Avoid balance-only or
 peer-only checks unless the snapshot is missing information required for that
 state-changing action.
 
@@ -23,4 +23,4 @@ state-changing action.
 
 # Stop
 
-- predicate: bitcoin_sent_sats(min_sats=10000)
+- predicate: bitcoin_sent_sats(min_sats=20000)

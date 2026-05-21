@@ -20,14 +20,19 @@ Predicate = Callable[[StateSnapshot], bool]
 # evaluated across watchdog ticks. The watchdog seeds this via ``set_baseline``.
 _baseline_wallet: dict[str, int] = {}
 _peak_wallet: dict[str, int] = {}
+_baseline_confirmed_received: dict[str, int] = {}
 
 
 def set_baseline(agent_id: str, snapshot: StateSnapshot) -> None:
     """Record the wallet baseline so wallet delta predicates can measure changes."""
-    sats = snapshot.get("wallet", {}).get("balance_sats")
+    wallet = snapshot.get("wallet", {})
+    sats = wallet.get("balance_sats")
     if isinstance(sats, int):
         _baseline_wallet[agent_id] = sats
         _peak_wallet[agent_id] = sats
+    received = wallet.get("confirmed_received_sats")
+    if isinstance(received, int):
+        _baseline_confirmed_received[agent_id] = received
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +60,23 @@ def _peer_count_gte_N(n: int = 1) -> Predicate:
 def _wallet_received_sats(min_sats: int = 1) -> Predicate:
     def pred(snapshot: StateSnapshot) -> bool:
         agent_id = snapshot.get("agent", {}).get("agent_id")
-        sats = snapshot.get("wallet", {}).get("balance_sats")
-        if agent_id is None or not isinstance(sats, int):
+        wallet = snapshot.get("wallet", {})
+        if agent_id is None:
             return False
-        baseline = _baseline_wallet.get(agent_id, sats)
+        key = str(agent_id)
+
+        # Regtest wallets expose a monotonic confirmed receive total.
+        # Prefer it over net balance: a receiver may spend its startup
+        # admission funds before later receiving the scenario payment.
+        received = wallet.get("confirmed_received_sats")
+        if isinstance(received, int):
+            baseline_received = _baseline_confirmed_received.get(key, received)
+            return (received - baseline_received) >= min_sats
+
+        sats = wallet.get("balance_sats")
+        if not isinstance(sats, int):
+            return False
+        baseline = _baseline_wallet.get(key, sats)
         return (sats - baseline) >= min_sats
     pred.__name__ = f"wallet_received_sats_{min_sats}"
     return pred

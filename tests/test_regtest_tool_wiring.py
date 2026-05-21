@@ -33,6 +33,30 @@ class _FakeRegtestRPC:
         assert amount_sat > 0
         return "a" * 64
 
+    async def list_transactions(
+        self,
+        wallet: str | None = None,
+        count: int = 100,
+        skip: int = 0,
+    ) -> list[dict[str, Any]]:  # noqa: ARG002
+        return [
+            {
+                "txid": "b" * 64,
+                "category": "receive",
+                "amount": 0.0002,
+                "confirmations": 1,
+                "address": "bcrt1qexampleaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "time": 123,
+            },
+            {
+                "txid": "c" * 64,
+                "category": "send",
+                "amount": -0.0001,
+                "confirmations": 1,
+                "time": 124,
+            },
+        ]
+
 
 @pytest.mark.asyncio
 async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
@@ -56,6 +80,7 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     # btc_* tools are only present when the wallet is a RegtestWallet with an RPC client.
     assert "btc_get_balance" in names
     assert "btc_get_address" in names
+    assert "btc_list_transactions" in names
     assert "btc_send" in names
 
     # Regression: wallet_balance must not return an un-awaited coroutine.
@@ -66,5 +91,9 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     # Basic sanity: the btc_* tool uses the same RPC-backed wallet.
     reg_bal = await registry.dispatch("btc_get_balance", {})
     assert reg_bal["balance_sat"] == 123
+
+    txs = await registry.dispatch("btc_list_transactions", {})
+    assert txs["confirmed_received_sat"] == 20_000
+    assert txs["count"] == 2
 
 

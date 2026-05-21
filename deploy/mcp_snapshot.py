@@ -16,9 +16,9 @@ derived locally because they're already on disk (seed file +
 ``MANIFEST_FILE`` env var) so we don't burn an MCP round-trip for static
 data.
 
-The returned dict shape is byte-identical to ``deploy.state_snapshot.
-collect_state`` so existing stop predicates + JSONL log replay tooling
-keep working unchanged.
+The returned dict keeps the legacy ``deploy.state_snapshot.collect_state``
+top-level shape so existing stop predicates + JSONL log replay tooling keep
+working. Regtest wallets may add extra wallet transaction summary fields.
 """
 
 from __future__ import annotations
@@ -54,6 +54,18 @@ async def _call_mcp(client: Client, tool: str, args: dict | None = None) -> Any:
     return getattr(result, "structured_content", {}) or {}
 
 
+async def _call_mcp_optional(client: Client, tool: str, args: dict | None = None) -> Any:
+    """Best-effort MCP call for optional tools.
+
+    Older or mock agents may not expose regtest-only tools. Snapshot
+    collection should continue with the legacy shape in that case.
+    """
+    try:
+        return await _call_mcp(client, tool, args)
+    except Exception:
+        return None
+
+
 async def collect_state_via_mcp(
     *,
     mcp_url: str,
@@ -74,6 +86,9 @@ async def collect_state_via_mcp(
         async with Client(mcp_url) as client:
             wallet_address_raw = await _call_mcp(client, "wallet_address")
             wallet_balance_raw = await _call_mcp(client, "wallet_balance")
+            wallet_txs_raw = await _call_mcp_optional(
+                client, "btc_list_transactions", {"count": 100}
+            )
             community_raw = await _call_mcp(client, "community_treasury_balance")
             peers_raw = await _call_mcp(client, "peers_list")
             overlays_raw = await _call_mcp(client, "overlays_list")
@@ -91,7 +106,7 @@ async def collect_state_via_mcp(
             ),
         },
         "network": _network_section(manifest),
-        "wallet": _wallet_section(wallet_address_raw, wallet_balance_raw),
+        "wallet": _wallet_section(wallet_address_raw, wallet_balance_raw, wallet_txs_raw),
         "community": _community_section(community_raw),
         "peers": _peers_section(peers_raw),
         "overlays": _overlays_section(overlays_raw),
@@ -129,20 +144,37 @@ def _network_section(manifest: NetworkManifest | None) -> dict[str, Any] | None:
     }
 
 
-def _wallet_section(address_raw: Any, balance_raw: Any) -> dict[str, Any]:
+def _wallet_section(
+    address_raw: Any,
+    balance_raw: Any,
+    transactions_raw: Any = None,
+) -> dict[str, Any]:
     address = address_raw if isinstance(address_raw, str) else str(address_raw)
     if isinstance(balance_raw, int):
-        return {"address": address, "balance_sats": balance_raw}
-    if isinstance(balance_raw, dict) and "error" in balance_raw:
-        return {"address": address, "balance_sats": None,
-                "error": str(balance_raw["error"])}
-    # ``wallet_balance`` returns a bare int; anything else (e.g. a string
-    # number) is best-effort coerced for the JSONL log's sake.
-    try:
-        return {"address": address, "balance_sats": int(balance_raw)}
-    except (TypeError, ValueError):
-        return {"address": address, "balance_sats": None,
-                "error": f"non_integer_balance:{balance_raw!r}"}
+        section: dict[str, Any] = {"address": address, "balance_sats": balance_raw}
+    elif isinstance(balance_raw, dict) and "error" in balance_raw:
+        section = {"address": address, "balance_sats": None,
+                   "error": str(balance_raw["error"])}
+    else:
+        # ``wallet_balance`` returns a bare int; anything else (e.g. a string
+        # number) is best-effort coerced for the JSONL log's sake.
+        try:
+            section = {"address": address, "balance_sats": int(balance_raw)}
+        except (TypeError, ValueError):
+            section = {"address": address, "balance_sats": None,
+                       "error": f"non_integer_balance:{balance_raw!r}"}
+
+    if isinstance(transactions_raw, dict) and "error" not in transactions_raw:
+        try:
+            section["confirmed_received_sats"] = int(
+                transactions_raw.get("confirmed_received_sat", 0)
+            )
+        except (TypeError, ValueError):
+            section["confirmed_received_sats"] = 0
+        txs = transactions_raw.get("transactions")
+        if isinstance(txs, list):
+            section["recent_transactions"] = txs[-10:]
+    return section
 
 
 def _community_section(raw: Any) -> dict[str, Any] | None:

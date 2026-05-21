@@ -43,6 +43,7 @@ async def test_regtest_tools_are_registered_when_wallet_is_regtestwallet(tmp_pat
         tools3 = build_tools(agent)
         assert "btc_send" in tools3.names()
         assert "btc_get_balance" in tools3.names()
+        assert "btc_list_transactions" in tools3.names()
         assert "btc_mine_blocks" in tools3.names()
     finally:
         await agent.stop()

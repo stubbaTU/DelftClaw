@@ -108,6 +108,7 @@ _BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
     # regtest / on-chain BTC reads
     "btc_get_balance",
     "btc_list_utxos",
+    "btc_list_transactions",
     "btc_transaction_status",
 })
 

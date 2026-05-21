@@ -438,7 +438,7 @@ class RegtestClient:
         to_address: str,
         amount_sat: int,
         wallet: str | None = None,
-        fee_rate_sat_per_vb: Optional[int] = None,
+        fee_rate_sat_per_vb: Optional[int] = 1,
     ) -> str:
         """Send satoshis to an address.
 
@@ -446,7 +446,8 @@ class RegtestClient:
             to_address: Destination Bitcoin address
             amount_sat: Amount in satoshis
             wallet: Wallet name; uses default if not specified
-            fee_rate_sat_per_vb: Fee rate in sat/vB; uses defaults if not specified
+            fee_rate_sat_per_vb: Fee rate in sat/vB; defaults to 1 so
+                regtest sends do not depend on fallback fee estimation.
 
         Returns:
             Transaction ID (txid) as hex string
@@ -547,6 +548,31 @@ class RegtestClient:
         """
         result = await self._call_rpc("gettransaction", [txid], wallet=wallet)
         return dict(result) if result else {}
+
+    async def list_transactions(
+        self,
+        wallet: str | None = None,
+        count: int = 100,
+        skip: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return recent wallet transactions.
+
+        Args:
+            wallet: Wallet name; uses default if not specified.
+            count: Maximum transactions to return.
+            skip: Number of recent transactions to skip.
+
+        Returns:
+            Bitcoin Core ``listtransactions`` entries as dictionaries.
+        """
+        result = await self._call_rpc(
+            "listtransactions",
+            ["*", int(count), int(skip), True],
+            wallet=wallet,
+        )
+        if not isinstance(result, list):
+            return []
+        return [dict(tx) for tx in result if isinstance(tx, dict)]
 
     async def estimate_smart_fee(self, conf_target: int = 6) -> float:
         """Estimate fee rate in BTC/vB.

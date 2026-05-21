@@ -38,6 +38,9 @@ TOOL_NAMES: frozenset[str] = frozenset({
     "overlay_publish", "overlay_invoke",
     "agent_inject_manifest",
     "torrent_seed", "torrent_fetch", "torrent_stats",
+    "btc_get_balance", "btc_get_address", "btc_list_utxos",
+    "btc_list_transactions", "btc_send", "btc_transaction_status",
+    "btc_mine_blocks",
 })
 
 # Heuristic: a list under # Intent with this many entries or more is a recipe.
