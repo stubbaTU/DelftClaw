@@ -15,11 +15,15 @@ from protocol.llm import StubLLMClient
 class _FakeRegtestRPC:
     """Tiny async stub matching the subset of RegtestClient used in tests."""
 
+    def __init__(self) -> None:
+        self.address_calls = 0
+
     async def get_balance_sat(self, wallet: str | None = None) -> int:  # noqa: ARG002
         return 123
 
     async def get_new_address(self, label: str = "", address_type: str | None = None) -> str:  # noqa: ARG002
         # Any string is fine for wiring tests; no address validation occurs here.
+        self.address_calls += 1
         return "bcrt1qexampleaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
     async def send_to_address(
@@ -72,7 +76,8 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     )
 
     # Enable the regtest wrapper without hitting a real bitcoind.
-    agent.wallet = cast(Any, RegtestWallet(agent.wallet, rpc_client=cast(Any, _FakeRegtestRPC()), use_onchain=True))
+    fake_rpc = _FakeRegtestRPC()
+    agent.wallet = cast(Any, RegtestWallet(agent.wallet, rpc_client=cast(Any, fake_rpc), use_onchain=True))
 
     registry = build_tools(agent)
     names = set(registry.names())
@@ -87,6 +92,11 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     balance = await registry.dispatch("wallet_balance", {})
     assert isinstance(balance, int)
     assert balance == 123
+
+    address = await registry.dispatch("wallet_address", {})
+    assert address.startswith("bcrt1")
+    assert await registry.dispatch("wallet_address", {}) == address
+    assert fake_rpc.address_calls == 1
 
     # Basic sanity: the btc_* tool uses the same RPC-backed wallet.
     reg_bal = await registry.dispatch("btc_get_balance", {})

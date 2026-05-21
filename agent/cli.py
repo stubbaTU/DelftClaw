@@ -128,6 +128,7 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
     """
     from agent.regtest_wallet import RegtestWallet
     from agent.bitcoin_rpc import RegtestClient
+    from admission.donation_verifier import DonationVerifier
 
     import os
 
@@ -158,7 +159,15 @@ async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
     # Advertise a *real* on-chain address for PEER_INTRO so peers can send funds.
     try:
         onchain_addr = await agent.wallet.get_onchain_address()  # type: ignore[attr-defined]
-        agent.seedbox.configure(wallet_address=onchain_addr)
+        agent.seedbox.configure(
+            verifier=DonationVerifier(
+                seedbox_address=onchain_addr,
+                min_sats=agent.config.seedbox_min_sats,
+                min_confirmations=agent.config.seedbox_min_confirmations,
+                network=agent.config.btc_network,
+            ),
+            wallet_address=onchain_addr,
+        )
         print(
             f"[boot] regtest wallet enabled (rpc={rpc_url}, wallet={wallet_name}, addr={onchain_addr[:16]}...)",
             flush=True,

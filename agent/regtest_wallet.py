@@ -62,6 +62,7 @@ class RegtestWallet:
         self._synthetic = synthetic_wallet
         self._rpc = rpc_client
         self._use_onchain = use_onchain and rpc_client is not None
+        self._cached_onchain_address: str | None = None
 
     @classmethod
     def from_seed(
@@ -144,8 +145,11 @@ class RegtestWallet:
         """
         if not self._rpc:
             raise RuntimeError("RPC client not configured")
+        if self._cached_onchain_address:
+            return self._cached_onchain_address
         try:
-            return await self._rpc.get_new_address()
+            self._cached_onchain_address = await self._rpc.get_new_address()
+            return self._cached_onchain_address
         except RPCError as exc:
             _logger.error(f"Failed to get on-chain address: {exc}")
             raise

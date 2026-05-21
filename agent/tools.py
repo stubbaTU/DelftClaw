@@ -176,9 +176,15 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     # ---- Wallet --------------------------------------------------------
 
     async def wallet_address() -> str:
-        # In regtest mode agent/cli.py configures the seedbox with a real
-        # on-chain address so peers and generated manifests can pay via RPC.
-        # Mock scenarios keep this equal to the synthetic dclaw1... address.
+        # In regtest mode prefer the real on-chain address so peers and
+        # generated manifests pay via RPC. Fall back to seedbox metadata
+        # and finally the synthetic dclaw address for mock scenarios.
+        try:
+            get_onchain_address = getattr(agent.wallet, "get_onchain_address", None)
+            if callable(get_onchain_address):
+                return str(await _maybe_await(get_onchain_address()))
+        except Exception:
+            pass
         try:
             advertised = agent.seedbox.wallet_address
             if advertised:
