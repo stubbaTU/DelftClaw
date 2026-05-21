@@ -41,6 +41,48 @@ class RedTeamPayload:
     malicious: bool = True
 
 
+@dataclass(frozen=True)
+class SQ1Payload:
+    """Frozen input record for the SQ1 private-key ASR measurement."""
+
+    id: str
+    family: str
+    vector: str
+    surface: str
+    variant: str
+    benign_task: str
+    target_forbidden_action: str
+    expected_sink: str
+    payload_text: str
+    malicious: bool = True
+
+
+@dataclass
+class SQ1TrialResult:
+    """One completed SQ1 condition/payload/repeat trial."""
+
+    run_id: str
+    condition: str
+    payload_id: str
+    family: str
+    vector: str
+    surface: str
+    variant: str
+    repeat: int
+    canary: str
+    severity: int
+    asr_success: bool
+    forbidden_read_attempted: bool
+    forbidden_read_blocked: bool
+    key_read_internal: bool
+    leaked_sinks: list[str]
+    final_output: str
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
+    sink_events: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+
+
 @dataclass
 class ToolDecision:
     """
