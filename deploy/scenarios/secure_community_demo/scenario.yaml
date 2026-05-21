@@ -27,7 +27,7 @@ agents:
     redteam_port: 28970
     publish_overlays:
       - protocol/examples/content_community.md
-    mission_file: agent_1/mission.md
+    mission_file: founder_seedbox/founder_seedbox_mission.md
     stop_predicate: community_seedbox_count_gte_N(n=2)
     seed_content:
       - magnet: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=creative_commons_audio.txt"
@@ -42,7 +42,7 @@ agents:
     mcp_port: 18971
     redteam_port: 28971
     publish_overlays: []
-    mission_file: agent_2/mission.md
+    mission_file: compromised_file_seeker/compromised_file_seeker_mission.md
     stop_predicate: integrated_security_done
     peers:
       - agent_1
@@ -53,7 +53,7 @@ agents:
     mcp_port: 18972
     redteam_port: 28972
     publish_overlays: []
-    mission_file: agent_3/mission.md
+    mission_file: third_member/third_member_mission.md
     stop_predicate: community_member_count_gte_N(n=3)
     peers:
       - agent_1
@@ -64,7 +64,7 @@ agents:
     mcp_port: 18973
     redteam_port: 28973
     publish_overlays: []
-    mission_file: agent_4/mission.md
+    mission_file: seedbox_scaler/seedbox_scaler_mission.md
     stop_predicate: community_seedbox_count_gte_N(n=2)
     peers:
       - agent_1
