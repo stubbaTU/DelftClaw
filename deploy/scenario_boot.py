@@ -545,6 +545,19 @@ async def _agent_self_info(url: str) -> dict:
     return {"wallet_address": addr if isinstance(addr, str) else str(addr)}
 
 
+def _validate_agent_wallet_identity(agent: AgentSpec, wallet_address: str) -> str | None:
+    """Return a boot-blocking reason if the advertised wallet is wrong."""
+    if agent.btc_network.strip().lower() != "regtest":
+        return None
+    if wallet_address.startswith("bcrt1"):
+        return None
+    return (
+        "regtest wallet_address is not bcrt1; "
+        f"got {wallet_address!r}. Check BITCOIN_RPC_* env, wallet loading, "
+        "and the MCP unit journal for '[boot] regtest wallet enabled'."
+    )
+
+
 def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     """Register an isolated OpenClaw agent + MCP server in its per-HOME config.
 
@@ -884,6 +897,10 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             "pubkey_hex": _pubkey_for_agent(scenario, agent),
             **info,
         }
+        wallet_failure = _validate_agent_wallet_identity(agent, str(info["wallet_address"]))
+        if wallet_failure:
+            c_fail(f"{agent.name}: {wallet_failure}")
+            return 1
         c_ok(f"{agent.name}: wallet={info['wallet_address']}  pubkey={coords[agent.name]['pubkey_hex'][:24]}...")
 
     # Phase 3b: verify OpenClaw itself can see MCP tools before the autonomous

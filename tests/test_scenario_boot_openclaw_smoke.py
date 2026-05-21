@@ -125,3 +125,21 @@ def test_openclaw_mcp_smoke_requires_wallet_evidence(monkeypatch, tmp_path: Path
     )
     assert failure is not None
     assert "missing wallet_address evidence" in failure
+
+
+def test_regtest_wallet_identity_requires_bcrt1(tmp_path: Path) -> None:
+    _scenario, agent = _scenario_and_agent(tmp_path)
+    regtest_agent = AgentSpec(
+        name=agent.name,
+        ipv8_port=agent.ipv8_port,
+        mcp_port=agent.mcp_port,
+        publish_overlays=agent.publish_overlays,
+        mission_file=agent.mission_file,
+        stop_predicate=agent.stop_predicate,
+        btc_network="regtest",
+    )
+
+    assert scenario_boot._validate_agent_wallet_identity(regtest_agent, "bcrt1qok") is None
+    failure = scenario_boot._validate_agent_wallet_identity(regtest_agent, "dclaw123")
+    assert failure is not None
+    assert "not bcrt1" in failure
