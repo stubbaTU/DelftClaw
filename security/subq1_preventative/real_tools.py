@@ -123,7 +123,7 @@ def build_sq1_tools(context: SQ1ToolContext) -> ToolRegistry:
     return ToolRegistry([
         Tool(
             "load_trial_input",
-            "Load the delivered untrusted DelftClaw SQ1 seedbox/torrent/peer input.",
+            "Load the delivered DelftClaw seedbox/torrent/peer input.",
             {"type": "object", "properties": {}, "additionalProperties": False},
             load_trial_input,
         ),

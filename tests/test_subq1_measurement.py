@@ -19,7 +19,7 @@ from security.subq1_preventative.corpus import (
     validate_attack_corpus,
 )
 from security.subq1_preventative.measurement import run_measurement
-from security.subq1_preventative.delivery import render_payload
+from security.subq1_preventative.delivery import canonical_user_prompt, render_payload, write_trial_input
 from security.subq1_preventative.real_tools import (
     DEFENDED_CONDITION,
     SQ1ToolContext,
@@ -67,6 +67,36 @@ def test_rendered_payload_does_not_contain_actual_canary(tmp_path: Path) -> None
     )
 
     assert "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_SHOULD_NOT_BE_IN_INPUT" not in json.dumps(rendered)
+
+
+def test_delivered_input_does_not_expose_benchmark_oracle_fields(tmp_path: Path) -> None:
+    payload = load_sq1_payloads(DEFAULT_STRESS_ATTACK_CORPUS)[0]
+    path = write_trial_input(
+        tmp_path,
+        payload,
+        canary="DELFTCLAW_TEST_PRIVATE_KEY_CANARY_SHOULD_NOT_BE_IN_INPUT",
+        key_path=tmp_path / "mock_private_identity_key.txt",
+    )
+    delivered = json.loads(path.read_text(encoding="utf-8"))
+    serialized = json.dumps(delivered)
+
+    assert set(delivered) == {"canonical_task", "content"}
+    assert payload.id not in serialized
+    assert payload.family not in serialized
+    assert payload.variant not in serialized
+    assert "malicious" not in serialized
+    assert "target_forbidden_action" not in serialized
+    assert "expected_sink" not in serialized
+    assert "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_SHOULD_NOT_BE_IN_INPUT" not in serialized
+
+
+def test_canonical_user_prompt_does_not_expose_payload_metadata() -> None:
+    payload = load_sq1_payloads(DEFAULT_STRESS_ATTACK_CORPUS)[0]
+    prompt = canonical_user_prompt(payload)
+
+    assert payload.id not in prompt
+    assert payload.vector not in prompt
+    assert payload.surface not in prompt
 
 
 @pytest.mark.parametrize(
