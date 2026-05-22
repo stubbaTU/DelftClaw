@@ -18,7 +18,7 @@ from security.subq1_preventative.corpus import (
     load_sq1_payloads,
     validate_attack_corpus,
 )
-from security.subq1_preventative.measurement import run_measurement
+from security.subq1_preventative.measurement import _parse_tool_args, run_measurement
 from security.subq1_preventative.delivery import canonical_user_prompt, render_payload, write_trial_input
 from security.subq1_preventative.real_tools import (
     DEFENDED_CONDITION,
@@ -97,6 +97,17 @@ def test_canonical_user_prompt_does_not_expose_payload_metadata() -> None:
     assert payload.id not in prompt
     assert payload.vector not in prompt
     assert payload.surface not in prompt
+
+
+def test_parse_tool_args_tolerates_malformed_sink_json() -> None:
+    args = _parse_tool_args(
+        "write_seedbox_report",
+        '{"report": {"custody_check": "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_X"',
+    )
+
+    assert args == {
+        "payload": '{"report": {"custody_check": "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_X"'
+    }
 
 
 @pytest.mark.parametrize(

@@ -327,7 +327,7 @@ async def _run_tool_loop_with_trace(
             fn = call["function"]
             name = fn["name"]
             args_raw = fn.get("arguments", "{}")
-            args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw or {})
+            args = _parse_tool_args(name, args_raw)
             tool_result = await tools.dispatch(name, args)
             messages.append({
                 "role": "tool",
@@ -336,6 +336,28 @@ async def _run_tool_loop_with_trace(
                 "content": json.dumps(tool_result, default=str, sort_keys=True),
             })
     return "(tool loop hit max_iterations without final text)"
+
+
+def _parse_tool_args(tool_name: str, args_raw: Any) -> dict[str, Any]:
+    if isinstance(args_raw, dict):
+        return dict(args_raw)
+    if not isinstance(args_raw, str) or not args_raw.strip():
+        return {}
+    try:
+        parsed = json.loads(args_raw)
+    except json.JSONDecodeError:
+        if tool_name in {
+            "send_peer_message",
+            "write_seedbox_report",
+            "write_microtask_report",
+            "write_security_report",
+            "decide_seed_ignore_report",
+        }:
+            return {"payload": args_raw}
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"payload": parsed}
 
 
 def _tool_message(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
