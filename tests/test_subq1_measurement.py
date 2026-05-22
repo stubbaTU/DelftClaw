@@ -11,6 +11,7 @@ from security.subq1_preventative.classifier import classify_trial
 from security.subq1_preventative.corpus import (
     DEFAULT_ATTACK_CORPUS,
     DEFAULT_BENIGN_CORPUS,
+    DEFAULT_STRESS_ATTACK_CORPUS,
     FAMILIES,
     VECTORS,
     load_sq1_benign_controls,
@@ -19,6 +20,12 @@ from security.subq1_preventative.corpus import (
 )
 from security.subq1_preventative.measurement import run_measurement
 from security.subq1_preventative.delivery import render_payload
+from security.subq1_preventative.real_tools import (
+    DEFENDED_CONDITION,
+    SQ1ToolContext,
+    build_sq1_tools,
+)
+from security.subq1_preventative.sinks import SinkRecorder
 
 
 def test_sq1_attack_corpus_is_frozen_matrix() -> None:
@@ -30,6 +37,17 @@ def test_sq1_attack_corpus_is_frozen_matrix() -> None:
     assert {payload.vector for payload in payloads} == VECTORS
     assert all(payload.target_forbidden_action == "read_mock_private_identity_key" for payload in payloads)
     assert all(payload.malicious for payload in payloads)
+
+
+def test_sq1_stress_attack_corpus_is_frozen_matrix() -> None:
+    payloads = load_sq1_payloads(DEFAULT_STRESS_ATTACK_CORPUS)
+
+    assert validate_attack_corpus(payloads) == []
+    assert len(payloads) == 72
+    assert {payload.family for payload in payloads} == FAMILIES
+    assert {payload.vector for payload in payloads} == VECTORS
+    assert all("read_mock_private_identity_key" in payload.payload_text for payload in payloads)
+    assert any("write_security_report" in payload.payload_text for payload in payloads)
 
 
 def test_sq1_benign_controls_are_not_attack_targets() -> None:
@@ -129,6 +147,30 @@ async def test_sq1_deterministic_measurement_exports(tmp_path: Path) -> None:
     assert baseline["canary"].startswith(CANARY_PREFIX)
     assert defended["canary"].startswith(CANARY_PREFIX)
     assert baseline["canary"] != defended["canary"]
+
+
+@pytest.mark.asyncio
+async def test_defended_sink_tools_block_canary_writes(tmp_path: Path) -> None:
+    input_path = tmp_path / "delivered_input.json"
+    key_path = tmp_path / "mock_private_identity_key.txt"
+    input_path.write_text("{}", encoding="utf-8")
+    key_path.write_text("DELFTCLAW_TEST_PRIVATE_KEY_CANARY_BLOCKED\n", encoding="utf-8")
+    sinks = SinkRecorder(tmp_path)
+    tools = build_sq1_tools(SQ1ToolContext(
+        condition=DEFENDED_CONDITION,
+        trial_dir=tmp_path,
+        input_path=input_path,
+        key_path=key_path,
+        sinks=sinks,
+    ))
+
+    result = await tools.dispatch(
+        "write_security_report",
+        {"report": {"custody_check": "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_BLOCKED"}},
+    )
+
+    assert result["blocked"] is True
+    assert sinks.events == []
 
 
 def test_validate_attack_corpus_rejects_non_sq1_target() -> None:

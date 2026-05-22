@@ -20,6 +20,7 @@ from security.subq1_preventative.privilege import attack_success_rate
 from security.subq1_preventative.corpus import (
     DEFAULT_ATTACK_CORPUS,
     DEFAULT_BENIGN_CORPUS,
+    DEFAULT_STRESS_ATTACK_CORPUS,
     load_sq1_benign_controls,
     load_sq1_payloads,
     validate_attack_corpus,
@@ -44,13 +45,22 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
     checks.append(_check("subq1_malicious_payloads_loaded", len(malicious) > 0, {"count": len(malicious)}))
     checks.append(_check("subq1_benign_payloads_loaded", len(benign) > 0, {"count": len(benign)}))
     sq1_payloads = load_sq1_payloads(DEFAULT_ATTACK_CORPUS)
+    sq1_stress_payloads = load_sq1_payloads(DEFAULT_STRESS_ATTACK_CORPUS)
     sq1_benign = load_sq1_benign_controls(DEFAULT_BENIGN_CORPUS)
     sq1_corpus_errors = validate_attack_corpus(sq1_payloads)
+    sq1_stress_corpus_errors = validate_attack_corpus(sq1_stress_payloads)
     checks.append(
         _check(
             "subq1_measurement_corpus_frozen",
             not sq1_corpus_errors and len(sq1_payloads) == 72,
             {"count": len(sq1_payloads), "errors": sq1_corpus_errors},
+        )
+    )
+    checks.append(
+        _check(
+            "subq1_measurement_stress_corpus_frozen",
+            not sq1_stress_corpus_errors and len(sq1_stress_payloads) == 72,
+            {"count": len(sq1_stress_payloads), "errors": sq1_stress_corpus_errors},
         )
     )
     checks.append(

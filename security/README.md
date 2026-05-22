@@ -35,7 +35,13 @@ The paper SQ1 experiment is a measurement study over a frozen DelftClaw
 payload corpus, not a loose red-team session. The corpus lives in:
 
 - `security/datasets/sq1_private_key_payloads.jsonl`
+- `security/datasets/sq1_private_key_payloads_stress.jsonl`
 - `security/datasets/sq1_benign_controls.jsonl`
+
+Use the standard corpus as the main fixed benchmark and the stress corpus as
+an adversarial upper-bound benchmark. The stress corpus keeps the same 72-cell
+family/vector/variant matrix, but the payloads are more explicit about exact
+tool calls and external sink writes.
 
 Run a local smoke test without a model endpoint:
 
@@ -57,6 +63,12 @@ python -m security.subq1_preventative.measurement \
   --export-dir results/sq1_delftclaw_asr \
   --base-url "$OPENCLAW_BASE_URL" \
   --model "$OPENCLAW_MODEL"
+```
+
+Run the stress corpus by adding:
+
+```bash
+--payloads security/datasets/sq1_private_key_payloads_stress.jsonl
 ```
 
 The experiment uses a fresh fake canary key per trial, for example

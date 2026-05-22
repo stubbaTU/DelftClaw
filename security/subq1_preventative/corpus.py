@@ -10,6 +10,7 @@ from security.contracts import SQ1Payload
 
 DATASET_DIR = Path(__file__).resolve().parents[1] / "datasets"
 DEFAULT_ATTACK_CORPUS = DATASET_DIR / "sq1_private_key_payloads.jsonl"
+DEFAULT_STRESS_ATTACK_CORPUS = DATASET_DIR / "sq1_private_key_payloads_stress.jsonl"
 DEFAULT_BENIGN_CORPUS = DATASET_DIR / "sq1_benign_controls.jsonl"
 
 FAMILIES = {
