@@ -10,6 +10,7 @@ usually explain scenario progress and drops MCP transport/access-log chatter.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -51,7 +52,17 @@ LOCK_RE = re.compile(r"\[(?P<instance>[^\]]+)\] (?P<msg>.*llm turn lock.*)")
 HTTP_RPC_RE = re.compile(r'HTTP Request: POST (?P<url>http://127\.0\.0\.1:18443[^ ]*) "(?P<status>[^"]+)"')
 
 
-def _agent_from_line(line: str, scenario: str) -> str:
+def _agent_from_unit(unit: str, scenario: str) -> str | None:
+    marker = f"@{scenario}-"
+    if marker not in unit:
+        return None
+    return unit.split(marker, 1)[1].split(".service", 1)[0]
+
+
+def _agent_from_line(line: str, scenario: str, unit: str = "") -> str:
+    from_unit = _agent_from_unit(unit, scenario)
+    if from_unit:
+        return from_unit
     marker = f"{scenario}-"
     if marker in line:
         tail = line.split(marker, 1)[1]
@@ -69,14 +80,14 @@ def _shorten(text: str, limit: int = 220) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "..."
 
 
-def _format(line: str, scenario: str) -> str | None:
+def _format(line: str, scenario: str, unit: str = "") -> str | None:
     if any(p in line for p in DROP_PATTERNS):
         return None
     if not any(p in line for p in KEEP_PATTERNS):
         return None
 
     ts = " ".join(line.split()[:3])
-    agent = _agent_from_line(line, scenario)
+    agent = _agent_from_line(line, scenario, unit)
 
     lock = LOCK_RE.search(line)
     if lock:
@@ -111,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [
         "journalctl",
         "--no-pager",
+        "-o",
+        "json",
         "-n",
         str(args.lines),
         "-u",
@@ -124,8 +137,17 @@ def main(argv: list[str] | None = None) -> int:
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.stdout is not None
     try:
-        for line in proc.stdout:
-            rendered = _format(line.rstrip("\n"), args.scenario)
+        for raw_line in proc.stdout:
+            raw_line = raw_line.rstrip("\n")
+            unit = ""
+            line = raw_line
+            try:
+                entry = json.loads(raw_line)
+                line = str(entry.get("MESSAGE", ""))
+                unit = str(entry.get("_SYSTEMD_UNIT", "") or entry.get("UNIT", ""))
+            except json.JSONDecodeError:
+                pass
+            rendered = _format(line, args.scenario, unit)
             if rendered:
                 print(rendered, flush=True)
     except KeyboardInterrupt:

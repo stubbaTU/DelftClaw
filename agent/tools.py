@@ -906,8 +906,11 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
              "Phase-5 end-to-end admission: write a signed donation_intent "
              "to our local community log, ship it to the gatekeeper peer "
              "over COMMUNITY_JOIN_REQUEST, and await the accept/reject "
-             "response. Use this once an admitted peer is reachable "
-             "(via peer_add or the network manifest's genesis peers).",
+             "response. This is the ONE tool to use for joining: do not "
+             "call community_donate_and_join first, because this tool already "
+             "donates and joins. Use the gatekeeper mid_hex from peers_list "
+             "or the current state snapshot; peer_add is only an operator "
+             "repair tool when no peer is reachable.",
              {"type": "object",
               "properties": {
                   "gatekeeper_mid": {"type": "string",

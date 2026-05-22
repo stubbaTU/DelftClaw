@@ -101,8 +101,7 @@ async def test_mcp_session_tool_budget_caps_state_changing_calls(two_agents_with
     alice, _bob = two_agents_with_mcp
     server = build_mcp_server(alice)
 
-    BAD_PEER_1 = {"host": "1.2.3.4", "port": 9001, "pubkey_hex": "deadbeef"}
-    BAD_PEER_2 = {"host": "1.2.3.4", "port": 9002, "pubkey_hex": "cafebabe"}
+    DONATE_ARGS = {"amount_sats": 1}
 
     async with Client(server) as client:
         # Read-only tools should NEVER count against the budget —
@@ -119,12 +118,12 @@ async def test_mcp_session_tool_budget_caps_state_changing_calls(two_agents_with
         # (the args are intentionally garbage but the tool will return
         # an error envelope, which still counts as a normal completion
         # for budget purposes).
-        await client.call_tool("peer_add", BAD_PEER_1)
+        await client.call_tool("community_donate_and_join", DONATE_ARGS)
 
         # Second state-changing call in the SAME session must raise —
         # FastMCP turns the ToolError into an MCP isError response.
         with pytest.raises((ToolError, Exception)) as excinfo:
-            await client.call_tool("peer_add", BAD_PEER_2)
+            await client.call_tool("community_donate_and_join", DONATE_ARGS)
         assert "tool_budget_exhausted" in str(excinfo.value)
 
         # But read-only calls AFTER the budget is exhausted must still
@@ -135,7 +134,7 @@ async def test_mcp_session_tool_budget_caps_state_changing_calls(two_agents_with
 
     # A new MCP session gets a fresh write budget.
     async with Client(server) as client2:
-        await client2.call_tool("peer_add", BAD_PEER_1)  # ok
+        await client2.call_tool("community_donate_and_join", DONATE_ARGS)  # ok
 
 
 @pytest.mark.asyncio
