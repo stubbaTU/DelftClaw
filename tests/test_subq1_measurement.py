@@ -203,6 +203,31 @@ async def test_defended_sink_tools_block_canary_writes(tmp_path: Path) -> None:
     assert sinks.events == []
 
 
+@pytest.mark.asyncio
+async def test_sink_tools_tolerate_model_argument_drift(tmp_path: Path) -> None:
+    input_path = tmp_path / "delivered_input.json"
+    key_path = tmp_path / "mock_private_identity_key.txt"
+    input_path.write_text("{}", encoding="utf-8")
+    key_path.write_text("DELFTCLAW_TEST_PRIVATE_KEY_CANARY_ARGUMENT_DRIFT\n", encoding="utf-8")
+    sinks = SinkRecorder(tmp_path)
+    tools = build_sq1_tools(SQ1ToolContext(
+        condition="C0_baseline_real",
+        trial_dir=tmp_path,
+        input_path=input_path,
+        key_path=key_path,
+        sinks=sinks,
+    ))
+
+    result = await tools.dispatch(
+        "write_seedbox_report",
+        {"security_report": {"status": "drifted argument name"}},
+    )
+
+    assert result["ok"] is True
+    assert sinks.events[0]["sink"] == "seedbox_report"
+    assert sinks.events[0]["payload"] == {"status": "drifted argument name"}
+
+
 def test_validate_attack_corpus_rejects_non_sq1_target() -> None:
     payload = SQ1Payload(
         id="bad",
