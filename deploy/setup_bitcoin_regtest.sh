@@ -155,6 +155,30 @@ print(f"{Decimal(int(sys.argv[1])) / Decimal(100000000):.8f}")
 PY
 }
 
+stable_wallet_label() {
+    local wallet_name="$1"
+    printf 'delftclaw:%s:primary\n' "$wallet_name"
+}
+
+wallet_labeled_address() {
+    local wallet_name="$1"
+    local label
+    local existing
+    label="$(stable_wallet_label "$wallet_name")"
+
+    existing="$(
+        btc -rpcwallet="$wallet_name" getaddressesbylabel "$label" 2>/dev/null \
+            | python3 -c 'import json, sys; data = json.load(sys.stdin); print(sorted(data)[0] if data else "")' \
+            2>/dev/null || true
+    )"
+    if [ -n "$existing" ]; then
+        printf '%s\n' "$existing"
+        return 0
+    fi
+
+    btc -rpcwallet="$wallet_name" getnewaddress "$label" bech32
+}
+
 wallet_is_loaded() {
     local wallet_name="$1"
     btc listwallets 2>/dev/null | grep -q "\"$wallet_name\""
@@ -229,7 +253,7 @@ BLOCKS_NEEDED=101
 if [ "$CURRENT_BLOCKS" -lt "$BLOCKS_NEEDED" ]; then
     BLOCKS_TO_MINE=$((BLOCKS_NEEDED - CURRENT_BLOCKS))
     echo "[*] Mining $BLOCKS_TO_MINE blocks to reach maturity threshold..."
-    btc generatetoaddress "$BLOCKS_TO_MINE" "$(btc -rpcwallet=alice getnewaddress)" > /dev/null
+    btc generatetoaddress "$BLOCKS_TO_MINE" "$(wallet_labeled_address alice)" > /dev/null
     echo "  ✓ Mined blocks, now at height $(btc getblockcount)"
 fi
 
@@ -240,13 +264,13 @@ BOB_BALANCE_SATS=$(btc_to_sats "$BOB_BALANCE_BTC")
 if [ "$BOB_BALANCE_SATS" -lt "$BOB_TARGET_BALANCE_SATS" ]; then
     FUND_SATS=$((BOB_TARGET_BALANCE_SATS - BOB_BALANCE_SATS))
     FUND_BTC=$(sats_to_btc "$FUND_SATS")
-    BOB_ADDR=$(btc -rpcwallet=bob getnewaddress)
+    BOB_ADDR=$(wallet_labeled_address bob)
     echo "[*] Funding bob with $FUND_SATS sats ($FUND_BTC BTC) for admission + fee headroom..."
     btc -rpcwallet=alice -named sendtoaddress \
         address="$BOB_ADDR" \
         amount="$FUND_BTC" \
         fee_rate=1 >/dev/null
-    btc generatetoaddress 1 "$(btc -rpcwallet=alice getnewaddress)" >/dev/null
+    btc generatetoaddress 1 "$(wallet_labeled_address alice)" >/dev/null
     echo "  OK Bob balance is now $(btc -rpcwallet=bob getbalance) BTC"
 else
     echo "[*] Bob already has $BOB_BALANCE_SATS sats; target is $BOB_TARGET_BALANCE_SATS sats"
@@ -277,9 +301,9 @@ show_wallet_info() {
     local wallet_info
     wallet_info=$(btc -rpcwallet="$wallet_name" getwalletinfo 2>/dev/null || echo "{}")
 
-    # Get first address
+    # Get stable scenario address
     local addr
-    addr=$(btc -rpcwallet="$wallet_name" getnewaddress 2>/dev/null || echo "ERROR")
+    addr=$(wallet_labeled_address "$wallet_name" 2>/dev/null || echo "ERROR")
 
     echo "    Address: $addr"
 

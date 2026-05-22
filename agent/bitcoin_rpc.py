@@ -406,6 +406,34 @@ class RegtestClient:
         result = await self._call_rpc("getnewaddress", wallet=wallet)
         return str(result)
 
+    async def get_or_create_labeled_address(
+        self,
+        label: str,
+        address_type: str = "bech32",
+        wallet: str | None = None,
+    ) -> str:
+        """Return a stable receiving address for ``label``, creating it once.
+
+        Bitcoin Core's ``getnewaddress`` intentionally mints a fresh address on
+        each call. Regtest scenarios need a stable per-agent address so setup
+        scripts, MCP ``wallet_address``, and generated manifests all refer to
+        the same wallet endpoint. Labels give us that stable rendezvous point.
+        """
+        try:
+            result = await self._call_rpc("getaddressesbylabel", [label], wallet=wallet)
+        except RPCError:
+            result = {}
+
+        if isinstance(result, dict) and result:
+            return sorted(str(address) for address in result.keys())[0]
+
+        new_address = await self._call_rpc(
+            "getnewaddress",
+            [label, address_type],
+            wallet=wallet,
+        )
+        return str(new_address)
+
     async def get_address_balance(
         self,
         address: str,

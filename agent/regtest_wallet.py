@@ -51,6 +51,7 @@ class RegtestWallet:
         *,
         rpc_client: Optional[RegtestClient] = None,
         use_onchain: bool = False,
+        address_label: str | None = None,
     ) -> None:
         """Initialize the Regtest wallet wrapper.
 
@@ -63,6 +64,7 @@ class RegtestWallet:
         self._rpc = rpc_client
         self._use_onchain = use_onchain and rpc_client is not None
         self._cached_onchain_address: str | None = None
+        self._address_label = address_label
 
     @classmethod
     def from_seed(
@@ -105,6 +107,7 @@ class RegtestWallet:
             synthetic,
             rpc_client=rpc_client,
             use_onchain=use_onchain,
+            address_label=cls.default_address_label(wallet_name) if wallet_name else None,
         )
 
     # ---- Delegated properties from synthetic wallet ----
@@ -137,8 +140,21 @@ class RegtestWallet:
         """
         return self._synthetic.address()
 
+    @staticmethod
+    def default_address_label(wallet_name: str) -> str:
+        """Stable Bitcoin Core receive-label shared with setup scripts."""
+        return f"delftclaw:{wallet_name}:primary"
+
+    def _onchain_address_label(self) -> str:
+        if self._address_label:
+            return self._address_label
+        wallet_name = getattr(self._rpc, "wallet_name", "") if self._rpc else ""
+        if wallet_name:
+            return self.default_address_label(str(wallet_name))
+        return "delftclaw:wallet:primary"
+
     async def get_onchain_address(self) -> str:
-        """Get a new on-chain Bitcoin address from Regtest.
+        """Get this wallet's stable on-chain Bitcoin address from Regtest.
 
         Returns:
             A real Bitcoin Regtest address, or raises if RPC unavailable
@@ -148,7 +164,13 @@ class RegtestWallet:
         if self._cached_onchain_address:
             return self._cached_onchain_address
         try:
-            self._cached_onchain_address = await self._rpc.get_new_address()
+            get_labeled_address = getattr(self._rpc, "get_or_create_labeled_address", None)
+            if callable(get_labeled_address):
+                self._cached_onchain_address = await get_labeled_address(
+                    self._onchain_address_label()
+                )
+            else:
+                self._cached_onchain_address = await self._rpc.get_new_address()
             return self._cached_onchain_address
         except RPCError as exc:
             _logger.error(f"Failed to get on-chain address: {exc}")

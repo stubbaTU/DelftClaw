@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 
+from agent.bitcoin_rpc import RPCError, RegtestClient
 from agent.runtime import AgentConfig, OpenClawAgent
 from agent.regtest_wallet import RegtestWallet
 from agent.tools import build_tools
@@ -17,12 +18,19 @@ class _FakeRegtestRPC:
 
     def __init__(self) -> None:
         self.address_calls = 0
+        self.label_calls: list[str] = []
+        self.wallet_name = "alice"
 
     async def get_balance_sat(self, wallet: str | None = None) -> int:  # noqa: ARG002
         return 123
 
     async def get_new_address(self, label: str = "", address_type: str | None = None) -> str:  # noqa: ARG002
         # Any string is fine for wiring tests; no address validation occurs here.
+        self.address_calls += 1
+        return "bcrt1qexampleaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+    async def get_or_create_labeled_address(self, label: str, address_type: str = "bech32") -> str:  # noqa: ARG002
+        self.label_calls.append(label)
         self.address_calls += 1
         return "bcrt1qexampleaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
@@ -97,6 +105,7 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     assert address.startswith("bcrt1")
     assert await registry.dispatch("wallet_address", {}) == address
     assert fake_rpc.address_calls == 1
+    assert fake_rpc.label_calls == ["delftclaw:alice:primary"]
 
     # Basic sanity: the btc_* tool uses the same RPC-backed wallet.
     reg_bal = await registry.dispatch("btc_get_balance", {})
@@ -105,5 +114,86 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
     txs = await registry.dispatch("btc_list_transactions", {})
     assert txs["confirmed_received_sat"] == 20_000
     assert txs["count"] == 2
+
+
+class _RecordingRegtestClient(RegtestClient):
+    def __init__(self, *, existing: dict[str, Any] | None = None) -> None:
+        super().__init__("http://127.0.0.1:18443", wallet_name="alice")
+        self.existing = existing
+        self.calls: list[tuple[str, list[Any], str | None]] = []
+
+    async def _call_rpc(
+        self,
+        method: str,
+        params: list[Any] | None = None,
+        wallet: str | None = None,
+    ) -> Any:
+        params = params or []
+        self.calls.append((method, params, wallet))
+        if method == "getaddressesbylabel":
+            if self.existing is None:
+                raise RPCError("No addresses with label")
+            return self.existing
+        if method == "getnewaddress":
+            return "bcrt1qcreatedxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        raise AssertionError(f"unexpected RPC method {method}")
+
+
+@pytest.mark.asyncio
+async def test_labeled_address_reuses_existing_address() -> None:
+    client = _RecordingRegtestClient(
+        existing={
+            "bcrt1qzzzxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": {"purpose": "receive"},
+            "bcrt1qaaaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": {"purpose": "receive"},
+        }
+    )
+
+    address = await client.get_or_create_labeled_address("delftclaw:alice:primary")
+
+    assert address == "bcrt1qaaaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    assert client.calls == [
+        ("getaddressesbylabel", ["delftclaw:alice:primary"], None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_labeled_address_creates_missing_address_once() -> None:
+    client = _RecordingRegtestClient(existing=None)
+
+    address = await client.get_or_create_labeled_address("delftclaw:alice:primary")
+
+    assert address == "bcrt1qcreatedxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    assert client.calls == [
+        ("getaddressesbylabel", ["delftclaw:alice:primary"], None),
+        ("getnewaddress", ["delftclaw:alice:primary", "bech32"], None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_regtest_wallet_uses_labeled_address_and_caches() -> None:
+    class FakeRPC:
+        wallet_name = "bob"
+
+        def __init__(self) -> None:
+            self.labels: list[str] = []
+
+        async def get_or_create_labeled_address(self, label: str, address_type: str = "bech32") -> str:  # noqa: ARG002
+            self.labels.append(label)
+            return "bcrt1qbobstablexxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+    seed = MnemonicSeedSource(
+        "army van defense carry jealous true garbage claim echo media make crunch"
+    ).load()
+    identity = AgentIdentity.from_seed(seed, network="TESTNET")
+    fake_rpc = FakeRPC()
+    wallet = RegtestWallet(
+        identity.wallet,
+        rpc_client=cast(Any, fake_rpc),
+        use_onchain=True,
+    )
+
+    assert await wallet.get_onchain_address() == "bcrt1qbobstablexxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    assert await wallet.get_onchain_address() == "bcrt1qbobstablexxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    assert fake_rpc.labels == ["delftclaw:bob:primary"]
 
 
