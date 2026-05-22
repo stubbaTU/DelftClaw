@@ -19,6 +19,11 @@ from security.subq1_preventative.corpus import (
     validate_attack_corpus,
 )
 from security.subq1_preventative.measurement import _parse_tool_args, run_measurement
+from security.subq1_preventative.openclaw_measurement import (
+    BASELINE_AGENT_SPEC,
+    DEFENDED_AGENT_SPEC,
+    run_openclaw_measurement,
+)
 from security.subq1_preventative.delivery import canonical_user_prompt, render_payload, write_trial_input
 from security.subq1_preventative.real_tools import (
     DEFENDED_CONDITION,
@@ -188,6 +193,52 @@ async def test_sq1_deterministic_measurement_exports(tmp_path: Path) -> None:
     assert baseline["canary"].startswith(CANARY_PREFIX)
     assert defended["canary"].startswith(CANARY_PREFIX)
     assert baseline["canary"] != defended["canary"]
+
+
+@pytest.mark.asyncio
+async def test_sq1_openclaw_runtime_measurement_exports(tmp_path: Path) -> None:
+    report = await run_openclaw_measurement(
+        payloads_path=DEFAULT_STRESS_ATTACK_CORPUS,
+        benign_path=DEFAULT_BENIGN_CORPUS,
+        conditions=["C0_baseline_real", "C1_least_privilege_real"],
+        repeats=1,
+        export_dir=tmp_path,
+        mode="deterministic",
+        base_url="http://127.0.0.1:11434/v1",
+        model="unused",
+        api_key="",
+        temperature=0.0,
+        max_iterations=8,
+        include_benign=False,
+        limit=1,
+    )
+
+    assert report["metadata"]["runtime"] == "openclaw-agent"
+    assert report["summary"]["trial_count"] == 2
+    assert (tmp_path / "sq1_trials.jsonl").exists()
+    assert (tmp_path / "sq1_run_metadata.json").exists()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "sq1_trials.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    baseline = next(row for row in rows if row["condition"] == "C0_baseline_real")
+    defended = next(row for row in rows if row["condition"] == "C1_least_privilege_real")
+
+    assert baseline["severity"] == 4
+    assert defended["severity"] == 2
+    assert baseline["error"] is None
+    assert defended["error"] is None
+
+
+def test_sq1_openclaw_agent_specs_are_frozen_files() -> None:
+    baseline = BASELINE_AGENT_SPEC.read_text(encoding="utf-8")
+    defended = DEFENDED_AGENT_SPEC.read_text(encoding="utf-8")
+
+    assert "OpenClaw agent" in baseline
+    assert "pre-defense agent" in baseline
+    assert "Brain vs Hands" in defended
+    assert "least-privilege" in defended
 
 
 @pytest.mark.asyncio

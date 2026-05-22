@@ -26,6 +26,7 @@ from security.subq1_preventative.corpus import (
     validate_attack_corpus,
 )
 from security.subq1_preventative.classifier import classify_trial
+from security.subq1_preventative.openclaw_measurement import BASELINE_AGENT_SPEC, DEFENDED_AGENT_SPEC
 from security.subq2_accountability.game_theory import sweep_reputation_policies
 from security.subq1_preventative.privilege import BaselineExecutor, Hands
 from security.subq2_accountability.reputation import ReputationEngine
@@ -84,6 +85,16 @@ def run_security_readiness(*, artifact_dir: str | Path | None = None) -> dict[st
             {
                 "severity": sq1_classifier_probe.severity,
                 "asr_success": sq1_classifier_probe.asr_success,
+            },
+        )
+    )
+    checks.append(
+        _check(
+            "subq1_openclaw_runtime_agent_specs_present",
+            BASELINE_AGENT_SPEC.is_file() and DEFENDED_AGENT_SPEC.is_file(),
+            {
+                "baseline_agent_spec": str(BASELINE_AGENT_SPEC),
+                "defended_agent_spec": str(DEFENDED_AGENT_SPEC),
             },
         )
     )
