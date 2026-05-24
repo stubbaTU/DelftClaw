@@ -1,0 +1,117 @@
+# SQ2 Tamper-Evident Accountability
+
+This package implements the SQ2 live OpenClaw-agent measurement harness.
+
+SQ2 asks whether tamper-evident behavioral recording plus trustworthy
+estimation reduces reputation lag and fallout radius during Reputation Trap
+Attacks. It is not a private-key exfiltration or prompt-injection ASR test.
+
+## Generate Scenarios
+
+```bash
+python -m security.subq2_accountability.generate_live_scenarios \
+  --out security/datasets/sq2_live_reputation_trap_scenarios.jsonl
+```
+
+The frozen corpus contains 60 scenarios:
+
+```text
+4 families x 3 intensities x 5 seeds = 60 scenarios
+```
+
+Each scenario has 8 honest agents, one primary attacker (`M0`), and two sybils
+(`S1`, `S2`). Ground-truth labels are used only by the evaluator, not by the
+trustworthy estimator.
+
+## Run A Smoke Test
+
+```bash
+python -m security.subq2_accountability.live_orchestrator \
+  --mode deterministic \
+  --conditions C0_no_accountability C1_tamper_evident_accountability \
+  --limit 2 \
+  --out results/sq2_smoke
+```
+
+## Run The Live OpenClaw-Agent Experiment
+
+```bash
+python -m security.subq2_accountability.live_orchestrator \
+  --mode live-llm \
+  --conditions C0_no_accountability C1_tamper_evident_accountability \
+  --out results/sq2_accountability_$(date -u +%Y%m%dT%H%M%SZ) \
+  --base-url "$OPENCLAW_BASE_URL" \
+  --model "$OPENCLAW_MODEL" \
+  --api-key "$OPENROUTER_API_KEY" \
+  --max-iterations 5 \
+  --estimator-interval 1 \
+  --expulsion-threshold 5 \
+  --start-openclaw-runtime
+```
+
+`--start-openclaw-runtime` starts disposable OpenClawAgent runtimes for the
+agents in each scenario. Deterministic smoke tests may omit it.
+
+## Conditions
+
+`C0_no_accountability` uses a naive mutable reputation state. It accepts
+self-reported microtask claims, donation-like events, and endorsements with no
+append-only evidence chain or history-based estimator.
+
+`C1_tamper_evident_accountability` writes behavior to the existing
+`SignedAppendOnlyLog`, verifies the chain, estimates trustworthiness from the
+signed log, and writes policy violations plus expulsion decisions back into the
+same log.
+
+## Metrics
+
+The primary metric is reputation lag:
+
+```text
+reputation_lag_events = expulsion_event_index - first_malicious_event_index
+reputation_lag_rounds = expulsion_round - first_malicious_round
+```
+
+If the attacker is not expelled by the end of the scenario, the run is censored
+and lag is measured to the last scenario event.
+
+Fallout radius is captured with:
+
+```text
+fallout_broadcasts
+fraudulent_microtasks_accepted
+wash_trades_accepted
+collusive_endorsements_accepted
+fraudulent_reputation_gain
+false_positive_count
+false_positive_rate
+```
+
+## Outputs
+
+The runner exports:
+
+```text
+sq2_run_metadata.json
+sq2_summary.json
+sq2_scenarios.jsonl
+sq2_trials.csv
+sq2_trials.jsonl
+sq2_event_log.jsonl
+sq2_reputation_timeseries.csv
+sq2_expulsions.csv
+sq2_lag_by_condition.csv
+sq2_lag_by_family.csv
+sq2_fallout_by_condition.csv
+sq2_fallout_by_family.csv
+sq2_detection_reasons.csv
+sq2_false_positives.csv
+sq2_log_integrity.csv
+```
+
+Per-scenario C1 signed logs are written under:
+
+```text
+trials/C1_tamper_evident_accountability/<scenario_id>/accountability.log
+```
+
