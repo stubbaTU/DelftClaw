@@ -120,12 +120,12 @@ class _RecordingRegtestClient(RegtestClient):
     def __init__(self, *, existing: dict[str, Any] | None = None) -> None:
         super().__init__("http://127.0.0.1:18443", wallet_name="alice")
         self.existing = existing
-        self.calls: list[tuple[str, list[Any], str | None]] = []
+        self.calls: list[tuple[str, list[Any] | dict[str, Any], str | None]] = []
 
     async def _call_rpc(
         self,
         method: str,
-        params: list[Any] | None = None,
+        params: list[Any] | dict[str, Any] | None = None,
         wallet: str | None = None,
     ) -> Any:
         params = params or []
@@ -136,6 +136,8 @@ class _RecordingRegtestClient(RegtestClient):
             return self.existing
         if method == "getnewaddress":
             return "bcrt1qcreatedxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        if method == "sendtoaddress":
+            return "a" * 64
         raise AssertionError(f"unexpected RPC method {method}")
 
 
@@ -166,6 +168,30 @@ async def test_labeled_address_creates_missing_address_once() -> None:
     assert client.calls == [
         ("getaddressesbylabel", ["delftclaw:alice:primary"], None),
         ("getnewaddress", ["delftclaw:alice:primary", "bech32"], None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_to_address_uses_named_params_and_sat_vbyte_fee_rate() -> None:
+    client = _RecordingRegtestClient(existing={})
+
+    txid = await client.send_to_address(
+        "bcrt1qrecipientxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        10_000,
+        fee_rate_sat_per_vb=1,
+    )
+
+    assert txid == "a" * 64
+    assert client.calls == [
+        (
+            "sendtoaddress",
+            {
+                "address": "bcrt1qrecipientxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "amount": "0.00010000",
+                "fee_rate": 1,
+            },
+            None,
+        ),
     ]
 
 

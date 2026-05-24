@@ -32,6 +32,8 @@ agents:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
     stop_predicate: bitcoin_sent_sats(min_sats=20000)
+    peers:
+      - bob
     initial_balance_sats: 200000
     btc_network: regtest
     # Optional override; defaults to http://127.0.0.1:18443

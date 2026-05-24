@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+RpcParams = list[Any] | dict[str, Any]
+
 import httpx
 
 _logger = logging.getLogger(__name__)
@@ -200,7 +202,7 @@ class RegtestClient:
     async def _call_rpc(
         self,
         method: str,
-        params: list[Any] | None = None,
+        params: RpcParams | None = None,
         wallet: str | None = None,
     ) -> Any:
         """Make a JSON-RPC call to bitcoind.
@@ -216,7 +218,8 @@ class RegtestClient:
         Raises:
             RPCError: If the RPC call fails
         """
-        params = params or []
+        if params is None:
+            params = []
 
         # Build request payload
         payload = {
@@ -483,25 +486,13 @@ class RegtestClient:
         Raises:
             RPCError: If the send fails
         """
-        amount_btc = amount_sat / 1e8
+        if not isinstance(amount_sat, int) or amount_sat < 1:
+            raise RPCError(f"amount_sat must be a positive integer; got {amount_sat!r}")
 
-        params: list[Any] = [to_address, amount_btc]
+        amount_btc = f"{amount_sat // 100_000_000}.{amount_sat % 100_000_000:08d}"
+        params: RpcParams = {"address": to_address, "amount": amount_btc}
         if fee_rate_sat_per_vb is not None:
-            # Bitcoin Core's sendtoaddress positional fee_rate is BTC/kvB.
-            # 1 sat/vB == 1000 sat/kvB == 0.00001000 BTC/kvB.
-            fee_rate_btc_per_kvb = fee_rate_sat_per_vb / 100_000
-            params = [
-                to_address,
-                amount_btc,
-                "",      # comment
-                "",      # comment_to
-                False,   # subtractfeefromamount
-                False,   # replaceable
-                None,    # conf_target
-                "unset", # estimate_mode
-                False,   # avoid_reuse
-                fee_rate_btc_per_kvb,
-            ]
+            params["fee_rate"] = fee_rate_sat_per_vb
 
         result = await self._call_rpc(
             "sendtoaddress",
