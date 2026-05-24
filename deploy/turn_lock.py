@@ -33,13 +33,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
 DEFAULT_LOCK_PATH = Path("/tmp/delftclaw-llm-turn.lock")
+_LOCK_LEN = 1
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
+def _lock_file(fd: int) -> None:
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, _LOCK_LEN)
+        return
+    fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock_file(fd: int) -> None:
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, _LOCK_LEN)
+        return
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 @contextlib.asynccontextmanager
@@ -62,11 +84,13 @@ async def acquire_llm_turn_lock(
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    if sys.platform == "win32" and os.path.getsize(lock_path) == 0:
+        os.write(fd, b"\0")
     log.info("[%s] waiting for llm turn lock %s", instance, lock_path)
     wait_started = time.monotonic()
 
     def _grab() -> None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _lock_file(fd)
 
     try:
         await asyncio.to_thread(_grab)
@@ -82,7 +106,7 @@ async def acquire_llm_turn_lock(
     finally:
         held_s = time.monotonic() - held_started
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock_file(fd)
         finally:
             os.close(fd)
         log.info("[%s] released llm turn lock after %.1fs", instance, held_s)

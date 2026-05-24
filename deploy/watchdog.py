@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -62,6 +63,22 @@ EXIT_WALL_CLOCK = 2
 EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
+
+
+def _snapshot_for_prompt(
+    snapshot: dict[str, Any],
+    *,
+    stop_predicate: str,
+    stop_predicate_value: bool,
+) -> dict[str, Any]:
+    """Attach the watchdog's authoritative stop status to a snapshot copy."""
+    out = copy.deepcopy(snapshot)
+    out["stop_predicate"] = {
+        "predicate": stop_predicate,
+        "satisfied": bool(stop_predicate_value),
+        "authority": "watchdog_evaluated_against_scenario_baseline",
+    }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +379,12 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        prompt = build_turn_prompt(mission_text, snapshot, history)
+        prompt_snapshot = _snapshot_for_prompt(
+            snapshot,
+            stop_predicate=spec.stop_predicate,
+            stop_predicate_value=stop_value,
+        )
+        prompt = build_turn_prompt(mission_text, prompt_snapshot, history)
         # The provider prefix on ``--model`` must match the provider key
         # ``scenario_boot.py`` wrote into the agent's openclaw.json (and
         # the prefix it used when calling ``openclaw agents add --model
