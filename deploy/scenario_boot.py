@@ -86,6 +86,7 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
 DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_LLM_MODEL = "qwen3.6:27b"
 DEFAULT_LLM_API_KEY = "ollama"
+DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S = 210
 
 
 def _resolve_bitcoin_rpc(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
@@ -133,10 +134,44 @@ def _resolve_llm(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
     return base, model, api_key
 
 
+def _resolve_openclaw_smoke_timeout(host_env_file: Path = HOST_ENV_FILE) -> int:
+    """Resolve the pre-watchdog OpenClaw smoke-test timeout in seconds.
+
+    Slow hosted models can take longer than the old 90s budget to select and
+    execute even a simple MCP tool. Keep this operator-tunable while preserving
+    the strict wallet-address evidence check.
+    """
+    host_env = _load_host_env(host_env_file)
+    raw = os.environ.get(
+        "OPENCLAW_SMOKE_TIMEOUT_S",
+        host_env.get("OPENCLAW_SMOKE_TIMEOUT_S", str(DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S)),
+    )
+    try:
+        timeout = int(raw)
+    except (TypeError, ValueError):
+        print(
+            "\033[1;33m[warn]\033[0m "
+            "OPENCLAW_SMOKE_TIMEOUT_S must be an integer; "
+            f"got {raw!r}, using {DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S}s",
+            flush=True,
+        )
+        return DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S
+    if timeout < 30:
+        print(
+            "\033[1;33m[warn]\033[0m "
+            "OPENCLAW_SMOKE_TIMEOUT_S below 30s is too low; "
+            f"got {timeout}s, using 30s",
+            flush=True,
+        )
+        return 30
+    return timeout
+
+
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
 # ``HOST_ENV_FILE`` then re-call ``_resolve_llm`` directly.
 LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
+OPENCLAW_SMOKE_TIMEOUT_S = _resolve_openclaw_smoke_timeout()
 
 
 def _native_base_from(base_url: str) -> str:
@@ -724,7 +759,7 @@ def _openclaw_mcp_smoke_check(
     agent: AgentSpec,
     *,
     expected_wallet_address: str,
-    timeout_s: int = 90,
+    timeout_s: int | None = None,
 ) -> str | None:
     """Verify OpenClaw can reach this agent's MCP tools before watchdog boot.
 
@@ -733,6 +768,7 @@ def _openclaw_mcp_smoke_check(
     only legitimate way for OpenClaw to learn it is by calling the read-only
     ``wallet_address`` tool configured in this agent's per-HOME OpenClaw config.
     """
+    timeout_s = OPENCLAW_SMOKE_TIMEOUT_S if timeout_s is None else timeout_s
     instance = scenario.instance_id(agent.name)
     state = _state_dir(scenario.name, agent.name)
     provider_key, _api_type, _base = _provider_for(LLM_BASE_URL)
@@ -944,7 +980,10 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     # this catches OpenClaw config/provider/tool-registration failures that
     # otherwise show up later as successful turns with literal "ERROR" output.
     for agent in scenario.agents.values():
-        c_info(f"{agent.name}: OpenClaw->MCP smoke wallet_address")
+        c_info(
+            f"{agent.name}: OpenClaw->MCP smoke wallet_address "
+            f"(timeout={OPENCLAW_SMOKE_TIMEOUT_S}s)"
+        )
         failure = _openclaw_mcp_smoke_check(
             scenario,
             agent,

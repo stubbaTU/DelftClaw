@@ -59,7 +59,39 @@ def test_openclaw_mcp_smoke_success(monkeypatch, tmp_path: Path) -> None:
     assert "--agent" in seen["cmd"]
     assert "smoke-alice" in seen["cmd"]
     assert "--json" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == str(
+        scenario_boot.DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S
+    )
     assert "capture_output" in seen["kwargs"]
+    assert seen["kwargs"]["timeout"] == scenario_boot.DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S + 30
+
+
+def test_openclaw_mcp_smoke_timeout_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
+    scenario, agent = _scenario_and_agent(tmp_path)
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"payloads":[{"text":"bcrt1qsmoke"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+
+    failure = scenario_boot._openclaw_mcp_smoke_check(
+        scenario,
+        agent,
+        expected_wallet_address="bcrt1qsmoke",
+        timeout_s=333,
+    )
+
+    assert failure is None
+    assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == "333"
+    assert seen["kwargs"]["timeout"] == 363
 
 
 def test_openclaw_mcp_smoke_fails_on_literal_error(monkeypatch, tmp_path: Path) -> None:
