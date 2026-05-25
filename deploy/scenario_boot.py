@@ -175,6 +175,31 @@ LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
 OPENCLAW_SMOKE_TIMEOUT_S = _resolve_openclaw_smoke_timeout()
 
 
+REGTEST_TRANSFER_MCP_TOOLS = (
+    # Boot + static wiring.
+    "peer_add",
+    "agent_inject_manifest",
+    "community_donate_and_join",
+    # Watchdog snapshot reads.
+    "wallet_address",
+    "wallet_balance",
+    "community_treasury_balance",
+    "peers_list",
+    "overlays_list",
+    "torrent_stats",
+    "btc_list_transactions",
+    # Agent state-changing actions for this scenario.
+    "community_join_via_peer",
+    "btc_send",
+    "btc_mine_blocks",
+    # Useful low-cost read repairs/status checks.
+    "community_member_count",
+    "btc_get_balance",
+    "btc_get_address",
+    "btc_transaction_status",
+)
+
+
 def _openclaw_inner_timeout_s(scenario: Scenario) -> int:
     """Timeout for OpenClaw's inner provider call during watchdog turns.
 
@@ -336,6 +361,11 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # on the same VPS don't trample each other's files.
         f"COMMUNITY_LOG_PATH={state / 'community.log'}",
         f"PEER_LOG_DIR={state / 'peer_logs'}",
+        *(
+            [f"MCP_EXPOSE_TOOLS={','.join(REGTEST_TRANSFER_MCP_TOOLS)}"]
+            if scenario.name == "regtest_transfer"
+            else []
+        ),
         f"PUBLISH_OVERLAY={overlay}",
         # The watchdog reads this file at boot and calls load_manifest on its
         # snapshot agent. Without it, state.network would be null in every
@@ -860,9 +890,10 @@ def _openclaw_mcp_smoke_check(
 
     summary = parse_openclaw_json_stdout(proc.stdout)
     if proc.returncode != 0:
-        stderr_tail = (proc.stderr or "").strip().splitlines()
-        tail = stderr_tail[-1] if stderr_tail else "no stderr"
-        return f"openclaw smoke subprocess failed rc={proc.returncode}: {tail[:200]}"
+        stderr_text = " ".join((proc.stderr or "").strip().split())
+        stdout_text = " ".join((proc.stdout or "").strip().split())
+        detail = stderr_text or stdout_text or summary.parse_error or "no stderr/stdout"
+        return f"openclaw smoke subprocess failed rc={proc.returncode}: {detail[:600]}"
     if summary.semantic_error:
         return summary.semantic_error
     haystack = "\n".join([proc.stdout or "", summary.assistant_text])

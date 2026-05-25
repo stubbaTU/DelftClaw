@@ -120,6 +120,20 @@ _BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
 _SESSION_TOOL_COUNT: dict[str, int] = {}
 
 
+def _exposed_tool_allowlist() -> set[str] | None:
+    """Optional comma-separated MCP tool allowlist from the environment.
+
+    Some OpenAI-compatible local model servers reject large MCP/tool payloads.
+    Deployment can set ``MCP_EXPOSE_TOOLS`` to a minimal scenario-specific
+    surface while keeping the in-process registry unchanged.
+    """
+    raw = os.environ.get("MCP_EXPOSE_TOOLS", "").strip()
+    if not raw:
+        return None
+    allowed = {part.strip() for part in raw.split(",") if part.strip()}
+    return allowed or None
+
+
 def _session_id_or_global() -> str:
     """Return the current MCP session id, or ``"__global__"`` as a fallback.
 
@@ -263,7 +277,10 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     """
     mcp = FastMCP(name=name, instructions=SERVER_INSTRUCTIONS)
     registry = build_tools(agent)
+    allowed = _exposed_tool_allowlist()
     for tool in registry._tools.values():
+        if allowed is not None and tool.name not in allowed:
+            continue
         # Wrap each registry callable so MCP-dispatched calls produce
         # the same ``TOOL call name=… args=…`` / ``TOOL ok …`` /
         # ``TOOL fail …`` audit lines that ``ToolRegistry.dispatch``

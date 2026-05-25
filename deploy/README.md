@@ -205,6 +205,7 @@ Resolved by name from `scenario.yaml`. Available (see
 - `peer_count_gte_N(n=…)` — at least N peers
 - `wallet_received_sats(min_sats=…)` — confirmed received total increased by min_sats when regtest transaction history is available; otherwise balance increased by min_sats
 - `bitcoin_sent_sats(min_sats=…)` — balance dropped by min_sats from its observed peak
+- `bitcoin_confirmed_sent_sats(min_sats=…)` — confirmed outgoing transaction total increased by min_sats
 
 The LLM **does not** decide it's done. The watchdog does.
 

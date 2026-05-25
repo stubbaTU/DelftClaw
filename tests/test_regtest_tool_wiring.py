@@ -67,6 +67,13 @@ class _FakeRegtestRPC:
                 "confirmations": 1,
                 "time": 124,
             },
+            {
+                "txid": "d" * 64,
+                "category": "send",
+                "amount": -0.00005,
+                "confirmations": 0,
+                "time": 125,
+            },
         ]
 
 
@@ -113,7 +120,10 @@ async def test_regtest_tools_are_exposed_and_wallet_balance_is_int(tmp_path):
 
     txs = await registry.dispatch("btc_list_transactions", {})
     assert txs["confirmed_received_sat"] == 20_000
-    assert txs["count"] == 2
+    assert txs["confirmed_sent_sat"] == 10_000
+    assert txs["unconfirmed_sent_sat"] == 5_000
+    assert txs["unconfirmed_received_sat"] == 0
+    assert txs["count"] == 3
 
 
 class _RecordingRegtestClient(RegtestClient):

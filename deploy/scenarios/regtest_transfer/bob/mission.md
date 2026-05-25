@@ -14,7 +14,9 @@ community_join_via_peer. That tool both makes the real regtest RPC-backed
 donation and ships the signed admission entry to alice. Do not call
 community_donate_and_join first. Do not call peer_add when alice already appears
 in the current state peer list. Do not repeat admission after a donation or join
-entry has already been submitted.
+entry has already been submitted. If a join attempt returns already_admitted,
+that is not an error to repair; it means there is no further admission action
+for you.
 After you are joined and your receiving address is advertised, wait with no
 further spend or state-changing action because alice owns the payment action.
 Treat the current state snapshot as your main context and avoid balance-only or

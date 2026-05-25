@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -153,7 +154,7 @@ async def _forward(
     error and bails out of the whole turn, which is the wrong call
     when the underlying issue is a transient minute-long rate window.
     """
-    body = await request.body()
+    body = _normalise_chat_completion_body(await request.body())
     method = request.method
     url = f"{upstream.rstrip('/')}/{path.lstrip('/')}"
     forwarded_headers = {
@@ -226,6 +227,43 @@ async def _forward(
             status_code=r.status_code,
             media_type=r.headers.get("content-type"),
         )
+
+
+def _normalise_chat_completion_body(body: bytes) -> bytes:
+    """Coerce OpenClaw/OpenAI-compatible message content into provider-safe JSON.
+
+    Some providers are strict about ``messages[*].content`` being either a
+    string or a list of content parts. OpenClaw may emit ``null`` or structured
+    values for tool-adjacent messages; permissive providers accept that, but
+    stricter OpenAI-compatible gateways reject the entire request. The proxy is
+    our compatibility boundary, so normalize only the chat payload shape here.
+    """
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return body
+
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, (str, list)):
+            continue
+        if content is None:
+            message["content"] = ""
+        else:
+            message["content"] = json.dumps(content, default=str)
+        changed = True
+
+    if not changed:
+        return body
+    return json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
 
 
 # --- CLI --------------------------------------------------------------------

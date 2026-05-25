@@ -17,10 +17,15 @@ from deploy import stop_predicates as sp
 # ---------------------------------------------------------------------------
 
 def _snap(*, peers=0, torrents=None, balance=0, agent_id="agent-1",
-          confirmed_received_sats=None) -> dict:
+          confirmed_received_sats=None, confirmed_sent_sats=None,
+          unconfirmed_sent_sats=None) -> dict:
     wallet = {"address": "tb1qx", "balance_sats": balance}
     if confirmed_received_sats is not None:
         wallet["confirmed_received_sats"] = confirmed_received_sats
+    if confirmed_sent_sats is not None:
+        wallet["confirmed_sent_sats"] = confirmed_sent_sats
+    if unconfirmed_sent_sats is not None:
+        wallet["unconfirmed_sent_sats"] = unconfirmed_sent_sats
     return {
         "agent": {"agent_id": agent_id},
         "peers": [{"mid_hex": f"aa{i:02d}" * 10, "address": ["127.0.0.1", 8000 + i]}
@@ -154,8 +159,46 @@ def test_bitcoin_sent_sats_without_peak_treats_first_snapshot_as_peak():
     assert p(_snap(agent_id="new-sender", balance=100_000)) is False
 
 
+def test_bitcoin_confirmed_sent_sats_uses_baseline():
+    sp.set_baseline("confirmed-sender", _snap(
+        agent_id="confirmed-sender",
+        confirmed_sent_sats=50_000,
+    ))
+
+    p = sp.resolve("bitcoin_confirmed_sent_sats(min_sats=20_000)")
+    assert p(_snap(
+        agent_id="confirmed-sender",
+        confirmed_sent_sats=69_999,
+    )) is False
+    assert p(_snap(
+        agent_id="confirmed-sender",
+        confirmed_sent_sats=70_000,
+    )) is True
+
+
+def test_bitcoin_confirmed_sent_sats_ignores_unconfirmed_sends():
+    sp.set_baseline("unconfirmed-sender", _snap(
+        agent_id="unconfirmed-sender",
+        confirmed_sent_sats=0,
+        unconfirmed_sent_sats=0,
+    ))
+
+    p = sp.resolve("bitcoin_confirmed_sent_sats(min_sats=20_000)")
+    assert p(_snap(
+        agent_id="unconfirmed-sender",
+        confirmed_sent_sats=0,
+        unconfirmed_sent_sats=20_000,
+    )) is False
+
+
+def test_bitcoin_confirmed_sent_sats_without_baseline_treats_first_snapshot_as_baseline():
+    p = sp.resolve("bitcoin_confirmed_sent_sats(min_sats=1)")
+    assert p(_snap(agent_id="new-confirmed-sender", confirmed_sent_sats=20_000)) is False
+
+
 def test_known_predicate_names_lists_all_predicates():
     names = sp.known_predicate_names()
     assert set(names) >= {"never", "torrent_progress_gte_1",
                           "peer_count_gte_N", "wallet_received_sats",
-                          "bitcoin_sent_sats"}
+                          "bitcoin_sent_sats",
+                          "bitcoin_confirmed_sent_sats"}

@@ -70,15 +70,129 @@ def _snapshot_for_prompt(
     *,
     stop_predicate: str,
     stop_predicate_value: bool,
+    scenario_name: str | None = None,
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
-    """Attach the watchdog's authoritative stop status to a snapshot copy."""
+    """Attach authoritative stop status and any scenario next-action guidance."""
     out = copy.deepcopy(snapshot)
     out["stop_predicate"] = {
         "predicate": stop_predicate,
         "satisfied": bool(stop_predicate_value),
         "authority": "watchdog_evaluated_against_scenario_baseline",
     }
+    guidance = _regtest_transfer_guidance(
+        out,
+        stop_predicate_value=stop_predicate_value,
+        agent_name=agent_name,
+    ) if scenario_name == "regtest_transfer" else None
+    if guidance is not None:
+        out["next_action_guidance"] = guidance
     return out
+
+
+def _regtest_transfer_guidance(
+    snapshot: dict[str, Any],
+    *,
+    stop_predicate_value: bool,
+    agent_name: str | None,
+) -> dict[str, Any] | None:
+    """Return deterministic phase guidance for the regtest transfer scenario."""
+    if agent_name == "alice":
+        if stop_predicate_value:
+            return {
+                "phase": "complete",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "confirmed outgoing transfer predicate is already satisfied",
+            }
+
+        wallet = snapshot.get("wallet", {})
+        unconfirmed_sent = _int_or_zero(wallet.get("unconfirmed_sent_sats"))
+        if unconfirmed_sent >= 20_000:
+            return {
+                "phase": "confirm_payment",
+                "action": "mine_one_block",
+                "tool_call": {"name": "btc_mine_blocks", "arguments": {"num_blocks": 1}},
+                "reason": "20000 sat outgoing payment exists but is not confirmed yet",
+                "forbidden": ["peer_add"],
+            }
+
+        bob_wallet = _first_peer_wallet(snapshot)
+        if bob_wallet:
+            return {
+                "phase": "send_payment",
+                "action": "send_20000_sats_to_bob",
+                "tool_call": {
+                    "name": "btc_send",
+                    "arguments": {"to_address": bob_wallet, "amount_sat": 20_000},
+                },
+                "reason": "bob is reachable and advertises a regtest receiving address",
+                "forbidden": ["peer_add"],
+            }
+        return {
+            "phase": "waiting_for_bob_wallet",
+            "action": "wait",
+            "tool_call": None,
+            "reason": "bob has not yet advertised a bcrt1 regtest receiving address",
+        }
+
+    if agent_name == "bob":
+        if stop_predicate_value:
+            return {
+                "phase": "complete",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "confirmed incoming payment predicate is already satisfied",
+            }
+        community = snapshot.get("community") or {}
+        if community.get("my_membership_status") == "admitted":
+            return {
+                "phase": "awaiting_alice_payment",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "bob is already admitted; alice owns the payment and confirmation actions",
+                "forbidden": ["community_join_via_peer", "community_donate_and_join", "peer_add"],
+            }
+        gatekeeper_mid = _first_peer_mid(snapshot)
+        min_sats = _int_or_zero(
+            ((snapshot.get("network") or {}).get("admission") or {}).get("min_sats")
+        ) or 10_000
+        return {
+            "phase": "join_community",
+            "action": "join_once",
+            "tool_call": {
+                "name": "community_join_via_peer",
+                "arguments": {"gatekeeper_mid": gatekeeper_mid, "amount_sats": int(min_sats)},
+            } if gatekeeper_mid else None,
+            "reason": "bob is not admitted yet; submit the admission donation once",
+            "forbidden": ["community_donate_and_join"],
+        }
+
+    return None
+
+
+def _first_peer_wallet(snapshot: dict[str, Any]) -> str | None:
+    for peer in snapshot.get("peers", []):
+        if not isinstance(peer, dict):
+            continue
+        wallet = peer.get("wallet_address")
+        if isinstance(wallet, str) and wallet.startswith("bcrt1"):
+            return wallet
+    return None
+
+
+def _first_peer_mid(snapshot: dict[str, Any]) -> str | None:
+    for peer in snapshot.get("peers", []):
+        if isinstance(peer, dict) and isinstance(peer.get("mid_hex"), str):
+            return peer["mid_hex"]
+    return None
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +497,8 @@ async def _drive(
             snapshot,
             stop_predicate=spec.stop_predicate,
             stop_predicate_value=stop_value,
+            scenario_name=scenario.name,
+            agent_name=spec.name,
         )
         prompt = build_turn_prompt(mission_text, prompt_snapshot, history)
         # The provider prefix on ``--model`` must match the provider key

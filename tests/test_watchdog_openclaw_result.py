@@ -52,3 +52,62 @@ def test_snapshot_for_prompt_adds_authoritative_stop_status_without_mutating() -
         "satisfied": False,
         "authority": "watchdog_evaluated_against_scenario_baseline",
     }
+
+
+def test_regtest_guidance_tells_alice_to_send_when_bob_wallet_known() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "wallet": {"confirmed_sent_sats": 0, "unconfirmed_sent_sats": 0},
+            "peers": [{"mid_hex": "bobmid", "wallet_address": "bcrt1qbob"}],
+        },
+        stop_predicate="bitcoin_confirmed_sent_sats(min_sats=20000)",
+        stop_predicate_value=False,
+        scenario_name="regtest_transfer",
+        agent_name="alice",
+    )
+
+    guidance = out["next_action_guidance"]
+    assert guidance["phase"] == "send_payment"
+    assert guidance["tool_call"] == {
+        "name": "btc_send",
+        "arguments": {"to_address": "bcrt1qbob", "amount_sat": 20_000},
+    }
+    assert "peer_add" in guidance["forbidden"]
+
+
+def test_regtest_guidance_tells_alice_to_mine_after_unconfirmed_send() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "wallet": {"confirmed_sent_sats": 0, "unconfirmed_sent_sats": 20_000},
+            "peers": [{"mid_hex": "bobmid", "wallet_address": "bcrt1qbob"}],
+        },
+        stop_predicate="bitcoin_confirmed_sent_sats(min_sats=20000)",
+        stop_predicate_value=False,
+        scenario_name="regtest_transfer",
+        agent_name="alice",
+    )
+
+    assert out["next_action_guidance"]["phase"] == "confirm_payment"
+    assert out["next_action_guidance"]["tool_call"] == {
+        "name": "btc_mine_blocks",
+        "arguments": {"num_blocks": 1},
+    }
+
+
+def test_regtest_guidance_tells_bob_to_wait_once_admitted() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "community": {"my_membership_status": "admitted"},
+            "wallet": {"confirmed_received_sats": 10_000},
+            "peers": [{"mid_hex": "alicemid", "wallet_address": "bcrt1qalice"}],
+        },
+        stop_predicate="wallet_received_sats(min_sats=20000)",
+        stop_predicate_value=False,
+        scenario_name="regtest_transfer",
+        agent_name="bob",
+    )
+
+    guidance = out["next_action_guidance"]
+    assert guidance["phase"] == "awaiting_alice_payment"
+    assert guidance["tool_call"] is None
+    assert "community_join_via_peer" in guidance["forbidden"]

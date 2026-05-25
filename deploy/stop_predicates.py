@@ -21,6 +21,7 @@ Predicate = Callable[[StateSnapshot], bool]
 _baseline_wallet: dict[str, int] = {}
 _peak_wallet: dict[str, int] = {}
 _baseline_confirmed_received: dict[str, int] = {}
+_baseline_confirmed_sent: dict[str, int] = {}
 
 
 def set_baseline(agent_id: str, snapshot: StateSnapshot) -> None:
@@ -33,6 +34,9 @@ def set_baseline(agent_id: str, snapshot: StateSnapshot) -> None:
     received = wallet.get("confirmed_received_sats")
     if isinstance(received, int):
         _baseline_confirmed_received[agent_id] = received
+    sent = wallet.get("confirmed_sent_sats")
+    if isinstance(sent, int):
+        _baseline_confirmed_sent[agent_id] = sent
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +110,23 @@ def _bitcoin_sent_sats(min_sats: int = 1) -> Predicate:
     return pred
 
 
+def _bitcoin_confirmed_sent_sats(min_sats: int = 1) -> Predicate:
+    """Trigger after confirmed outgoing wallet transactions increase by ``min_sats``."""
+    def pred(snapshot: StateSnapshot) -> bool:
+        agent_id = snapshot.get("agent", {}).get("agent_id")
+        wallet = snapshot.get("wallet", {})
+        if agent_id is None:
+            return False
+        sent = wallet.get("confirmed_sent_sats")
+        if not isinstance(sent, int):
+            return False
+        key = str(agent_id)
+        baseline = _baseline_confirmed_sent.get(key, sent)
+        return (sent - baseline) >= min_sats
+    pred.__name__ = f"bitcoin_confirmed_sent_sats_{min_sats}"
+    return pred
+
+
 # ---------------------------------------------------------------------------
 # Registry + resolver
 # ---------------------------------------------------------------------------
@@ -118,6 +139,7 @@ _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "peer_count_gte_N": _peer_count_gte_N,
     "wallet_received_sats": _wallet_received_sats,
     "bitcoin_sent_sats": _bitcoin_sent_sats,
+    "bitcoin_confirmed_sent_sats": _bitcoin_confirmed_sent_sats,
 }
 
 
@@ -175,6 +197,7 @@ def _looks_like_factory(obj: Any) -> bool:
         name.startswith("_peer_count_gte_N")
         or name.startswith("_wallet_received_sats")
         or name.startswith("_bitcoin_sent_sats")
+        or name.startswith("_bitcoin_confirmed_sent_sats")
     )
 
 

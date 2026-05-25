@@ -90,6 +90,20 @@ def test_regtest_transfer_cross_wires_signed_log_pull_loop(scenario):
     bob_env = _instance_env_contents(scenario, scenario.agents["bob"])
 
     assert scenario.agents["alice"].bootstrap_community_sats == 10_000
+    assert (
+        scenario.agents["alice"].stop_predicate
+        == "bitcoin_confirmed_sent_sats(min_sats=20000)"
+    )
+    assert "bitcoin_confirmed_sent_sats(min_sats=20000)" in (
+        REGTEST_TRANSFER / "alice" / "mission.md"
+    ).read_text(encoding="utf-8")
+    assert "MCP_EXPOSE_TOOLS=" in alice_env
+    assert "peer_add" in alice_env
+    assert "agent_inject_manifest" in alice_env
+    assert "community_join_via_peer" in alice_env
+    assert "btc_send" in alice_env
+    assert "btc_mine_blocks" in alice_env
+    assert "overlay_publish" not in alice_env
     assert "REDTEAM_PORT=28865" in alice_env
     assert "PEER_LOG_URLS=http://127.0.0.1:28866" in alice_env
     assert "REDTEAM_PORT=28866" in bob_env

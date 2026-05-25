@@ -161,6 +161,16 @@ async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
 
 
 @pytest.mark.asyncio
+async def test_mcp_server_can_filter_tool_surface(two_agents_with_mcp, monkeypatch):
+    alice, _bob = two_agents_with_mcp
+    monkeypatch.setenv("MCP_EXPOSE_TOOLS", "wallet_address,btc_send,no_such_tool")
+    server = build_mcp_server(alice)
+    async with Client(server) as client:
+        tools = await client.list_tools()
+    assert {t.name for t in tools} == {"wallet_address"}
+
+
+@pytest.mark.asyncio
 async def test_mcp_peer_add_round_trips_a_new_peer(tmp_path):
     """peer_add over MCP introduces a peer to every overlay's network."""
     from agent import AgentConfig, OpenClawAgent
@@ -332,7 +342,7 @@ async def test_mcp_client_can_publish_fetch_and_invoke_overlay(
     )
 
 
-def test_mcp_wallet_section_carries_confirmed_received_summary():
+def test_mcp_wallet_section_carries_regtest_transaction_summaries():
     from deploy.mcp_snapshot import _wallet_section
 
     section = _wallet_section(
@@ -340,6 +350,9 @@ def test_mcp_wallet_section_carries_confirmed_received_summary():
         20_000,
         {
             "confirmed_received_sat": 30_000,
+            "unconfirmed_received_sat": 4_000,
+            "confirmed_sent_sat": 20_000,
+            "unconfirmed_sent_sat": 5_000,
             "transactions": [
                 {"txid": str(i), "category": "receive", "amount_sat": i}
                 for i in range(12)
@@ -349,6 +362,9 @@ def test_mcp_wallet_section_carries_confirmed_received_summary():
 
     assert section["balance_sats"] == 20_000
     assert section["confirmed_received_sats"] == 30_000
+    assert section["unconfirmed_received_sats"] == 4_000
+    assert section["confirmed_sent_sats"] == 20_000
+    assert section["unconfirmed_sent_sats"] == 5_000
     assert len(section["recent_transactions"]) == 10
     assert section["recent_transactions"][0]["txid"] == "2"
 

@@ -165,12 +165,16 @@ def _wallet_section(
                        "error": f"non_integer_balance:{balance_raw!r}"}
 
     if isinstance(transactions_raw, dict) and "error" not in transactions_raw:
-        try:
-            section["confirmed_received_sats"] = int(
-                transactions_raw.get("confirmed_received_sat", 0)
-            )
-        except (TypeError, ValueError):
-            section["confirmed_received_sats"] = 0
+        for src_key, dst_key in (
+            ("confirmed_received_sat", "confirmed_received_sats"),
+            ("unconfirmed_received_sat", "unconfirmed_received_sats"),
+            ("confirmed_sent_sat", "confirmed_sent_sats"),
+            ("unconfirmed_sent_sat", "unconfirmed_sent_sats"),
+        ):
+            try:
+                section[dst_key] = int(transactions_raw.get(src_key, 0))
+            except (TypeError, ValueError):
+                section[dst_key] = 0
         txs = transactions_raw.get("transactions")
         if isinstance(txs, list):
             section["recent_transactions"] = txs[-10:]

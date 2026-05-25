@@ -109,20 +109,32 @@ def build_regtest_tools(wallet: RegtestWallet | None = None) -> list[tuple[str, 
     async def btc_list_transactions(count: int = 100) -> dict[str, Any]:
         """List recent wallet transactions on Regtest.
 
-        The returned summary includes ``confirmed_received_sat``, which
-        lets watchdog stop predicates detect incoming payments even when
-        the wallet's net balance returns to its startup baseline.
+        The returned summary includes confirmed/unconfirmed send and
+        receive counters so watchdog stop predicates can key off actual
+        transaction history instead of net wallet balance.
         """
         try:
             txs = await wallet.list_transactions(count=count)
             compact: list[dict[str, Any]] = []
             confirmed_received_sat = 0
+            unconfirmed_received_sat = 0
+            confirmed_sent_sat = 0
+            unconfirmed_sent_sat = 0
             for tx in txs:
                 amount_sat = int(round(float(tx.get("amount", 0)) * 1e8))
                 confirmations = int(tx.get("confirmations", 0) or 0)
                 category = str(tx.get("category", ""))
-                if category == "receive" and confirmations > 0 and amount_sat > 0:
-                    confirmed_received_sat += amount_sat
+                abs_amount_sat = abs(amount_sat)
+                if category == "receive" and amount_sat > 0:
+                    if confirmations > 0:
+                        confirmed_received_sat += amount_sat
+                    else:
+                        unconfirmed_received_sat += amount_sat
+                elif category == "send" and abs_amount_sat > 0:
+                    if confirmations > 0:
+                        confirmed_sent_sat += abs_amount_sat
+                    else:
+                        unconfirmed_sent_sat += abs_amount_sat
                 compact.append({
                     "txid": tx.get("txid"),
                     "category": category,
@@ -135,6 +147,9 @@ def build_regtest_tools(wallet: RegtestWallet | None = None) -> list[tuple[str, 
                 "transactions": compact,
                 "count": len(compact),
                 "confirmed_received_sat": confirmed_received_sat,
+                "unconfirmed_received_sat": unconfirmed_received_sat,
+                "confirmed_sent_sat": confirmed_sent_sat,
+                "unconfirmed_sent_sat": unconfirmed_sent_sat,
             }
         except Exception as exc:
             return {"error": f"transaction_list_failed: {exc}"}
