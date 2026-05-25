@@ -114,6 +114,42 @@ def test_openclaw_mcp_smoke_timeout_can_be_overridden(monkeypatch, tmp_path: Pat
     assert seen["kwargs"]["timeout"] == 363
 
 
+def test_openclaw_mcp_smoke_resets_stale_sessions(monkeypatch, tmp_path: Path) -> None:
+    scenario, agent = _scenario_and_agent(tmp_path)
+    sessions = (
+        scenario_boot._state_dir(scenario.name, agent.name)
+        / ".openclaw"
+        / "agents"
+        / scenario_boot.DEFAULT_OPENCLAW_AGENT_ID
+        / "sessions"
+    )
+    stale_file = sessions / "old.json"
+    stale_dir_file = sessions / "old-session" / "turn.json"
+    stale_dir_file.parent.mkdir(parents=True)
+    stale_file.write_text("old", encoding="utf-8")
+    stale_dir_file.write_text("old", encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        assert not stale_file.exists()
+        assert not stale_dir_file.exists()
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"payloads":[{"text":"bcrt1qsmoke"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+
+    failure = scenario_boot._openclaw_mcp_smoke_check(
+        scenario,
+        agent,
+        expected_wallet_address="bcrt1qsmoke",
+    )
+
+    assert failure is None
+
+
 def test_openclaw_mcp_smoke_timeout_reports_partial_streams(monkeypatch, tmp_path: Path) -> None:
     scenario, agent = _scenario_and_agent(tmp_path)
 

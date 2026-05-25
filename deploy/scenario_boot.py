@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -856,6 +857,24 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     c_ok(f"{agent.name}: OpenClaw workspace provisioned ({state}/.openclaw/)")
 
 
+def _reset_openclaw_sessions(state: Path, openclaw_agent_id: str) -> None:
+    """Remove stale OpenClaw session history for a per-agent HOME.
+
+    The smoke check is deliberately stateless: it only verifies that the agent
+    can call ``wallet_address`` over MCP. Reusing old sessions can trigger
+    OpenClaw compaction before the tool call even runs, so wipe the session
+    directory the same way the watchdog does before each real turn.
+    """
+    sessions_dir = state / ".openclaw" / "agents" / openclaw_agent_id / "sessions"
+    if not sessions_dir.exists():
+        return
+    for child in sessions_dir.iterdir():
+        if child.is_file():
+            child.unlink(missing_ok=True)
+        elif child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+
+
 def _openclaw_mcp_smoke_check(
     scenario: Scenario,
     agent: AgentSpec,
@@ -880,6 +899,7 @@ def _openclaw_mcp_smoke_check(
         "Smoke test. Call the wallet_address MCP tool exactly once, then output "
         "only the returned wallet address. Do not guess."
     )
+    _reset_openclaw_sessions(state, openclaw_agent_id)
     cmd = [
         "sudo", "-u", SERVICE_USER, "env", f"HOME={state}",
         "openclaw", "agent",
