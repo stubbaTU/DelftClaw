@@ -89,6 +89,7 @@ def test_regtest_transfer_cross_wires_signed_log_pull_loop(scenario):
     alice_env = _instance_env_contents(scenario, scenario.agents["alice"])
     bob_env = _instance_env_contents(scenario, scenario.agents["bob"])
 
+    assert scenario.agents["alice"].bootstrap_community_sats == 10_000
     assert "REDTEAM_PORT=28865" in alice_env
     assert "PEER_LOG_URLS=http://127.0.0.1:28866" in alice_env
     assert "REDTEAM_PORT=28866" in bob_env

@@ -87,6 +87,7 @@ DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_LLM_MODEL = "qwen3.6:27b"
 DEFAULT_LLM_API_KEY = "ollama"
 DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S = 210
+OPENCLAW_TURN_TIMEOUT_MARGIN_S = 20
 
 
 def _resolve_bitcoin_rpc(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
@@ -172,6 +173,20 @@ def _resolve_openclaw_smoke_timeout(host_env_file: Path = HOST_ENV_FILE) -> int:
 # ``HOST_ENV_FILE`` then re-call ``_resolve_llm`` directly.
 LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
 OPENCLAW_SMOKE_TIMEOUT_S = _resolve_openclaw_smoke_timeout()
+
+
+def _openclaw_inner_timeout_s(scenario: Scenario) -> int:
+    """Timeout for OpenClaw's inner provider call during watchdog turns.
+
+    The watchdog passes ``interval_s`` to ``openclaw agent --timeout``. OpenClaw
+    also has its own provider-call timeout in ``agents.defaults``; keep that
+    just below the watchdog interval so slow-but-valid tool-choice turns do not
+    fail early with "Request timed out before a response was generated".
+    """
+    interval = int(scenario.watchdog.interval_s)
+    if interval <= OPENCLAW_TURN_TIMEOUT_MARGIN_S:
+        return max(1, interval)
+    return max(30, interval - OPENCLAW_TURN_TIMEOUT_MARGIN_S)
 
 
 def _native_base_from(base_url: str) -> str:
@@ -606,6 +621,50 @@ async def _call_mcp(url: str, tool: str, args: dict) -> dict | str:
     return getattr(result, "structured_content", {}) or {}
 
 
+async def _bootstrap_genesis_membership(
+    scenario: Scenario,
+    genesis_agent: AgentSpec,
+) -> bool:
+    """Admit the configured genesis agent before autonomous turns start.
+
+    Returns True when a bootstrap donation was written, False when the
+    scenario did not request one or the agent was already admitted.
+    """
+    amount = int(genesis_agent.bootstrap_community_sats)
+    if amount <= 0:
+        return False
+
+    url = f"http://127.0.0.1:{genesis_agent.mcp_port}/mcp"
+    c_info(
+        f"{genesis_agent.name}: bootstrap community membership "
+        f"({amount} sats)"
+    )
+    current = await _call_mcp(url, "community_treasury_balance", {})
+    if (
+        isinstance(current, dict)
+        and current.get("my_membership_status") == "admitted"
+    ):
+        c_ok(f"{genesis_agent.name}: already admitted; bootstrap skipped")
+        return False
+
+    result = await _call_mcp(url, "community_donate_and_join", {
+        "amount_sats": amount,
+    })
+    if isinstance(result, dict) and result.get("error") == "already_admitted":
+        c_ok(f"{genesis_agent.name}: already admitted; bootstrap skipped")
+        return False
+    if not isinstance(result, dict) or "error" in result:
+        raise RuntimeError(
+            f"bootstrap community donation for {scenario.instance_id(genesis_agent.name)} "
+            f"failed: {result}"
+        )
+    c_ok(
+        f"{genesis_agent.name}: bootstrap donation accepted "
+        f"entry={str(result.get('entry_hash', ''))[:12]}..."
+    )
+    return True
+
+
 async def _agent_self_info(url: str) -> dict:
     """Fetch ``wallet_address``. The IPv8 pubkey we can't get over MCP yet
     (no tool exposes it), so we derive it locally from the seed file the
@@ -697,11 +756,12 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # First, ensure openclaw.json exists by running a trivial patch
     # (the ``agents.defaults`` field doesn't shrink the file so it
     # doesn't trip openclaw's size-drop safety check). This also
-    # sets the inner-LLM timeout to 150s, well below the watchdog
-    # interval, so cold-starts don't surface as truncated responses.
+    # sets the inner-LLM timeout below the watchdog interval, so cold-starts
+    # don't surface as truncated responses.
+    inner_timeout_s = _openclaw_inner_timeout_s(scenario)
     subprocess.run(
         [*sudo_env, "openclaw", "config", "patch", "--stdin"],
-        input=json.dumps({"agents": {"defaults": {"timeoutSeconds": 150}}}),
+        input=json.dumps({"agents": {"defaults": {"timeoutSeconds": inner_timeout_s}}}),
         text=True, check=True,
     )
 
@@ -1064,6 +1124,14 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
                 c_fail(f"agent_inject_manifest {agent.name}: {result['error']}")
                 return 1
             c_ok(f"{agent.name}: manifest cached in MCP agent: {result}")
+
+        bootstrap_agent = scenario.agents[genesis_name]
+        if bootstrap_agent.bootstrap_community_sats > 0:
+            try:
+                await _bootstrap_genesis_membership(scenario, bootstrap_agent)
+            except Exception as exc:
+                c_fail(str(exc))
+                return 1
 
     # Phase 5: start watchdogs.
     for agent in scenario.agents.values():

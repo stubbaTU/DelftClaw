@@ -117,6 +117,12 @@ class AgentSpec:
     bitcoin_rpc_url: str = ""
     bitcoin_rpc_wallet: str = ""
 
+    # Optional deploy-time founder admission. When set on the selected
+    # genesis agent, scenario_boot writes a donation_intent before the
+    # watchdogs start so the founder is already an admitted member in the
+    # first autonomous turn.
+    bootstrap_community_sats: int = 0
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -315,6 +321,23 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
     bitcoin_rpc_url = str(d.get("bitcoin_rpc_url", d.get("bitcoin-rpc-url", "")) or "").strip()
     bitcoin_rpc_wallet = str(d.get("bitcoin_rpc_wallet", d.get("bitcoin-rpc-wallet", "")) or "").strip()
 
+    bootstrap_community_sats = d.get(
+        "bootstrap_community_sats",
+        d.get("bootstrap-community-sats", 0),
+    )
+    try:
+        bootstrap_community_sats = int(bootstrap_community_sats)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioError(
+            f"agent {name!r}: bootstrap_community_sats must be an int "
+            f"(got {bootstrap_community_sats!r})"
+        ) from exc
+    if bootstrap_community_sats < 0:
+        raise ScenarioError(
+            f"agent {name!r}: bootstrap_community_sats must be >= 0 "
+            f"(got {bootstrap_community_sats})"
+        )
+
     return AgentSpec(
         name=name,
         ipv8_port=ipv8_port,
@@ -329,6 +352,7 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         btc_network=btc_network,
         bitcoin_rpc_url=bitcoin_rpc_url,
         bitcoin_rpc_wallet=bitcoin_rpc_wallet,
+        bootstrap_community_sats=bootstrap_community_sats,
     )
 
 

@@ -36,6 +36,10 @@ agents:
     peers:
       - bob
     initial_balance_sats: 200000
+    # Admit the genesis seedbox before watchdog turns begin. This keeps
+    # the first live snapshot aligned with the scenario model: alice is
+    # already the founder/member, bob is the joiner.
+    bootstrap_community_sats: 10000
     btc_network: regtest
     # Optional override; defaults to http://127.0.0.1:18443
     bitcoin_rpc_url: http://127.0.0.1:18443
