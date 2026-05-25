@@ -1,0 +1,72 @@
+# Scenario: community_demo
+#
+# Real OpenClaw-agent version of Paper - Demo.txt. This is not the
+# direct Python checklist runner in deploy.community_demo; it launches
+# actual per-agent MCP services and watchdog-driven OpenClaw prompts.
+
+name: community_demo
+description: >-
+  Four real OpenClaw agents: agent_1 founds and seeds Creative Commons
+  content; agent_2 and agent_3 donate to join; agent_2 searches and
+  retrieves the file; agent_4 joins and records the mock second seedbox
+  once the capacity threshold is active.
+
+watchdog:
+  interval_s: 240
+  max_iterations_per_turn: 12
+  max_total_turns: 36
+  max_wall_clock_s: 10800
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/community_demo
+
+agents:
+
+  agent_1:
+    ipv8_port: 8194
+    mcp_port: 18770
+    redteam_port: 28770
+    publish_overlays:
+      - protocol/examples/content_community.md
+    mission_file: agent_1/mission.md
+    stop_predicate: community_seedbox_count_gte_N(n=2)
+    seed_content:
+      - magnet: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=creative_commons_audio.txt"
+        name: "Creative Commons Audio"
+        size: 37
+        mime: text/plain
+        tags: [Creative Commons, audio, demo]
+    initial_balance_sats: 200000
+
+  agent_2:
+    ipv8_port: 8195
+    mcp_port: 18771
+    redteam_port: 28771
+    publish_overlays: []
+    mission_file: agent_2/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - agent_1
+    initial_balance_sats: 100000
+
+  agent_3:
+    ipv8_port: 8196
+    mcp_port: 18772
+    redteam_port: 28772
+    publish_overlays: []
+    mission_file: agent_3/mission.md
+    stop_predicate: community_member_count_gte_N(n=3)
+    peers:
+      - agent_1
+    initial_balance_sats: 100000
+
+  agent_4:
+    ipv8_port: 8197
+    mcp_port: 18773
+    redteam_port: 28773
+    publish_overlays: []
+    mission_file: agent_4/mission.md
+    stop_predicate: community_seedbox_count_gte_N(n=2)
+    peers:
+      - agent_1
+    initial_balance_sats: 100000

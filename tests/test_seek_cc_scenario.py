@@ -7,12 +7,15 @@ edit to scenario.yaml or a mission.md breaks the suite, not the
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from deploy.scenario import parse_scenario
-from deploy.scenario_boot import _instance_env_contents
+from deploy import scenario_boot
+from deploy.scenario_boot import _build_manifest_md, _instance_env_contents
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +74,24 @@ def test_seek_cc_joiners_have_seeker_role(scenario):
         assert mission.name == joiner
 
 
+def test_seek_cc_generated_manifest_enables_seedbox_growth(scenario):
+    manifest_md = _build_manifest_md(
+        scenario=scenario,
+        genesis_name="alice",
+        genesis_coords={
+            "wallet_address": "dclaw1demo",
+            "host": "127.0.0.1",
+            "port": 8190,
+            "pubkey_hex": "aa" * 37,
+        },
+        default_overlay_hashes=["b" * 40],
+    )
+
+    assert "- bootstrap_cap_sats: 100000" in manifest_md
+    assert "- max_agents_per_seedbox: 3" in manifest_md
+    assert "- seedbox_cost_sats: 20000" in manifest_md
+
+
 # ---------------------------------------------------------------------------
 # Env-file cross-wiring (Phase 6 pull-loop URLs)
 # ---------------------------------------------------------------------------
@@ -101,3 +122,49 @@ def test_seek_cc_env_files_cross_wire_pull_loop(scenario):
         # Our own redteam port is in REDTEAM_PORT, not PEER_LOG_URLS.
         own_line = [ln for ln in body.split("\n") if ln.startswith("REDTEAM_PORT=")]
         assert own_line == [f"REDTEAM_PORT={expected_redteam[name]}"]
+
+
+def test_openclaw_provider_config_uses_config_set(monkeypatch, tmp_path, scenario):
+    """The VPS CLI may not support ``config patch --stdin``; boot uses config set."""
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(list(cmd))
+        if cmd[-2:] == ["list", "--json"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(scenario_boot, "STATE_ROOT", tmp_path)
+    monkeypatch.setattr(scenario_boot, "_sudo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+
+    scenario_boot._provision_openclaw_workspace(scenario, scenario.agents["alice"])
+
+    config_commands = [
+        cmd for cmd in commands
+        if "openclaw" in cmd
+        and cmd[cmd.index("openclaw"):cmd.index("openclaw") + 3] == [
+            "openclaw", "config", "set"
+        ]
+    ]
+    paths = [cmd[cmd.index("set") + 1] for cmd in config_commands]
+    assert paths == [
+        "agents.defaults.timeoutSeconds",
+        "models.mode",
+        "models.providers.ollama",
+    ]
+    assert all("--stdin" not in cmd for cmd in commands)
+
+    provider = json.loads(config_commands[2][config_commands[2].index("set") + 2])
+    assert provider["api"] == "ollama"
+    assert provider["models"] == [
+        {
+            "id": scenario_boot.QWEN_MODEL,
+            "name": scenario_boot.QWEN_MODEL,
+            "reasoning": False,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 32768,
+            "maxTokens": 4096,
+        }
+    ]

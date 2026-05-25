@@ -106,6 +106,10 @@ def test_openclaw_tool_wrappers_call_client(monkeypatch) -> None:
     assert openclaw_tools.delftclaw_get_metrics()["ok"] is True
     assert openclaw_tools.delftclaw_get_reputation("agent")["ok"] is True
     assert openclaw_tools.delftclaw_get_openclaw_status()["ok"] is True
+    sporestack_plan = openclaw_tools.delftclaw_plan_sporestack_seedbox_purchase(days=1, dollars=1)
+    assert sporestack_plan["ok"] is True
+    assert sporestack_plan["dry_run"] is True
+    assert sporestack_plan["launch"]["plan"]["endpoint"] == "/token/dry-run-token/servers"
     assert openclaw_tools.delftclaw_run_blocking_probe()["blocked"] is True
 
     assert [name for name, _ in fake_client.calls] == [
@@ -126,3 +130,17 @@ def test_openclaw_tool_wrappers_call_client(monkeypatch) -> None:
         "openclaw_status",
         "tool_call",
     ]
+
+
+def test_community_tools_are_registered_in_manifest() -> None:
+    manifest_names = {spec["name"] for spec in openclaw_tools.tool_manifest()}
+
+    assert {
+        "delftclaw_create_community",
+        "delftclaw_join_community",
+        "delftclaw_buy_community_seedbox",
+        "delftclaw_import_community_file_catalog",
+        "delftclaw_find_community_file",
+        "delftclaw_retrieve_community_file",
+        "delftclaw_get_community_status",
+    }.issubset(manifest_names)
