@@ -29,6 +29,7 @@ rpcport=18443
   - `BITCOIN_RPC_URL` (defaults to `http://127.0.0.1:18443`)
   - `BITCOIN_RPC_WALLET` (defaults to the agent name: `alice` / `bob`)
   - `BITCOIN_RPC_USER` / `BITCOIN_RPC_PASSWORD` (optional; cookie auth works too)
+  - `REDTEAM_PORT` / `PEER_LOG_URLS` so each agent serves and pulls signed community-log entries
 - `agent/cli.py` wraps the agent's synthetic wallet with `RegtestWallet(..., use_onchain=True)` when RPC env is present.
 - `agent/tools.py` conditionally exposes the real RPC tools from `agent/bitcoin_tools.py`:
   - `btc_get_balance`, `btc_get_address`, `btc_list_utxos`, `btc_list_transactions`, `btc_send`, `btc_transaction_status`, `btc_mine_blocks`

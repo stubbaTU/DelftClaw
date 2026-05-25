@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 import pytest
 import pytest_asyncio
+from ipv8.peer import Peer
 
 from agent import AgentConfig, OpenClawAgent, build_tools
 from agent.community_state import replay_community
@@ -298,6 +299,120 @@ async def test_pull_loop_makes_bob_see_alice_in_community_state(
     assert alice.community_reporter_id in state.members
     assert state.balance_sats == 60_000
     assert state.member_count == 1
+
+
+@pytest.mark.asyncio
+async def test_joined_member_is_visible_to_third_agent_via_pull_loop(tmp_path):
+    """Bob joins Alice over IPv8; Charlie then pulls Bob's log and sees Bob admitted."""
+    dirs = {name: tmp_path / name for name in ("alice", "bob", "charlie")}
+    for directory in dirs.values():
+        directory.mkdir()
+
+    seeds = {
+        "alice": "army van defense carry jealous true garbage claim echo media make crunch",
+        "bob": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "charlie": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    }
+    agents = {}
+    for name, mnemonic in seeds.items():
+        seed = MnemonicSeedSource(mnemonic).load()
+        agents[name] = OpenClawAgent(
+            identity=AgentIdentity.from_seed(seed, network="TESTNET"),
+            llm=StubLLMClient(sources={}),
+            config=AgentConfig(
+                port=0,
+                save_dir=dirs[name],
+                initial_balance_sats=200_000,
+                community_log_path=dirs[name] / "community.log",
+                peer_log_dir=dirs[name] / "peer_logs",
+            ),
+            bt_service=StubBitTorrentService(save_dir=dirs[name]),
+        )
+
+    alice = agents["alice"]
+    bob = agents["bob"]
+    charlie = agents["charlie"]
+    stop_event = asyncio.Event()
+    pull_task = None
+    client = None
+
+    try:
+        for agent in agents.values():
+            await agent.start()
+
+        alice.seedbox.network.add_verified_peer(
+            Peer(bob.seedbox.my_peer.public_key, address=bob.address),
+        )
+        bob.seedbox.network.add_verified_peer(
+            Peer(alice.seedbox.my_peer.public_key, address=alice.address),
+        )
+
+        manifest_md = MANIFEST_TEMPLATE.format(gatekeeper_address=alice.wallet.address())
+        for agent in agents.values():
+            agent.load_manifest(manifest_md)
+
+        alice_tools = build_tools(alice)
+        bob_tools = build_tools(bob)
+        await alice_tools.dispatch("community_donate_and_join", {"amount_sats": 80_000})
+        join = await bob_tools.dispatch(
+            "community_join_via_peer",
+            {
+                "gatekeeper_mid": alice.seedbox.my_peer.mid.hex(),
+                "amount_sats": 60_000,
+                "timeout_s": 5.0,
+            },
+        )
+        assert join["accepted"] is True
+        assert bob.community_reporter_id in alice.community_state().members
+
+        from redteam.integration.peer_transport import HttpPeerTransport
+        from redteam.integration.pull_loop import run_pull_loop
+        from redteam.integration.server import build_app
+
+        bob_oc = OpenClawIdentity.from_agent_identity(bob.identity)
+        app = build_app(
+            identity=bob_oc,
+            log_path=str(dirs["bob"] / "community.log"),
+            peer_log_dir=str(dirs["bob"] / "peer_logs"),
+            peers=[],
+        )
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://bob",
+        )
+        pull_task = asyncio.create_task(
+            run_pull_loop(
+                transport=HttpPeerTransport(client),
+                peer_urls=["http://bob"],
+                peer_log=charlie.peer_log,
+                interval=0.05,
+                batch=50,
+                stop_event=stop_event,
+            ),
+        )
+
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while asyncio.get_event_loop().time() < deadline:
+            state = charlie.community_state()
+            if state is not None and bob.community_reporter_id in state.members:
+                break
+            await asyncio.sleep(0.05)
+
+        state = charlie.community_state()
+        assert state is not None
+        assert bob.community_reporter_id in state.members
+        assert state.balance_sats == 60_000
+    finally:
+        stop_event.set()
+        if pull_task is not None:
+            try:
+                await asyncio.wait_for(pull_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pull_task.cancel()
+        if client is not None:
+            await client.aclose()
+        for agent in agents.values():
+            await agent.stop()
 
 
 # ---------------------------------------------------------------------------

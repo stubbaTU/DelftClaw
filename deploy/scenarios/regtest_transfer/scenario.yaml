@@ -28,6 +28,7 @@ agents:
   alice:
     ipv8_port: 8200
     mcp_port: 18865
+    redteam_port: 28865
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
@@ -42,6 +43,7 @@ agents:
   bob:
     ipv8_port: 8201
     mcp_port: 18866
+    redteam_port: 28866
     publish_overlays: []
     mission_file: bob/mission.md
     stop_predicate: wallet_received_sats(min_sats=20000)

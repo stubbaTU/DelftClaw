@@ -12,7 +12,9 @@
 #   --bitcoin-data /path/to/dir    Bitcoin data directory (default: ~/.bitcoin)
 #   --rpc-port 18443               JSON-RPC listen port (default: 18443)
 #   --rpc-bind 127.0.0.1           JSON-RPC bind address (default: 127.0.0.1)
-#   --bitcoin-cli /path/to/cli     Path to bitcoin-cli binary (default: bitcoind)
+#   --bitcoin-cli /path/to/cli     Path to bitcoin-cli binary (default: bitcoin-cli)
+#   --bitcoind /path/to/daemon     Path to bitcoind binary (default: bitcoind)
+#   --python-bin /path/to/python   Path to Python binary (default: python3)
 #   --help                          Show this help
 #
 # Environment Variables:
@@ -37,6 +39,8 @@ BITCOIN_DATA="${HOME}/.bitcoin"
 RPC_PORT=18443
 RPC_BIND="127.0.0.1"
 BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
+BITCOIND="${BITCOIND:-bitcoind}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 REGTEST_CHAIN="regtest"
 BOB_TARGET_BALANCE_SATS="${BOB_TARGET_BALANCE_SATS:-20000}"
 
@@ -57,6 +61,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --bitcoin-cli)
             BITCOIN_CLI="$2"
+            shift 2
+            ;;
+        --bitcoind)
+            BITCOIND="$2"
+            shift 2
+            ;;
+        --python-bin)
+            PYTHON_BIN="$2"
             shift 2
             ;;
         --help)
@@ -102,10 +114,9 @@ keypool=0
 
 # Performance (for demo/test only, NOT for production)
 txindex=1
-addressindex=1
 
 # Chain management
-blockfilter=1
+blockfilterindex=1
 
 # Logging
 debug=rpc
@@ -121,7 +132,7 @@ echo "[*] Bitcoin config written to $BITCOIN_CONF"
 # Run a bitcoin-cli command without retrying.
 # Use this for real RPC calls so errors are visible immediately.
 btc() {
-    "$BITCOIN_CLI" -regtest "$@"
+    "$BITCOIN_CLI" -datadir="$BITCOIN_DATA" -regtest "$@"
 }
 
 # Wait until the daemon responds successfully.
@@ -138,7 +149,7 @@ btc_wait() {
 }
 
 btc_to_sats() {
-    python3 - "$1" <<'PY'
+    "$PYTHON_BIN" - "$1" <<'PY'
 from decimal import Decimal
 import sys
 
@@ -147,7 +158,7 @@ PY
 }
 
 sats_to_btc() {
-    python3 - "$1" <<'PY'
+    "$PYTHON_BIN" - "$1" <<'PY'
 from decimal import Decimal
 import sys
 
@@ -168,7 +179,7 @@ wallet_labeled_address() {
 
     existing="$(
         btc -rpcwallet="$wallet_name" getaddressesbylabel "$label" 2>/dev/null \
-            | python3 -c 'import json, sys; data = json.load(sys.stdin); print(sorted(data)[0] if data else "")' \
+            | "$PYTHON_BIN" -c 'import json, sys; data = json.load(sys.stdin); print(sorted(data)[0] if data else "")' \
             2>/dev/null || true
     )"
     if [ -n "$existing" ]; then
@@ -222,7 +233,7 @@ ensure_wallet() {
 
 # Start bitcoind in regtest mode (background)
 echo "[*] Starting bitcoind in -regtest mode..."
-bitcoind -datadir="$BITCOIN_DATA" -regtest -daemon
+"$BITCOIND" -datadir="$BITCOIN_DATA" -regtest -daemon
 
 # Wait for RPC to be available
 echo "[*] Waiting for bitcoind RPC to be ready..."
