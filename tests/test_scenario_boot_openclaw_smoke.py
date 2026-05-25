@@ -86,6 +86,27 @@ def test_openclaw_inner_timeout_tracks_watchdog_interval(tmp_path: Path) -> None
     assert scenario_boot._openclaw_inner_timeout_s(longer) == 220
 
 
+def test_openclaw_provider_timeout_covers_smoke_and_watchdog(monkeypatch, tmp_path: Path) -> None:
+    scenario, _agent = _scenario_and_agent(tmp_path)
+    monkeypatch.setattr(scenario_boot, "OPENCLAW_SMOKE_TIMEOUT_S", 210)
+    assert scenario_boot._openclaw_provider_timeout_s(scenario) == 210
+
+    longer = Scenario(
+        name=scenario.name,
+        description=scenario.description,
+        watchdog=WatchdogPolicy(
+            interval_s=300,
+            max_iterations_per_turn=1,
+            max_total_turns=5,
+            max_wall_clock_s=300,
+        ),
+        agents=scenario.agents,
+        log_dir=scenario.log_dir,
+        manifest_path=scenario.manifest_path,
+    )
+    assert scenario_boot._openclaw_provider_timeout_s(longer) == 280
+
+
 def test_openclaw_mcp_smoke_timeout_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
     scenario, agent = _scenario_and_agent(tmp_path)
     seen: dict[str, Any] = {}

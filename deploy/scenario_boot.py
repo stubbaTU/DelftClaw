@@ -216,6 +216,18 @@ def _openclaw_inner_timeout_s(scenario: Scenario) -> int:
     return max(30, interval - OPENCLAW_TURN_TIMEOUT_MARGIN_S)
 
 
+def _openclaw_provider_timeout_s(scenario: Scenario) -> int:
+    """Timeout OpenClaw applies to the provider request itself.
+
+    OpenClaw's CLI ``--timeout`` bounds the whole turn subprocess, while
+    ``agents.defaults.timeoutSeconds`` does not cover every provider path.
+    The model idle timeout in recent OpenClaw builds is read from
+    ``models.providers.<id>.timeoutSeconds``; keep it large enough for both
+    watchdog turns and the pre-watchdog smoke check.
+    """
+    return max(_openclaw_inner_timeout_s(scenario), OPENCLAW_SMOKE_TIMEOUT_S)
+
+
 def _native_base_from(base_url: str) -> str:
     """Strip the trailing ``/v1`` from an OpenAI-compat URL to get Ollama's native base."""
     return base_url.rstrip("/").removesuffix("/v1")
@@ -766,6 +778,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     new_provider = {
         "baseUrl": provider_base,
         "api": api_type,
+        "timeoutSeconds": _openclaw_provider_timeout_s(scenario),
         # OpenClaw refuses to register a provider without an apiKey;
         # we write a literal value rather than relying on env-var
         # interpolation (which this field doesn't support).
