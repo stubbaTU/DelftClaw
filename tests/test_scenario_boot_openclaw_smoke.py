@@ -57,7 +57,7 @@ def test_openclaw_mcp_smoke_success(monkeypatch, tmp_path: Path) -> None:
     assert failure is None
     assert seen["cmd"][:4] == ["sudo", "-u", scenario_boot.SERVICE_USER, "env"]
     assert "--agent" in seen["cmd"]
-    assert "smoke-alice" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--agent") + 1] == scenario_boot.DEFAULT_OPENCLAW_AGENT_ID
     assert "--json" in seen["cmd"]
     assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == str(
         scenario_boot.DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S
@@ -112,6 +112,32 @@ def test_openclaw_mcp_smoke_timeout_can_be_overridden(monkeypatch, tmp_path: Pat
     assert failure is None
     assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == "333"
     assert seen["kwargs"]["timeout"] == 363
+
+
+def test_openclaw_mcp_smoke_timeout_reports_partial_streams(monkeypatch, tmp_path: Path) -> None:
+    scenario, agent = _scenario_and_agent(tmp_path)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout=240,
+            output='{"payloads":[]}',
+            stderr="provider retrying after 429",
+        )
+
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+    monkeypatch.setattr(scenario_boot.time, "monotonic", iter([10.0, 250.0]).__next__)
+
+    failure = scenario_boot._openclaw_mcp_smoke_check(
+        scenario,
+        agent,
+        expected_wallet_address="bcrt1qsmoke",
+    )
+
+    assert failure is not None
+    assert "timed out after 240.0s" in failure
+    assert "partial_stdout" in failure
+    assert "partial_stderr='provider retrying after 429'" in failure
 
 
 def test_openclaw_mcp_smoke_fails_on_literal_error(monkeypatch, tmp_path: Path) -> None:
@@ -177,6 +203,29 @@ def test_openclaw_mcp_smoke_requires_wallet_evidence(monkeypatch, tmp_path: Path
     )
     assert failure is not None
     assert "missing wallet_address evidence" in failure
+
+
+def test_openclaw_mcp_smoke_missing_evidence_includes_preview(monkeypatch, tmp_path: Path) -> None:
+    scenario, agent = _scenario_and_agent(tmp_path)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"payloads":[{"text":"I cannot access tools here."}]}',
+            stderr="model warning",
+        )
+
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+
+    failure = scenario_boot._openclaw_mcp_smoke_check(
+        scenario,
+        agent,
+        expected_wallet_address="bcrt1qsmoke",
+    )
+    assert failure is not None
+    assert "assistant='I cannot access tools here.'" in failure
+    assert "stderr='model warning'" in failure
 
 
 def test_regtest_wallet_identity_requires_bcrt1(tmp_path: Path) -> None:

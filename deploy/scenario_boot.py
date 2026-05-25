@@ -87,6 +87,7 @@ DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_LLM_MODEL = "qwen3.6:27b"
 DEFAULT_LLM_API_KEY = "ollama"
 DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S = 210
+DEFAULT_OPENCLAW_AGENT_ID = "main"
 OPENCLAW_TURN_TIMEOUT_MARGIN_S = 20
 
 
@@ -387,6 +388,7 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # agent's openclaw.json providers map (``compat`` for OpenAI-compat
         # endpoints, ``ollama`` for native Ollama).
         f"OPENCLAW_PROVIDER_KEY={_provider_for(LLM_BASE_URL)[0]}",
+        f"OPENCLAW_AGENT_ID={DEFAULT_OPENCLAW_AGENT_ID}",
         f"LOG_DIR={scenario.log_dir}",
         f"WATCHDOG_INITIAL_DELAY_S={initial_delay_s:.2f}",
     ]
@@ -728,9 +730,8 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
       1. ``openclaw mcp set <instance> '{"url": "http://127.0.0.1:<port>/mcp",
          "transport": "streamable-http"}'`` — wire the agent's MCP server into
          its config so ``openclaw agent`` knows where to look.
-      2. ``openclaw agents add <instance> --non-interactive --workspace …
-         --agent-dir …`` — register the agent name the watchdog will pass to
-         ``--agent <instance>``.
+      2. Ensure OpenClaw's default ``main`` agent exists. Each DelftClaw
+         agent has its own HOME, so ``main`` is isolated per instance.
       3. Verify with ``openclaw agents list --json``.
 
     Each command runs as the ``delftclaw`` user with HOME pointing at this
@@ -811,8 +812,11 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         check=True,
     )
 
-    # (3) Register the agent. ``openclaw agents add`` errors if already
-    # present, so we list-and-skip when re-running.
+    # (3) Ensure the default OpenClaw agent exists. Newer OpenClaw releases
+    # expose the local per-HOME agent as id="main"; passing our systemd
+    # instance id to `--agent` fails with "Unknown agent id". The per-HOME
+    # isolation already gives each DelftClaw agent a separate OpenClaw state,
+    # so using "main" here is the stable target.
     proc = subprocess.run(
         [*sudo_env, "openclaw", "agents", "list", "--json"],
         check=False, capture_output=True, text=True,
@@ -822,18 +826,26 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
         try:
             blob = json.loads(proc.stdout or "[]")
             if isinstance(blob, list):
-                existing = [a.get("name") for a in blob if isinstance(a, dict)]
+                existing = [
+                    str(a.get("id") or a.get("name"))
+                    for a in blob
+                    if isinstance(a, dict) and (a.get("id") or a.get("name"))
+                ]
             elif isinstance(blob, dict) and "agents" in blob:
-                existing = [a.get("name") for a in blob["agents"] if isinstance(a, dict)]
+                existing = [
+                    str(a.get("id") or a.get("name"))
+                    for a in blob["agents"]
+                    if isinstance(a, dict) and (a.get("id") or a.get("name"))
+                ]
         except json.JSONDecodeError:
             pass
 
-    if instance in existing:
-        c_info(f"{agent.name}: openclaw agent {instance!r} already registered")
+    if DEFAULT_OPENCLAW_AGENT_ID in existing:
+        c_info(f"{agent.name}: openclaw agent {DEFAULT_OPENCLAW_AGENT_ID!r} already registered")
     else:
-        c_info(f"{agent.name}: openclaw agents add {instance}")
+        c_info(f"{agent.name}: openclaw agents add {DEFAULT_OPENCLAW_AGENT_ID}")
         subprocess.run(
-            [*sudo_env, "openclaw", "agents", "add", instance,
+            [*sudo_env, "openclaw", "agents", "add", DEFAULT_OPENCLAW_AGENT_ID,
              "--non-interactive",
              "--workspace", str(workspace),
              "--agent-dir", str(agent_dir),
@@ -863,6 +875,7 @@ def _openclaw_mcp_smoke_check(
     state = _state_dir(scenario.name, agent.name)
     provider_key, _api_type, _base = _provider_for(LLM_BASE_URL)
     model = f"{provider_key}/{LLM_MODEL}"
+    openclaw_agent_id = os.environ.get("OPENCLAW_AGENT_ID", DEFAULT_OPENCLAW_AGENT_ID)
     prompt = (
         "Smoke test. Call the wallet_address MCP tool exactly once, then output "
         "only the returned wallet address. Do not guess."
@@ -872,12 +885,13 @@ def _openclaw_mcp_smoke_check(
         "openclaw", "agent",
         "--local",
         "--model", model,
-        "--agent", instance,
+        "--agent", openclaw_agent_id,
         "--message", prompt,
         "--json",
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             cmd,
@@ -886,7 +900,16 @@ def _openclaw_mcp_smoke_check(
             timeout=timeout_s + 30,
         )
     except subprocess.TimeoutExpired as exc:
-        return f"openclaw smoke timed out: {exc}"
+        elapsed_s = time.monotonic() - started
+        stdout_text = _timeout_stream_preview(getattr(exc, "stdout", None))
+        stderr_text = _timeout_stream_preview(getattr(exc, "stderr", None))
+        detail = []
+        if stdout_text:
+            detail.append(f"partial_stdout={stdout_text!r}")
+        if stderr_text:
+            detail.append(f"partial_stderr={stderr_text!r}")
+        suffix = ("; " + "; ".join(detail)) if detail else ""
+        return f"openclaw smoke timed out after {elapsed_s:.1f}s: {exc}{suffix}"
 
     summary = parse_openclaw_json_stdout(proc.stdout)
     if proc.returncode != 0:
@@ -898,11 +921,35 @@ def _openclaw_mcp_smoke_check(
         return summary.semantic_error
     haystack = "\n".join([proc.stdout or "", summary.assistant_text])
     if expected_wallet_address not in haystack:
+        stdout_text = " ".join((proc.stdout or "").strip().split())
+        stderr_text = " ".join((proc.stderr or "").strip().split())
+        detail = []
+        if summary.parse_error:
+            detail.append(f"parse={summary.parse_error}")
+        if summary.assistant_text:
+            assistant_text = " ".join(summary.assistant_text.strip().split())
+            detail.append(f"assistant={assistant_text[:300]!r}")
+        if stdout_text:
+            detail.append(f"stdout={stdout_text[:300]!r}")
+        if stderr_text:
+            detail.append(f"stderr={stderr_text[:300]!r}")
+        suffix = ("; " + "; ".join(detail)) if detail else ""
         return (
             "openclaw smoke missing wallet_address evidence: "
-            f"expected {expected_wallet_address!r}"
+            f"expected {expected_wallet_address!r}{suffix}"
         )
     return None
+
+
+def _timeout_stream_preview(value: bytes | str | None, *, limit: int = 600) -> str:
+    """Normalize partial TimeoutExpired stdout/stderr for concise diagnostics."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = value
+    return " ".join(text.strip().split())[:limit]
 
 
 # ---------------------------------------------------------------------------

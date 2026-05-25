@@ -57,6 +57,8 @@ from identity.seed import KeyfileSeedSource
 
 _log = logging.getLogger("watchdog")
 
+DEFAULT_OPENCLAW_AGENT_ID = "main"
+
 EXIT_OK = 0
 EXIT_TURNS_EXHAUSTED = 1
 EXIT_WALL_CLOCK = 2
@@ -240,12 +242,12 @@ class JsonlSink:
 # OpenClaw subprocess
 # ---------------------------------------------------------------------------
 
-def _reset_openclaw_session(instance: str) -> None:
-    """Wipe the per-instance OpenClaw session dir so the next ``openclaw
+def _reset_openclaw_session(openclaw_agent_id: str) -> None:
+    """Wipe the per-HOME OpenClaw session dir so the next ``openclaw
     agent`` call starts a fresh conversation.
 
     OpenClaw maintains session state across invocations under
-    ``$HOME/.openclaw/agents/<instance>/sessions/``. Without resetting,
+    ``$HOME/.openclaw/agents/<openclaw-agent-id>/sessions/``. Without resetting,
     every watchdog tick appends to the same session — within ~10 turns
     that overruns the model's context window (qwen3.6:27b is 32K) and
     every subsequent turn fails with "Context overflow: prompt too large".
@@ -256,7 +258,7 @@ def _reset_openclaw_session(instance: str) -> None:
     home = os.environ.get("HOME")
     if not home:
         return
-    sessions_dir = Path(home) / ".openclaw" / "agents" / instance / "sessions"
+    sessions_dir = Path(home) / ".openclaw" / "agents" / openclaw_agent_id / "sessions"
     if not sessions_dir.exists():
         return
     try:
@@ -273,12 +275,12 @@ def _reset_openclaw_session(instance: str) -> None:
 
 def _invoke_openclaw_agent(
     *,
-    instance: str,
+    openclaw_agent_id: str,
     prompt: str,
     timeout_s: int,
     model: str,
 ) -> tuple[bool, str, str]:
-    """Run ``openclaw agent --local --model <model> --agent <instance> --message <prompt>``.
+    """Run ``openclaw agent --local --model <model> --agent <id> --message <prompt>``.
 
     ``--local`` skips OpenClaw's WebSocket gateway daemon (which we don't
     run on the VPS) and uses the embedded agent path instead. ``--model``
@@ -292,7 +294,7 @@ def _invoke_openclaw_agent(
     # across watchdog ticks. The agent re-reads the full state snapshot
     # each turn anyway — there's nothing in session history a fresh start
     # actually loses for our use case.
-    _reset_openclaw_session(instance)
+    _reset_openclaw_session(openclaw_agent_id)
 
     # ``--thinking off`` is required for non-reasoning Ollama models like
     # qwen2.5-coder:7b (they reject any other level). If/when this watchdog
@@ -301,7 +303,7 @@ def _invoke_openclaw_agent(
         "openclaw", "agent",
         "--local",
         "--model", model,
-        "--agent", instance,
+        "--agent", openclaw_agent_id,
         "--message", prompt,
         "--json",
         "--timeout", str(timeout_s),
@@ -510,6 +512,7 @@ async def _drive(
         # Groq / etc. via the local llm proxy). Pull both from env.
         model_name = os.environ.get("LLM_MODEL", "qwen2.5-coder:7b")
         provider_key = os.environ.get("OPENCLAW_PROVIDER_KEY", "ollama")
+        openclaw_agent_id = os.environ.get("OPENCLAW_AGENT_ID", DEFAULT_OPENCLAW_AGENT_ID)
         # Cross-agent lock — only one watchdog runs an openclaw turn at a
         # time across the whole scenario. Eliminates concurrent LLM
         # requests and the bursts that hit Anthropic / similar providers'
@@ -517,7 +520,7 @@ async def _drive(
         async with acquire_llm_turn_lock(instance=instance, log=_log):
             ok, stdout, stderr = await asyncio.to_thread(
                 _invoke_openclaw_agent,
-                instance=instance,
+                openclaw_agent_id=openclaw_agent_id,
                 prompt=prompt,
                 timeout_s=scenario.watchdog.interval_s,
                 model=f"{provider_key}/{model_name}",
