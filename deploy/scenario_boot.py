@@ -87,7 +87,10 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
 DEFAULT_LLM_BASE_URL = "http://100.73.168.12:11434/v1"
 DEFAULT_LLM_MODEL = "qwen3.6:27b"
 DEFAULT_LLM_API_KEY = "ollama"
+DEFAULT_OPENCLAW_SMOKE_ENABLED = False
 DEFAULT_OPENCLAW_SMOKE_TIMEOUT_S = 210
+DEFAULT_OPENCLAW_SMOKE_ATTEMPTS = 3
+OPENCLAW_SMOKE_RETRY_BACKOFF_S = 15
 DEFAULT_OPENCLAW_AGENT_ID = "main"
 OPENCLAW_TURN_TIMEOUT_MARGIN_S = 20
 
@@ -170,10 +173,21 @@ def _resolve_openclaw_smoke_timeout(host_env_file: Path = HOST_ENV_FILE) -> int:
     return timeout
 
 
+def _resolve_openclaw_smoke_enabled(host_env_file: Path = HOST_ENV_FILE) -> bool:
+    """Return whether to run the optional OpenClaw->MCP smoke check."""
+    host_env = _load_host_env(host_env_file)
+    raw = os.environ.get(
+        "OPENCLAW_SMOKE_ENABLED",
+        host_env.get("OPENCLAW_SMOKE_ENABLED", str(DEFAULT_OPENCLAW_SMOKE_ENABLED)),
+    )
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Module-level constants used by `_instance_env_contents` and the
 # OpenClaw provider patch. Tests that need to vary these stub
 # ``HOST_ENV_FILE`` then re-call ``_resolve_llm`` directly.
 LLM_BASE_URL, LLM_MODEL, LLM_API_KEY = _resolve_llm()
+OPENCLAW_SMOKE_ENABLED = _resolve_openclaw_smoke_enabled()
 OPENCLAW_SMOKE_TIMEOUT_S = _resolve_openclaw_smoke_timeout()
 
 
@@ -903,6 +917,7 @@ def _openclaw_mcp_smoke_check(
     ``wallet_address`` tool configured in this agent's per-HOME OpenClaw config.
     """
     timeout_s = OPENCLAW_SMOKE_TIMEOUT_S if timeout_s is None else timeout_s
+    attempts = _resolve_openclaw_smoke_attempts()
     instance = scenario.instance_id(agent.name)
     state = _state_dir(scenario.name, agent.name)
     provider_key, _api_type, _base = _provider_for(LLM_BASE_URL)
@@ -924,36 +939,49 @@ def _openclaw_mcp_smoke_check(
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
-    started = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s + 30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        elapsed_s = time.monotonic() - started
-        stdout_text = _timeout_stream_preview(getattr(exc, "stdout", None))
-        stderr_text = _timeout_stream_preview(getattr(exc, "stderr", None))
-        detail = []
-        if stdout_text:
-            detail.append(f"partial_stdout={stdout_text!r}")
-        if stderr_text:
-            detail.append(f"partial_stderr={stderr_text!r}")
-        suffix = ("; " + "; ".join(detail)) if detail else ""
-        return f"openclaw smoke timed out after {elapsed_s:.1f}s: {exc}{suffix}"
 
-    summary = parse_openclaw_json_stdout(proc.stdout)
-    if proc.returncode != 0:
-        stderr_text = " ".join((proc.stderr or "").strip().split())
-        stdout_text = " ".join((proc.stdout or "").strip().split())
-        detail = stderr_text or stdout_text or summary.parse_error or "no stderr/stdout"
-        return f"openclaw smoke subprocess failed rc={proc.returncode}: {detail[:600]}"
-    if summary.semantic_error:
-        return summary.semantic_error
-    haystack = "\n".join([proc.stdout or "", summary.assistant_text])
-    if expected_wallet_address not in haystack:
+    last_failure = "openclaw smoke did not run"
+    for attempt in range(1, attempts + 1):
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s + 30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            elapsed_s = time.monotonic() - started
+            stdout_text = _timeout_stream_preview(getattr(exc, "stdout", None))
+            stderr_text = _timeout_stream_preview(getattr(exc, "stderr", None))
+            detail = []
+            if stdout_text:
+                detail.append(f"partial_stdout={stdout_text!r}")
+            if stderr_text:
+                detail.append(f"partial_stderr={stderr_text!r}")
+            suffix = ("; " + "; ".join(detail)) if detail else ""
+            last_failure = f"openclaw smoke timed out after {elapsed_s:.1f}s: {exc}{suffix}"
+            if not _openclaw_smoke_should_retry(stdout_text, stderr_text, attempt, attempts):
+                return last_failure
+            time.sleep(OPENCLAW_SMOKE_RETRY_BACKOFF_S * attempt)
+            continue
+
+        summary = parse_openclaw_json_stdout(proc.stdout)
+        if proc.returncode != 0:
+            stderr_text = " ".join((proc.stderr or "").strip().split())
+            stdout_text = " ".join((proc.stdout or "").strip().split())
+            detail = stderr_text or stdout_text or summary.parse_error or "no stderr/stdout"
+            last_failure = f"openclaw smoke subprocess failed rc={proc.returncode}: {detail[:600]}"
+            if not _openclaw_smoke_should_retry(stdout_text, stderr_text, attempt, attempts):
+                return last_failure
+            time.sleep(OPENCLAW_SMOKE_RETRY_BACKOFF_S * attempt)
+            continue
+        if summary.semantic_error:
+            return summary.semantic_error
+        haystack = "\n".join([proc.stdout or "", summary.assistant_text])
+        if expected_wallet_address in haystack:
+            return None
+
         stdout_text = " ".join((proc.stdout or "").strip().split())
         stderr_text = " ".join((proc.stderr or "").strip().split())
         detail = []
@@ -967,11 +995,56 @@ def _openclaw_mcp_smoke_check(
         if stderr_text:
             detail.append(f"stderr={stderr_text[:300]!r}")
         suffix = ("; " + "; ".join(detail)) if detail else ""
-        return (
+        last_failure = (
             "openclaw smoke missing wallet_address evidence: "
             f"expected {expected_wallet_address!r}{suffix}"
         )
-    return None
+        if not _openclaw_smoke_should_retry(stdout_text, stderr_text, attempt, attempts):
+            return last_failure
+        time.sleep(OPENCLAW_SMOKE_RETRY_BACKOFF_S * attempt)
+    return last_failure
+
+
+def _resolve_openclaw_smoke_attempts(host_env_file: Path = HOST_ENV_FILE) -> int:
+    host_env = _load_host_env(host_env_file)
+    raw = os.environ.get(
+        "OPENCLAW_SMOKE_ATTEMPTS",
+        host_env.get("OPENCLAW_SMOKE_ATTEMPTS", str(DEFAULT_OPENCLAW_SMOKE_ATTEMPTS)),
+    )
+    try:
+        attempts = int(raw)
+    except (TypeError, ValueError):
+        c_warn(
+            "OPENCLAW_SMOKE_ATTEMPTS must be an integer; "
+            f"got {raw!r}, using {DEFAULT_OPENCLAW_SMOKE_ATTEMPTS}"
+        )
+        return DEFAULT_OPENCLAW_SMOKE_ATTEMPTS
+    return max(1, attempts)
+
+
+def _openclaw_smoke_should_retry(
+    stdout_text: str,
+    stderr_text: str,
+    attempt: int,
+    attempts: int,
+) -> bool:
+    if attempt >= attempts:
+        return False
+    haystack = f"{stdout_text}\n{stderr_text}".lower()
+    retry_markers = (
+        "429",
+        "rate limit",
+        "rate-limit",
+        "temporarily rat",
+        "too many requests",
+    )
+    if not any(marker in haystack for marker in retry_markers):
+        return False
+    c_warn(
+        f"OpenClaw smoke hit transient provider throttling "
+        f"(attempt {attempt}/{attempts}); retrying"
+    )
+    return True
 
 
 def _timeout_stream_preview(value: bytes | str | None, *, limit: int = 600) -> str:
@@ -1146,24 +1219,27 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             return 1
         c_ok(f"{agent.name}: wallet={info['wallet_address']}  pubkey={coords[agent.name]['pubkey_hex'][:24]}...")
 
-    # Phase 3b: verify OpenClaw itself can see MCP tools before the autonomous
-    # watchdogs start. Direct FastMCP probes above prove the server is healthy;
-    # this catches OpenClaw config/provider/tool-registration failures that
-    # otherwise show up later as successful turns with literal "ERROR" output.
-    for agent in scenario.agents.values():
-        c_info(
-            f"{agent.name}: OpenClaw->MCP smoke wallet_address "
-            f"(timeout={OPENCLAW_SMOKE_TIMEOUT_S}s)"
-        )
-        failure = _openclaw_mcp_smoke_check(
-            scenario,
-            agent,
-            expected_wallet_address=str(coords[agent.name]["wallet_address"]),
-        )
-        if failure:
-            c_fail(f"{agent.name}: {failure}")
-            return 1
-        c_ok(f"{agent.name}: OpenClaw->MCP smoke ok")
+    # Phase 3b: optionally verify OpenClaw itself can see MCP tools before the
+    # autonomous watchdogs start. Direct FastMCP probes above prove the server
+    # is healthy; keep this disabled by default while hosted providers throttle
+    # the boot path with transient 429s.
+    if OPENCLAW_SMOKE_ENABLED:
+        for agent in scenario.agents.values():
+            c_info(
+                f"{agent.name}: OpenClaw->MCP smoke wallet_address "
+                f"(timeout={OPENCLAW_SMOKE_TIMEOUT_S}s)"
+            )
+            failure = _openclaw_mcp_smoke_check(
+                scenario,
+                agent,
+                expected_wallet_address=str(coords[agent.name]["wallet_address"]),
+            )
+            if failure:
+                c_fail(f"{agent.name}: {failure}")
+                return 1
+            c_ok(f"{agent.name}: OpenClaw->MCP smoke ok")
+    else:
+        c_warn("OpenClaw->MCP smoke skipped (OPENCLAW_SMOKE_ENABLED=false)")
 
     # Phase 4: cross-introduce peers.
     for agent in scenario.agents.values():

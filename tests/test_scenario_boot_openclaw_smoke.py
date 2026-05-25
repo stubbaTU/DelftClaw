@@ -173,6 +173,7 @@ def test_openclaw_mcp_smoke_resets_stale_sessions(monkeypatch, tmp_path: Path) -
 
 def test_openclaw_mcp_smoke_timeout_reports_partial_streams(monkeypatch, tmp_path: Path) -> None:
     scenario, agent = _scenario_and_agent(tmp_path)
+    monkeypatch.setenv("OPENCLAW_SMOKE_ATTEMPTS", "1")
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
         raise subprocess.TimeoutExpired(
@@ -195,6 +196,42 @@ def test_openclaw_mcp_smoke_timeout_reports_partial_streams(monkeypatch, tmp_pat
     assert "timed out after 240.0s" in failure
     assert "partial_stdout" in failure
     assert "partial_stderr='provider retrying after 429'" in failure
+
+
+def test_openclaw_mcp_smoke_retries_rate_limit_then_succeeds(monkeypatch, tmp_path: Path) -> None:
+    scenario, agent = _scenario_and_agent(tmp_path)
+    calls = 0
+    sleeps: list[int] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ARG001
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout='{"payloads":[{"text":"Request timed out before a response was generated."}]}',
+                stderr="rawError=429 Provider returned error: rate limit reached",
+            )
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"payloads":[{"text":"bcrt1qsmoke"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(scenario_boot.subprocess, "run", fake_run)
+    monkeypatch.setattr(scenario_boot.time, "sleep", sleeps.append)
+
+    failure = scenario_boot._openclaw_mcp_smoke_check(
+        scenario,
+        agent,
+        expected_wallet_address="bcrt1qsmoke",
+    )
+
+    assert failure is None
+    assert calls == 2
+    assert sleeps == [scenario_boot.OPENCLAW_SMOKE_RETRY_BACKOFF_S]
 
 
 def test_openclaw_mcp_smoke_fails_on_literal_error(monkeypatch, tmp_path: Path) -> None:

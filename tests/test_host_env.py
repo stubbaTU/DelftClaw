@@ -101,6 +101,18 @@ def test_llm_resolution_default_when_neither_set(monkeypatch, tmp_path):
     assert model == scenario_boot.DEFAULT_LLM_MODEL
 
 
+def test_openclaw_smoke_enabled_defaults_off_and_can_be_enabled(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENCLAW_SMOKE_ENABLED", raising=False)
+    assert scenario_boot._resolve_openclaw_smoke_enabled(tmp_path / "no_such.env") is False
+
+    host_env = tmp_path / "host.env"
+    host_env.write_text("OPENCLAW_SMOKE_ENABLED=true\n", encoding="utf-8")
+    assert scenario_boot._resolve_openclaw_smoke_enabled(host_env) is True
+
+    monkeypatch.setenv("OPENCLAW_SMOKE_ENABLED", "0")
+    assert scenario_boot._resolve_openclaw_smoke_enabled(host_env) is False
+
+
 def test_llm_api_key_resolution(monkeypatch, tmp_path):
     """LLM_API_KEY follows the same env > host.env > default order."""
     host_env = tmp_path / "host.env"
