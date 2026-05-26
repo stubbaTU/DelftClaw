@@ -64,6 +64,15 @@ class AgentConfig:
     pull_batch: int = 100
 
 
+def uses_mock_regtest_addresses(network: str) -> bool:
+    return network.strip().lower() in {
+        "mock_regtest",
+        "mock-regtest",
+        "regtest_mock",
+        "regtest-mock",
+    }
+
+
 class OpenClawAgent:
     """Per-node container. ``await start()`` once; ``await stop()`` on shutdown."""
 
@@ -157,15 +166,25 @@ class OpenClawAgent:
         self._seedbox = next(
             o for o in self._ipv8.overlays if isinstance(o, SeedboxCommunity)
         )
+        wallet_address = (
+            self.wallet.regtest_address()
+            if uses_mock_regtest_addresses(self.config.btc_network)
+            else self.wallet.address()
+        )
+        verifier_network = (
+            "mock"
+            if uses_mock_regtest_addresses(self.config.btc_network)
+            else self.config.btc_network
+        )
         verifier = DonationVerifier(
-            seedbox_address=self.wallet.address(),
+            seedbox_address=wallet_address,
             min_sats=self.config.seedbox_min_sats,
             min_confirmations=self.config.seedbox_min_confirmations,
-            network=self.config.btc_network,
+            network=verifier_network,
         )
         self._seedbox.configure(
             verifier=verifier,
-            wallet_address=self.wallet.address(),
+            wallet_address=wallet_address,
             community_join_callback=self._handle_community_join,
         )
         # Persist LLM-generated overlay sources under the agent's save

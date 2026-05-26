@@ -25,6 +25,7 @@ from inspect import isawaitable
 from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
+from agent.runtime import uses_mock_regtest_addresses
 
 try:
     # Optional: only used when regtest RPC integration is enabled.
@@ -346,7 +347,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         try:
             gatekeeper_address = manifest.admission.gatekeeper_address
             donation_txid: str
-            if gatekeeper_address.startswith(("bcrt1", "tb1", "bc1")):
+            if (
+                gatekeeper_address.startswith(("bcrt1", "tb1", "bc1"))
+                and not uses_mock_regtest_addresses(agent.config.btc_network)
+            ):
                 send_onchain = getattr(agent.wallet, "send_onchain", None)
                 if not callable(send_onchain):
                     return {"error": "onchain_admission_requires_regtest_wallet"}

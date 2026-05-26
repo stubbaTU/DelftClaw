@@ -30,6 +30,7 @@ import hashlib
 import itertools
 from typing import Any
 
+from bip_utils import P2WPKHAddrEncoder
 from bitcoinlib.keys import HDKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -150,6 +151,19 @@ class Wallet:
         """
         digest = hashlib.sha256(self.pubkey).hexdigest()
         return f"dclaw1{digest[:40]}"
+
+    def regtest_address(self) -> str:
+        """Return a deterministic regtest-style bech32 address.
+
+        This is derived from the same BIP-44 wallet child key used by the
+        synthetic wallet, but encoded with Bitcoin regtest's ``bcrt`` HRP.
+        It is useful for mock scenarios that should share addresses shaped
+        like real regtest wallets without requiring Bitcoin Core RPC.
+        """
+        return P2WPKHAddrEncoder.EncodeKey(
+            self._child.public_compressed_byte,
+            hrp="bcrt",
+        )
 
     def set_initial_balance(self, sats: int) -> None:
         """Late-binding setter so callers that construct the wallet via

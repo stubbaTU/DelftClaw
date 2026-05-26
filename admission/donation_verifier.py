@@ -26,7 +26,14 @@ from typing import Optional
 from bitcoinlib.services.services import Service
 
 
-MOCK_NETWORK_NAMES = frozenset({"mock", "synthetic"})
+MOCK_NETWORK_NAMES = frozenset({
+    "mock",
+    "synthetic",
+    "mock_regtest",
+    "mock-regtest",
+    "regtest_mock",
+    "regtest-mock",
+})
 
 
 @dataclass(frozen=True)
