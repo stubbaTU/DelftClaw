@@ -111,3 +111,46 @@ def test_regtest_guidance_tells_bob_to_wait_once_admitted() -> None:
     assert guidance["phase"] == "awaiting_alice_payment"
     assert guidance["tool_call"] is None
     assert "community_join_via_peer" in guidance["forbidden"]
+
+
+def test_mock_regtest_guidance_tells_bob_to_join_once() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "network": {"admission": {"min_sats": 10_000}},
+            "community": {"my_membership_status": "outsider", "member_count": 1},
+            "peers": [{"mid_hex": "alicemid", "wallet_address": "bcrt1qalice"}],
+        },
+        stop_predicate="community_member_count_gte_N(n=2)",
+        stop_predicate_value=False,
+        scenario_name="mock_regtest_wallet_share",
+        agent_name="bob",
+    )
+
+    guidance = out["next_action_guidance"]
+    assert guidance["phase"] == "join_community"
+    assert guidance["tool_call"] == {
+        "name": "community_join_via_peer",
+        "arguments": {"gatekeeper_mid": "alicemid", "amount_sats": 10_000},
+    }
+    assert "overlay_invoke" in guidance["forbidden"]
+
+
+def test_mock_regtest_guidance_tells_alice_to_wallet_send_after_admission() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "community": {"member_count": 2},
+            "peers": [{"mid_hex": "bobmid", "wallet_address": "bcrt1qbob"}],
+        },
+        stop_predicate="bitcoin_sent_sats(min_sats=20000)",
+        stop_predicate_value=False,
+        scenario_name="mock_regtest_wallet_share",
+        agent_name="alice",
+    )
+
+    guidance = out["next_action_guidance"]
+    assert guidance["phase"] == "send_payment"
+    assert guidance["tool_call"] == {
+        "name": "wallet_send",
+        "arguments": {"to_address": "bcrt1qbob", "sats": 20_000},
+    }
+    assert "agent_inject_manifest" in guidance["forbidden"]

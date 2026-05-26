@@ -284,6 +284,22 @@ REGTEST_TRANSFER_MCP_TOOLS = (
     "btc_transaction_status",
 )
 
+MOCK_REGTEST_WALLET_SHARE_MCP_TOOLS = (
+    "peer_add",
+    "agent_inject_manifest",
+    "community_donate_and_join",
+    "wallet_address",
+    "wallet_balance",
+    "wallet_send",
+    "community_treasury_balance",
+    "community_member_count",
+    "community_log_list_recent",
+    "community_join_via_peer",
+    "peers_list",
+    "overlays_list",
+    "torrent_stats",
+)
+
 
 def _openclaw_inner_timeout_s(scenario: Scenario) -> int:
     """Timeout for OpenClaw's inner provider call during watchdog turns."""
@@ -430,6 +446,11 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         *(
             [f"MCP_EXPOSE_TOOLS={','.join(REGTEST_TRANSFER_MCP_TOOLS)}"]
             if scenario.name == "regtest_transfer"
+            else []
+        ),
+        *(
+            [f"MCP_EXPOSE_TOOLS={','.join(MOCK_REGTEST_WALLET_SHARE_MCP_TOOLS)}"]
+            if scenario.name == "mock_regtest_wallet_share"
             else []
         ),
         f"PUBLISH_OVERLAY={overlay}",

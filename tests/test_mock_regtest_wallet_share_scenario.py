@@ -59,6 +59,10 @@ def test_mock_regtest_wallet_share_manifest_parses(scenario):
     assert "BTC_NETWORK=mock_regtest" in alice_env
     assert "INITIAL_BALANCE_SATS=200000" in alice_env
     assert "btc_send" not in alice_env
+    assert "MCP_EXPOSE_TOOLS=" in alice_env
+    assert "wallet_send" in alice_env
+    assert "community_join_via_peer" in alice_env
+    assert "overlay_invoke" not in alice_env
 
 
 def test_wallet_regtest_address_is_deterministic_and_bcrt1() -> None:

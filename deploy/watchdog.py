@@ -180,14 +180,111 @@ def _snapshot_for_prompt(
         "satisfied": bool(stop_predicate_value),
         "authority": "watchdog_evaluated_against_scenario_baseline",
     }
-    guidance = _regtest_transfer_guidance(
-        out,
-        stop_predicate_value=stop_predicate_value,
-        agent_name=agent_name,
-    ) if scenario_name == "regtest_transfer" else None
+    guidance = None
+    if scenario_name == "regtest_transfer":
+        guidance = _regtest_transfer_guidance(
+            out,
+            stop_predicate_value=stop_predicate_value,
+            agent_name=agent_name,
+        )
+    elif scenario_name == "mock_regtest_wallet_share":
+        guidance = _mock_regtest_wallet_share_guidance(
+            out,
+            stop_predicate_value=stop_predicate_value,
+            agent_name=agent_name,
+        )
     if guidance is not None:
         out["next_action_guidance"] = guidance
     return out
+
+
+def _mock_regtest_wallet_share_guidance(
+    snapshot: dict[str, Any],
+    *,
+    stop_predicate_value: bool,
+    agent_name: str | None,
+) -> dict[str, Any] | None:
+    """Return deterministic phase guidance for the synthetic wallet-share scenario."""
+    if agent_name == "alice":
+        if stop_predicate_value:
+            return {
+                "phase": "complete",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "outgoing synthetic transfer predicate is already satisfied",
+            }
+        community = snapshot.get("community") or {}
+        if _int_or_zero(community.get("member_count")) < 2:
+            return {
+                "phase": "waiting_for_bob_admission",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "bob is not admitted yet; bob owns the join action",
+                "forbidden": ["overlay_invoke", "agent_inject_manifest", "peer_add"],
+            }
+        bob_wallet = _first_peer_wallet(snapshot)
+        if bob_wallet:
+            return {
+                "phase": "send_payment",
+                "action": "send_20000_synthetic_sats_to_bob",
+                "tool_call": {
+                    "name": "wallet_send",
+                    "arguments": {"to_address": bob_wallet, "sats": 20_000},
+                },
+                "reason": "bob is admitted and advertises a bcrt1 mock-regtest wallet address",
+                "forbidden": ["overlay_invoke", "agent_inject_manifest", "peer_add"],
+            }
+        return {
+            "phase": "waiting_for_bob_wallet",
+            "action": "wait",
+            "tool_call": None,
+            "reason": "bob is admitted but has not advertised a bcrt1 receiving address yet",
+            "forbidden": ["overlay_invoke", "agent_inject_manifest", "peer_add"],
+        }
+
+    if agent_name == "bob":
+        if stop_predicate_value:
+            return {
+                "phase": "complete",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "community membership predicate is already satisfied",
+            }
+        community = snapshot.get("community") or {}
+        if community.get("my_membership_status") == "admitted":
+            return {
+                "phase": "awaiting_alice_payment",
+                "action": "wait",
+                "tool_call": None,
+                "reason": "bob is already admitted; alice owns the synthetic wallet send",
+                "forbidden": [
+                    "community_join_via_peer",
+                    "community_donate_and_join",
+                    "overlay_invoke",
+                    "agent_inject_manifest",
+                    "peer_add",
+                ],
+            }
+        gatekeeper_mid = _first_peer_mid(snapshot)
+        min_sats = _int_or_zero(
+            ((snapshot.get("network") or {}).get("admission") or {}).get("min_sats")
+        ) or 10_000
+        return {
+            "phase": "join_community",
+            "action": "join_once",
+            "tool_call": {
+                "name": "community_join_via_peer",
+                "arguments": {"gatekeeper_mid": gatekeeper_mid, "amount_sats": int(min_sats)},
+            } if gatekeeper_mid else None,
+            "reason": "bob is not admitted yet; submit one synthetic admission donation",
+            "forbidden": [
+                "community_donate_and_join",
+                "overlay_invoke",
+                "agent_inject_manifest",
+            ],
+        }
+
+    return None
 
 
 def _regtest_transfer_guidance(
