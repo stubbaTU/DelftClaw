@@ -154,3 +154,26 @@ def test_mock_regtest_guidance_tells_alice_to_wallet_send_after_admission() -> N
         "arguments": {"to_address": "bcrt1qbob", "sats": 20_000},
     }
     assert "agent_inject_manifest" in guidance["forbidden"]
+
+
+def test_mock_regtest_guidance_accepts_meta_only_peer_wallet() -> None:
+    out = _snapshot_for_prompt(
+        {
+            "community": {"member_count": 2},
+            "peers": [{
+                "mid_hex": "bobmid",
+                "address": None,
+                "wallet_address": "bcrt1qmetabob",
+                "known_overlays": [],
+            }],
+        },
+        stop_predicate="bitcoin_sent_sats(min_sats=20000)",
+        stop_predicate_value=False,
+        scenario_name="mock_regtest_wallet_share",
+        agent_name="alice",
+    )
+
+    assert out["next_action_guidance"]["tool_call"] == {
+        "name": "wallet_send",
+        "arguments": {"to_address": "bcrt1qmetabob", "sats": 20_000},
+    }

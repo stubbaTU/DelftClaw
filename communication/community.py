@@ -626,6 +626,7 @@ class SeedboxCommunity(Community, PeerObserver):
             if isinstance(h, (bytes, bytearray)) and len(h) == 20:
                 overlays.append(bytes(h))
         _log_wire("recv", "PeerIntro", peer, wallet=addr[:16], overlays=len(overlays))
+        self.network.add_verified_peer(peer)
         meta = PeerMeta(wallet_address=addr, known_overlays=tuple(overlays))
         self._peer_meta[peer.mid] = meta
         cb = self._peer_intro_callback

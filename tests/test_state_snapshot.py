@@ -135,6 +135,31 @@ async def test_snapshot_peer_wallet_address_surfaces_from_peer_meta(started_agen
 
 
 @pytest.mark.asyncio
+async def test_snapshot_includes_peer_meta_without_known_peer(started_agent):
+    """PeerMeta remains visible even if IPv8 has no verified Peer entry for it."""
+    from ipv8.keyvault.crypto import default_eccrypto
+    from ipv8.peer import Peer
+
+    fake_peer = Peer(
+        default_eccrypto.generate_key("curve25519").pub(),
+        address=("127.0.0.1", 9997),
+    )
+    started_agent.seedbox._peer_meta[fake_peer.mid] = PeerMeta(
+        wallet_address="bcrt1qmetameta000000000000000000000000000",
+        known_overlays=(b"\x0d" * 20,),
+    )
+
+    snap = collect_state(started_agent)
+    entries = [p for p in snap["peers"] if p["mid_hex"] == fake_peer.mid.hex()]
+    assert entries == [{
+        "mid_hex": fake_peer.mid.hex(),
+        "address": None,
+        "wallet_address": "bcrt1qmetameta000000000000000000000000000",
+        "known_overlays": ["0d" * 20],
+    }]
+
+
+@pytest.mark.asyncio
 async def test_snapshot_peer_without_intro_has_null_wallet(started_agent):
     """Peers we know about but who haven't introduced themselves get null wallet."""
     from ipv8.keyvault.crypto import default_eccrypto

@@ -126,7 +126,9 @@ def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     # PeerMeta entries are keyed by peer.mid; the bootstrap community owns them.
     peer_meta = agent.seedbox.peer_meta if agent.seedbox else {}
+    seen: set[bytes] = set()
     for peer in agent.known_peers():
+        seen.add(peer.mid)
         addr = list(peer.addresses.values())[0] if peer.addresses else None
         entry: dict[str, Any] = {
             "mid_hex": peer.mid.hex(),
@@ -139,6 +141,15 @@ def _peers_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             entry["wallet_address"] = meta.wallet_address
             entry["known_overlays"] = [h.hex() for h in meta.known_overlays]
         out.append(entry)
+    for mid, meta in peer_meta.items():
+        if mid in seen:
+            continue
+        out.append({
+            "mid_hex": mid.hex(),
+            "address": None,
+            "wallet_address": meta.wallet_address,
+            "known_overlays": [h.hex() for h in meta.known_overlays],
+        })
     return out
 
 

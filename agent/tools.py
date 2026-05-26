@@ -155,13 +155,24 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         except Exception:
             meta_by_mid = {}
         out: list[dict[str, Any]] = []
+        seen: set[bytes] = set()
         for p in agent.known_peers():
+            seen.add(p.mid)
             meta = meta_by_mid.get(p.mid)
             out.append({
                 "mid_hex": p.mid.hex(),
                 "address": list(p.addresses.values())[0] if p.addresses else None,
                 "wallet_address": getattr(meta, "wallet_address", None) if meta else None,
                 "known_overlays": [h.hex() for h in getattr(meta, "known_overlays", ())] if meta else [],
+            })
+        for mid, meta in meta_by_mid.items():
+            if mid in seen:
+                continue
+            out.append({
+                "mid_hex": mid.hex(),
+                "address": None,
+                "wallet_address": meta.wallet_address,
+                "known_overlays": [h.hex() for h in meta.known_overlays],
             })
         return out
 

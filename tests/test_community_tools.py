@@ -21,6 +21,7 @@ import pytest_asyncio
 from agent import AgentConfig, OpenClawAgent, build_tools
 from agent.regtest_wallet import RegtestWallet
 from communication.bittorrent import StubBitTorrentService
+from communication.community import PeerMeta
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
 from protocol import StubLLMClient
@@ -200,6 +201,31 @@ async def test_member_count_returns_membership_view(agent):
 # ---------------------------------------------------------------------------
 # community_donate_and_join — write own donation_intent
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_peers_list_includes_peer_meta_without_known_peer(agent):
+    from ipv8.keyvault.crypto import default_eccrypto
+    from ipv8.peer import Peer
+
+    peer = Peer(
+        default_eccrypto.generate_key("curve25519").pub(),
+        address=("127.0.0.1", 9997),
+    )
+    agent.seedbox._peer_meta[peer.mid] = PeerMeta(
+        wallet_address="bcrt1qbobwallet000000000000000000000000000",
+        known_overlays=(b"\x0c" * 20,),
+    )
+
+    out = await build_tools(agent).dispatch("peers_list", {})
+
+    entries = [entry for entry in out if entry["mid_hex"] == peer.mid.hex()]
+    assert entries == [{
+        "mid_hex": peer.mid.hex(),
+        "address": None,
+        "wallet_address": "bcrt1qbobwallet000000000000000000000000000",
+        "known_overlays": ["0c" * 20],
+    }]
 
 
 @pytest.mark.asyncio

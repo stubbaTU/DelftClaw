@@ -223,3 +223,28 @@ async def test_peer_intro_callback_invoked(two_seedboxes):
     assert len(seen) == 1
     assert seen[0][0] == peer_bob.mid
     assert seen[0][1].wallet_address.startswith("tb1qbob")
+
+
+@pytest.mark.asyncio
+async def test_peer_intro_registers_sender_as_verified(two_seedboxes):
+    from ipv8.keyvault.crypto import default_eccrypto
+
+    sb_alice, _sb_bob, _peer_alice, _peer_bob = two_seedboxes
+    peer_bob = Peer(
+        default_eccrypto.generate_key("curve25519").pub(),
+        address=("127.0.0.1", 9999),
+    )
+
+    assert all(p.mid != peer_bob.mid for p in sb_alice.network.verified_peers)
+
+    SeedboxCommunity.on_peer_intro.__wrapped__(
+        sb_alice,
+        peer_bob,
+        PeerIntroPayload(
+            wallet_address=b"tb1qbobwalletexample0000000000000000000000",
+            known_overlays=msgpack.packb([], use_bin_type=True),
+        ),
+    )
+
+    assert any(p.mid == peer_bob.mid for p in sb_alice.network.verified_peers)
+    assert sb_alice.peer_meta[peer_bob.mid].wallet_address.startswith("tb1qbob")
