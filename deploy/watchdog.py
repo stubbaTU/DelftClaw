@@ -46,6 +46,7 @@ from deploy.openclaw_output import OpenClawJsonSummary, parse_openclaw_json_stdo
 from deploy.scenario import AgentSpec, parse_scenario
 from deploy.security_agent_tools import add_integrated_security_tools, build_security_tools
 from deploy.state_snapshot import collect_state
+from deploy.mcp_snapshot import collect_state_via_mcp, load_manifest_from_file
 from deploy.turn_lock import acquire_llm_turn_lock
 from deploy.turn_builder import (
     TurnHistory,
@@ -573,8 +574,10 @@ async def _run_loop(args: argparse.Namespace) -> int:
     # agent that was injected over the wire at boot. Missing/unreadable
     # MANIFEST_FILE is non-fatal — state.network stays null and the LLM
     # has to discover the network via OVERLAY_OFFER (Agora-style fallback).
+    parsed_manifest = None
     manifest_file = os.environ.get("MANIFEST_FILE")
     if manifest_file:
+        parsed_manifest = load_manifest_from_file(Path(manifest_file))
         try:
             manifest_text = Path(manifest_file).read_text(encoding="utf-8")
             agent.load_manifest(manifest_text)
@@ -594,6 +597,9 @@ async def _run_loop(args: argparse.Namespace) -> int:
             scenario=scenario,
             instance=args.instance,
             mission_text=mission_text,
+            identity=identity,
+            mcp_url=f"http://127.0.0.1:{spec.mcp_port}/mcp",
+            mcp_manifest=parsed_manifest,
         )
     finally:
         await agent.stop()
@@ -606,13 +612,29 @@ async def _drive(
     scenario,
     instance: str,
     mission_text: str,
+    identity: AgentIdentity,
+    mcp_url: str,
+    mcp_manifest,
 ) -> int:
     log_dir = Path(os.environ.get("LOG_DIR", str(scenario.log_dir)))
     sink = JsonlSink(log_dir / f"{spec.name}.jsonl")
     predicate = stop_predicates.resolve(spec.stop_predicate)
     history = TurnHistory(max_tail=3)
 
-    baseline_snapshot = collect_state(agent)
+    driver = os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower()
+
+    async def snapshot_for_watchdog() -> dict[str, Any]:
+        if driver == "direct":
+            return collect_state(agent)
+        return await collect_state_via_mcp(
+            mcp_url=mcp_url,
+            identity=identity,
+            ipv8_address=("127.0.0.1", spec.ipv8_port),
+            manifest=mcp_manifest,
+            timeout_s=15.0,
+        )
+
+    baseline_snapshot = await snapshot_for_watchdog()
     stop_predicates.set_baseline(str(agent.identity.agent_id), baseline_snapshot)
     sink.append({
         "event": "scenario_boot",
@@ -630,7 +652,7 @@ async def _drive(
         turn_n += 1
         elapsed = time.monotonic() - start
 
-        snapshot = collect_state(agent)
+        snapshot = await snapshot_for_watchdog()
         stop_value = predicate(snapshot)
         if stop_value:
             sink.append({
@@ -664,7 +686,6 @@ async def _drive(
             scenario_name=scenario.name,
             agent_name=spec.name,
         )
-        driver = os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower()
         prompt_snapshot = (
             _compact_snapshot(prompt_snapshot_full)
             if driver == "direct"

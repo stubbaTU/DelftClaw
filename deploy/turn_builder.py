@@ -100,7 +100,7 @@ def build_turn_prompt(
         "next gap, your one tool call must CHANGE STATE - not observe",
         "it. Compare CURRENT STATE to your mission's end goal, find the",
         "single biggest gap, and take the one action that closes it.",
-        "Re-reading state you already have is the one thing that",
+        "Re-reading state you already have is NOT progress and is the one thing that",
         "guarantees no progress.",
         "",
         "If CURRENT STATE already satisfies your mission's stop",
@@ -133,6 +133,7 @@ def build_turn_prompt(
         "- If no safe tool call is possible from the current state, return a "
         "short explanation instead of waiting."
     )
+    sections.append("Now perform one bounded action for this turn.")
     sections.append("")
     sections.append("CURRENT STATE:")
     sections.append("```json")
