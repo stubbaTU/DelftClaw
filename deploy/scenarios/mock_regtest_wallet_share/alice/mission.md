@@ -5,7 +5,7 @@
 
 # Intent
 
-Share a deterministic bcrt1 regtest-style wallet address while using synthetic integer sats only. Once bob is admitted and advertises a bcrt1 peer wallet address, send bob exactly 20,000 sats with wallet_send. Do not use btc_* tools or peer_add when bob is already visible.
+Send bob exactly 20,000 synthetic integer sats once the current state shows bob as admitted and his peer wallet_address starts with bcrt1. Use that peer wallet_address as wallet_send.to_address. Do not call wallet_address, peers_list, btc_* tools, or peer_add when bob is already visible.
 
 # Budget
 
