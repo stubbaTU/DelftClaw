@@ -58,6 +58,33 @@ def test_openclaw_api_keys_are_assigned_per_agent(monkeypatch: pytest.MonkeyPatc
     assert "GEMINI_API_KEY=key_a" in env_3
 
 
+def test_openrouter_provider_defaults_to_openrouter_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host_env = tmp_path / "host.env"
+    host_env.write_text(
+        "\n".join([
+            "OPENCLAW_PROVIDER=openrouter",
+            "OPENCLAW_BASE_URL=https://openrouter.ai/api/v1",
+            "OPENCLAW_MODEL=openai/gpt-4o-mini",
+            "OPENROUTER_API_KEY=sk-test",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENCLAW_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENCLAW_API_KEY_ENV", raising=False)
+
+    resolved = scenario_boot._resolve_openclaw_provider(host_env)
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api"] == "openai-completions"
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["model"] == "openai/gpt-4o-mini"
+    assert resolved["api_key_env"] == "OPENROUTER_API_KEY"
+    assert resolved["api_key_value"] == "sk-test"
+
+
 def test_community_stop_predicates_read_snapshot() -> None:
     seedbox_done = resolve("community_seedbox_count_gte_N(n=2)")
     member_done = resolve("community_member_count_gte_N(n=3)")

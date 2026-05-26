@@ -207,6 +207,11 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
         "OPENCLAW_PROVIDER",
         host_env.get("OPENCLAW_PROVIDER", DEFAULT_OPENCLAW_PROVIDER),
     ).strip().lower()
+    default_api_key_env = {
+        "ollama": "OLLAMA_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+    }.get(provider, "OPENCLAW_API_KEY")
     base_url = os.environ.get(
         "OPENCLAW_BASE_URL",
         host_env.get(
@@ -226,7 +231,7 @@ def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str,
         api = "ollama" if provider == "ollama" else "openai-completions"
     api_key_env = os.environ.get(
         "OPENCLAW_API_KEY_ENV",
-        host_env.get("OPENCLAW_API_KEY_ENV", "OLLAMA_API_KEY" if provider == "ollama" else "GEMINI_API_KEY"),
+        host_env.get("OPENCLAW_API_KEY_ENV", default_api_key_env),
     ).strip()
     api_key_value = os.environ.get(api_key_env, host_env.get(api_key_env, "")).strip()
     api_keys_raw = os.environ.get(
