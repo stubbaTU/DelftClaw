@@ -1,0 +1,47 @@
+# Scenario: mock_regtest_wallet_share
+#
+# Two agents using synthetic integer Bitcoin balances while advertising
+# deterministic bcrt1 regtest-style wallet addresses. No Bitcoin Core node
+# or RPC wallet is required.
+
+name: mock_regtest_wallet_share
+description: >-
+  Two-agent synthetic Bitcoin demo: alice and bob share deterministic
+  regtest-style bcrt1 wallet addresses, bob joins alice's community with
+  fake integer sats, and alice sends bob 20,000 synthetic sats.
+
+watchdog:
+  interval_s: 180
+  max_iterations_per_turn: 1
+  max_total_turns: 40
+  max_wall_clock_s: 3600
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/mock_regtest_wallet_share
+
+agents:
+
+  alice:
+    ipv8_port: 8210
+    mcp_port: 18880
+    redteam_port: 28880
+    publish_overlays: []
+    mission_file: alice/mission.md
+    stop_predicate: bitcoin_sent_sats(min_sats=20000)
+    peers:
+      - bob
+    initial_balance_sats: 200000
+    bootstrap_community_sats: 10000
+    btc_network: mock_regtest
+
+  bob:
+    ipv8_port: 8211
+    mcp_port: 18881
+    redteam_port: 28881
+    publish_overlays: []
+    mission_file: bob/mission.md
+    stop_predicate: community_member_count_gte_N(n=2)
+    peers:
+      - alice
+    initial_balance_sats: 100000
+    btc_network: mock_regtest
