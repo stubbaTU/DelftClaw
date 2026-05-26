@@ -1,0 +1,8 @@
+CC0 recipe - basic pancakes (placeholder).
+
+Combine one cup of flour, one tablespoon of sugar, two teaspoons of
+baking powder, one egg, and one cup of milk. Whisk until smooth. Cook
+spoonfuls on a hot greased pan until the edges are dry, then flip and
+cook the other side for about a minute. Serves two.
+
+Licence: CC0 1.0 (no rights reserved, placeholder attribution).

@@ -292,9 +292,22 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     seed_file = state / "seed.txt"
     security_root = STATE_ROOT / scenario.name / "security"
     openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
-    overlay = agent.publish_overlays[0] if agent.publish_overlays else (
-        REPO_ROOT / "protocol" / "examples" / "content_community.md"
-    )
+    # PUBLISH_OVERLAY semantics:
+    #   - agent declares ``publish_overlays`` in scenario.yaml -> use that path.
+    #   - scenario sets ``wire_distribute_overlays: true`` and agent declares
+    #     none -> omit the env var so the agent has nothing to publish, and
+    #     instead relies on ``OpenClawAgent.ensure_default_overlays_loaded``
+    #     to fetch the descriptor from a genesis peer over the bootstrap
+    #     community (OVERLAY_REQUEST -> OVERLAY_DELIVERY).
+    #   - otherwise (legacy) -> fall back to the repo-tracked
+    #     content_community.md so every agent compiles from local disk.
+    overlay: Path | None
+    if agent.publish_overlays:
+        overlay = agent.publish_overlays[0]
+    elif scenario.wire_distribute_overlays:
+        overlay = None
+    else:
+        overlay = REPO_ROOT / "protocol" / "examples" / "content_community.md"
     # Phase 6: cross-wire pull-loop URLs so every member-agent in the
     # scenario pulls from every other member-agent. ``redteam_port=0``
     # on a peer disables both serving and being pulled from.
@@ -329,8 +342,26 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # on the same VPS don't trample each other's files.
         f"COMMUNITY_LOG_PATH={state / 'community.log'}",
         f"PEER_LOG_DIR={state / 'peer_logs'}",
-        f"PUBLISH_OVERLAY={overlay}",
+        # PUBLISH_OVERLAY sentinel: emit the literal ``none`` so the
+        # systemd unit's ``--publish-overlay ${PUBLISH_OVERLAY}``
+        # expansion always has a token (an empty env-var would expand to
+        # nothing and break argparse). agent/cli.py treats ``none`` /
+        # empty as "publish nothing at boot" and falls back to scanning
+        # protocol/examples/ for stub sources so --compiler-stub still
+        # starts. See wire_distribute_overlays in deploy/scenario.py.
+        f"PUBLISH_OVERLAY={overlay if overlay is not None else 'none'}",
         f"SEED_CONTENT_FILE={_seed_content_file_path(scenario, agent)}",
+        f"FILE_SHARE_MODE={'1' if scenario.file_share_mode else '0'}",
+        # MCP tool allowlist (Mission.tools, optional). None -> omit the
+        # env var entirely so the MCP server exposes the full surface
+        # (backwards-compatible). An empty tuple -> emit an empty value
+        # so the server exposes no DelftClaw tools. A non-empty tuple ->
+        # csv-join. See agent/mcp_server.py for the consumer side.
+        *(
+            [f"MCP_TOOL_ALLOWLIST={','.join(agent.mcp_tool_allowlist)}"]
+            if agent.mcp_tool_allowlist is not None
+            else []
+        ),
         # The watchdog reads this file at boot and calls load_manifest on its
         # snapshot agent. Without it, state.network would be null in every
         # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
@@ -460,10 +491,34 @@ def _stage_scenario_dir(scenario: Scenario, agent: AgentSpec) -> None:
 def _write_seed_content_file(scenario: Scenario, agent: AgentSpec) -> None:
     target = _seed_content_file_path(scenario, agent)
     content_dir = _state_dir(scenario.name, agent.name) / "seed_content"
-    rows = []
-    if agent.seed_content:
-        _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(content_dir)])
-    for item in agent.seed_content:
+
+    if agent.library_csv is not None:
+        rows = _stage_library_csv(agent.library_csv, content_dir)
+    else:
+        rows = _stage_inline_seed_content(agent.seed_content, content_dir)
+
+    subprocess.run(
+        ["sudo", "tee", str(target)],
+        input=json.dumps(rows, indent=2, sort_keys=True) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _sudo(["chmod", "0640", str(target)])
+    _sudo(["chown", f"root:{SERVICE_USER}", str(target)])
+
+
+def _stage_inline_seed_content(
+    seed_content: tuple, content_dir: Path
+) -> list[dict]:
+    rows: list[dict] = []
+    if seed_content:
+        _sudo([
+            "install", "-d",
+            "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750",
+            str(content_dir),
+        ])
+    for item in seed_content:
         safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in item.name)
         content_path = content_dir / safe_name
         payload = (
@@ -488,15 +543,87 @@ def _write_seed_content_file(scenario: Scenario, agent: AgentSpec) -> None:
             "tags": list(item.tags),
             "path": str(content_path),
         })
-    subprocess.run(
-        ["sudo", "tee", str(target)],
-        input=json.dumps(rows, indent=2, sort_keys=True) + "\n",
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    _sudo(["chmod", "0640", str(target)])
-    _sudo(["chown", f"root:{SERVICE_USER}", str(target)])
+    return rows
+
+
+def _parse_library_csv(csv_path: Path) -> list[dict]:
+    """Pure: read ``csv_path``, validate, return one dict per row.
+
+    Each dict has keys ``magnet`` ``name`` ``size`` ``mime`` ``tags``
+    ``source_path``. ``source_path`` is the resolved absolute Path to the
+    file referenced by the row (co-located with the CSV). Raises
+    ``ValueError`` on missing columns and ``FileNotFoundError`` when a
+    row references a file that does not exist. No filesystem mutation.
+    """
+    import csv
+
+    library_dir = csv_path.parent
+    rows: list[dict] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"magnet", "name", "size", "mime", "tags"}
+        missing = required - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                f"library_csv {csv_path} missing columns: {sorted(missing)}"
+            )
+        for entry in reader:
+            name = entry["name"].strip()
+            source = library_dir / name
+            if not source.is_file():
+                raise FileNotFoundError(
+                    f"library_csv {csv_path} references missing file {source}"
+                )
+            tags = [t for t in entry["tags"].split(";") if t]
+            rows.append({
+                "magnet": entry["magnet"].strip(),
+                "name": name,
+                "size": int(entry["size"]),
+                "mime": entry["mime"].strip(),
+                "tags": tags,
+                "source_path": source.resolve(),
+            })
+    return rows
+
+
+def _stage_library_csv(csv_path: Path, content_dir: Path) -> list[dict]:
+    """Copy each library file referenced in ``csv_path`` into ``content_dir`` and emit seed_content rows.
+
+    The CSV is expected at the repo-tracked library directory; each row's
+    ``name`` column names a file co-located with the CSV. Real bytes get
+    copied into the seedbox content directory so the stub BitTorrent
+    service can serve them later via ``StubBitTorrentService.prime``.
+    """
+    parsed = _parse_library_csv(csv_path)
+
+    _sudo([
+        "install", "-d",
+        "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750",
+        str(content_dir),
+    ])
+
+    rows: list[dict] = []
+    for entry in parsed:
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in entry["name"])
+        content_path = content_dir / safe_name
+        payload = entry["source_path"].read_bytes()
+        subprocess.run(
+            ["sudo", "tee", str(content_path)],
+            input=payload,
+            capture_output=True,
+            check=True,
+        )
+        _sudo(["chmod", "0640", str(content_path)])
+        _sudo(["chown", f"{SERVICE_USER}:{SERVICE_USER}", str(content_path)])
+        rows.append({
+            "magnet": entry["magnet"],
+            "name": entry["name"],
+            "size": entry["size"],
+            "mime": entry["mime"],
+            "tags": entry["tags"],
+            "path": str(content_path),
+        })
+    return rows
 
 
 def _enable_unit(unit: str) -> None:
@@ -901,6 +1028,38 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
                 c_fail(f"peer_add {agent.name}->{peer_name} failed: {exc}")
                 return 1
             c_ok(f"{agent.name} now knows {peer_name}: {result}")
+
+    # Phase 4a: also register each peer's WATCHDOG IPv8 port. The watchdog
+    # process runs its own IPv8 instance on ``ipv8_port + 1000`` and
+    # shares ``seed.txt`` with the MCP process, so identity is identical —
+    # what differs is the UDP source port packets originate from. Without
+    # this loop the seeder's MCP IPv8 would receive an OVERLAY_REQUEST
+    # from the fetcher's watchdog but have no peer record to address the
+    # OVERLAY_DELIVERY response back to. Only fires for scenarios that
+    # turn on wire distribution; legacy scenarios skip it.
+    if scenario.wire_distribute_overlays:
+        for agent in scenario.agents.values():
+            for peer_name in agent.peers:
+                target = coords[peer_name]
+                watchdog_port = scenario.agents[peer_name].ipv8_port + 1000
+                url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
+                c_info(
+                    f"{agent.name}.peer_add({peer_name} watchdog @ {watchdog_port})"
+                )
+                try:
+                    result = await _call_mcp(url, "peer_add", {
+                        "host": target["host"],
+                        "port": watchdog_port,
+                        "pubkey_hex": target["pubkey_hex"],
+                    })
+                except Exception as exc:
+                    c_fail(
+                        f"watchdog peer_add {agent.name}->{peer_name} failed: {exc}"
+                    )
+                    return 1
+                c_ok(
+                    f"{agent.name} now knows {peer_name}'s watchdog: {result}"
+                )
 
     # Phase 4b: build a network manifest from the genesis agent's runtime
     # coords and inject it into every agent. Without this, state.network is

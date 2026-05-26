@@ -217,3 +217,89 @@ def test_stop_predicate_parameterised_accepted():
 def test_non_str_input_rejected():
     with pytest.raises(MissionParseError, match="must be str"):
         parse_mission(b"hi")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Optional # Tools section — MCP tool allowlist
+# ---------------------------------------------------------------------------
+
+def test_tools_section_absent_yields_none():
+    """Legacy missions without `# Tools` keep the historical no-allowlist behaviour."""
+    m = parse_mission(GOOD)
+    assert m.tools is None
+
+
+def test_tools_section_empty_yields_empty_tuple():
+    """`# Tools` present with no entries is the explicit no-action sentinel."""
+    text = GOOD + "\n# Tools\n"
+    m = parse_mission(text)
+    assert m.tools == ()
+
+
+def test_tools_section_with_valid_names_parses():
+    """A bulleted list of valid tool names round-trips into Mission.tools."""
+    text = GOOD + "\n# Tools\n- content_search_and_fetch\n- torrent_stats\n"
+    m = parse_mission(text)
+    assert m.tools == ("content_search_and_fetch", "torrent_stats")
+
+
+def test_tools_section_accepts_star_bullets():
+    """Asterisk-style bullets work too, matching the parser's prose tolerance."""
+    text = GOOD + "\n# Tools\n* peers_list\n* wallet_address\n"
+    m = parse_mission(text)
+    assert m.tools == ("peers_list", "wallet_address")
+
+
+def test_tools_section_strips_backticks():
+    """Tool names wrapped in backticks (operator habit) parse cleanly."""
+    text = GOOD + "\n# Tools\n- `torrent_stats`\n"
+    m = parse_mission(text)
+    assert m.tools == ("torrent_stats",)
+
+
+def test_tools_section_ignores_freetext_lines():
+    """Operator may annotate the list with prose without breaking parse."""
+    text = (
+        GOOD
+        + "\n# Tools\n"
+        + "Only these two are needed for this scenario:\n"
+        + "- content_search_and_fetch\n"
+        + "- torrent_stats\n"
+    )
+    m = parse_mission(text)
+    assert m.tools == ("content_search_and_fetch", "torrent_stats")
+
+
+def test_tools_section_deduplicates_repeated_entries():
+    text = GOOD + "\n# Tools\n- torrent_stats\n- torrent_stats\n- peers_list\n"
+    m = parse_mission(text)
+    assert m.tools == ("torrent_stats", "peers_list")
+
+
+def test_tools_section_rejects_unknown_name():
+    text = GOOD + "\n# Tools\n- no_such_tool\n"
+    with pytest.raises(MissionParseError, match="no_such_tool"):
+        parse_mission(text)
+
+
+def test_tools_section_rejects_unknown_alongside_known():
+    text = GOOD + "\n# Tools\n- content_search_and_fetch\n- typo_tool_name\n"
+    with pytest.raises(MissionParseError, match="typo_tool_name"):
+        parse_mission(text)
+
+
+def test_bundled_file_share_missions_parse_with_tools():
+    """The repo-tracked file_share missions ship with `# Tools` sections."""
+    expected = {
+        "seeder": ("torrent_stats",),
+        "fetcher_1": ("content_search_and_fetch", "torrent_stats"),
+        "fetcher_2": ("content_search_and_fetch", "torrent_stats"),
+    }
+    for agent_name, tools in expected.items():
+        path = (
+            REPO_ROOT
+            / "deploy" / "scenarios" / "file_share" / agent_name / "mission.md"
+        )
+        m = parse_mission(path.read_text(encoding="utf-8"))
+        assert m.name == agent_name
+        assert m.tools == tools, f"{agent_name}: got {m.tools!r}"

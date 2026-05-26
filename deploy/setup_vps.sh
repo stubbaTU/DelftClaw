@@ -7,24 +7,18 @@
 #
 # What this does, in order:
 #   1.  apt: python, libsodium, build tools, ufw, curl, jq, git
-#   2.  install Ollama (CPU build) if not present  — DEV/CI fallback only.
-#       v5.1 production points the compiler-LLM at an external GPU host via
-#       LLM_BASE_URL (an OpenAI-compatible endpoint); the local Ollama
-#       install is purely a fallback for air-gapped development and CI.
-#   3.  pull the Qwen model (qwen2.5-coder:7b by default) into the local
-#       Ollama — used only when LLM_BASE_URL is unset.
+#   2.  tailscale: install + verify the VPS is on the supervisor's tailnet
+#   3.  openclaw CLI: npm install -g openclaw (and Node.js 22 if missing)
 #   4.  create the `delftclaw` system user + state dirs
 #   5.  build the project venv + pip install requirements.txt
-#   6.  generate the BIP-39 seed file at /var/lib/delftclaw/seed.txt
-#       (skipped if one already exists)
-#   7.  install the scenario systemd units
-#   8.  open ufw rules for ssh, ipv8 udp, mcp tcp (does not enable ufw)
-#   9.  smoke-test:
-#         - curl Ollama /v1/models  (only meaningful if no external endpoint)
-#         - curl the MCP server /mcp tools/list
-#       prints both results at the end
+#   6.  install the scenario systemd units
+#   7.  open ufw rules for ssh, ipv8 udp, mcp tcp (does not enable ufw)
 #
-# Re-running the script is safe; each step short-circuits if already done.
+# The historical Ollama install + Qwen pull step was removed on 2026-05-26
+# — the reasoning LLM now lives behind ``scripts/llm_proxy.py`` (Anthropic
+# upstream by default). Re-add an Ollama step if you bring back a local
+# fallback model. Re-running the script is safe; each step short-circuits
+# if already done.
 
 set -euo pipefail
 
@@ -35,8 +29,6 @@ SERVICE_USER=delftclaw
 
 IPV8_PORT=${IPV8_PORT:-8090}
 MCP_PORT=${MCP_PORT:-8765}
-OLLAMA_PORT=${OLLAMA_PORT:-11434}
-LLM_MODEL=${LLM_MODEL:-qwen2.5-coder:7b}
 
 # Colour helpers.
 c_blue()  { printf '\033[1;36m[setup] %s\033[0m\n' "$*"; }
@@ -60,29 +52,11 @@ step_apt() {
         ufw curl ca-certificates gnupg jq git
 }
 
-step_ollama() {
-    if command -v ollama >/dev/null 2>&1; then
-        c_blue "ollama: already installed ($(ollama --version 2>&1 | head -1))"
-    else
-        c_blue "ollama: installing"
-        curl -fsSL https://ollama.com/install.sh | sh
-    fi
-    systemctl enable --now ollama
-    # Wait for the service to bind its port (worst case: cold start ~3s).
-    for _ in $(seq 1 20); do
-        if curl -fsS "http://127.0.0.1:${OLLAMA_PORT}/api/tags" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 0.5
-    done
-    c_blue "ollama: pulling ${LLM_MODEL} (skipped if cached)"
-    ollama pull "${LLM_MODEL}"
-}
-
 step_tailscale() {
-    # Required to reach the supervisor's GPU box at the Tailscale-CGNAT
-    # address (100.x.x.x). Without Tailscale up, the watchdog's first turn
-    # times out trying to call the remote Ollama.
+    # Historically required to reach a supervisor's GPU box at a
+    # Tailscale-CGNAT address. Now optional — the production LLM lives
+    # behind ``scripts/llm_proxy.py`` on 127.0.0.1:11600. Kept because
+    # some operators still use a tailnet for SSH or sidechannels.
     if command -v tailscale >/dev/null 2>&1; then
         c_blue "tailscale: already installed ($(tailscale version 2>&1 | head -1))"
     else
@@ -95,11 +69,7 @@ step_tailscale() {
         ts_ip=$(tailscale ip -4 2>/dev/null | head -1 || true)
         c_green "tailscale: connected (IP ${ts_ip:-unknown})"
     else
-        c_red "tailscale is installed but the VPS is NOT yet on a tailnet."
-        c_red "Run this on the VPS, then re-run setup_vps.sh:"
-        c_red "    tailscale up"
-        c_red "Follow the URL it prints, sign in, and verify with: ping -c 2 100.73.168.12"
-        exit 1
+        c_blue "tailscale: not on a tailnet — proceeding (tailnet no longer required)."
     fi
 }
 
@@ -200,7 +170,6 @@ main() {
     require_root
     step_apt
     step_tailscale
-    step_ollama
     step_openclaw_cli
     step_user
     step_venv
@@ -232,7 +201,8 @@ Common operator commands:
 
   python -m deploy.scenario_boot seek_cc --teardown           # stop scenario
 
-Ollama : http://127.0.0.1:${OLLAMA_PORT}/v1   (${LLM_MODEL})
+Reasoning LLM goes through scripts/llm_proxy.py (Anthropic upstream by
+default). Start it with:  make llm-up
 
 ==============================================================================
 EOF

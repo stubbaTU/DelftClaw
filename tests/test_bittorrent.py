@@ -57,7 +57,37 @@ async def test_stub_prime_simulates_cross_node_delivery(tmp_path: Path) -> None:
     svc.prime(magnet, real_path)
 
     fetched = await svc.add_magnet(magnet)
+    # When the primed source and the save_dir resolve to the same path,
+    # add_magnet short-circuits and returns the source directly.
     assert fetched == real_path
+
+
+@pytest.mark.asyncio
+async def test_stub_primed_magnet_copies_bytes_into_save_dir(tmp_path: Path) -> None:
+    """When the seedbox source and the agent save_dir are different
+    directories, add_magnet must perform a real local file copy: the
+    returned path lives under save_dir and contains the source bytes.
+    """
+    seedbox_dir = tmp_path / "seedbox"
+    save_dir = tmp_path / "downloads"
+    seedbox_dir.mkdir()
+
+    source = seedbox_dir / "cc_audio.txt"
+    source.write_bytes(b"hello creative commons")
+
+    svc = StubBitTorrentService(save_dir=save_dir)
+    magnet = "magnet:?xt=urn:btih:1234abcd"
+    svc.prime(magnet, source)
+
+    fetched = await svc.add_magnet(magnet)
+
+    # Bytes actually moved.
+    assert fetched.parent.resolve() == save_dir.resolve()
+    assert fetched.name == source.name
+    assert fetched.resolve() != source.resolve()
+    assert fetched.read_bytes() == source.read_bytes()
+    # Source still in place (this is a copy, not a move).
+    assert source.is_file()
 
 
 def test_build_default_service_falls_back_to_stub_when_libtorrent_missing(tmp_path: Path) -> None:

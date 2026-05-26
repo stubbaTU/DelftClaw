@@ -41,6 +41,7 @@ def collect_state(agent: "OpenClawAgent") -> dict[str, Any]:
         "overlays": _overlays_snapshot(agent),
         "torrents": _torrents_snapshot(agent),
         "security": _security_snapshot(),
+        "next_objective": _next_objective(agent),
     }
 
 
@@ -226,6 +227,127 @@ def _torrents_snapshot(agent: "OpenClawAgent") -> list[dict[str, Any]]:
             "peers": int(t.peers),
         })
     return out
+
+
+def _next_objective(agent: "OpenClawAgent") -> dict[str, Any] | None:
+    """Derive the most relevant unmet 7-step objective from the current snapshot.
+
+    Pure rule table over read-only signals already present elsewhere in
+    the snapshot (manifest admission policy, replayed community state,
+    wallet address, torrent progress). Names objectives, not MCP tools,
+    so the LLM still chooses how to act. Returns ``None`` when no
+    objective applies — typically because the agent is done.
+
+    When ``FILE_SHARE_MODE=1`` is set in the environment, the admission
+    half of the rule table is skipped: non-gatekeeper agents jump
+    straight to ``retrieve_content`` regardless of admission state, and
+    the seedbox-growth step is suppressed entirely. Used by scenarios
+    that demonstrate only the SEARCH/fetch path with no donation or
+    treasury machinery.
+    """
+    manifest = agent.network_manifest
+    if manifest is None:
+        return {
+            "label": "wait_for_manifest",
+            "reason": "no network manifest is loaded yet; nothing to act on",
+        }
+    state = agent.community_state()
+    if state is None:
+        return {
+            "label": "wait_for_manifest",
+            "reason": "manifest is loaded but no community state has been replayed yet",
+        }
+
+    me = agent.community_reporter_id
+    is_gatekeeper = agent.wallet.address() == manifest.admission.gatekeeper_address
+    is_admitted = me in state.members
+    treasury = state.balance_sats
+
+    if os.environ.get("FILE_SHARE_MODE") == "1":
+        has_completed_torrent = any(
+            float(t.progress) >= 1.0 for t in agent.bittorrent.stats()
+        )
+        if is_gatekeeper or has_completed_torrent:
+            return None
+        return {
+            "label": "retrieve_content (suggested tool: content_search_and_fetch)",
+            "reason": (
+                "file-share mode: admission/treasury machinery is "
+                "disabled for this scenario; call content_search_and_fetch "
+                "to fetch a Creative Commons file from a peer's library"
+            ),
+        }
+
+    if not is_admitted:
+        if treasury == 0 and is_gatekeeper:
+            return {
+                "label": "bootstrap_treasury (suggested tool: community_donate_and_join)",
+                "reason": (
+                    "you are the admission gatekeeper and the community "
+                    "treasury is empty; a founding donation is required "
+                    "before joiners can be admitted"
+                ),
+            }
+        if treasury > 0:
+            return {
+                "label": "join_community (suggested tool: community_donate_and_join)",
+                "reason": (
+                    "you are not yet admitted; the treasury is funded so "
+                    "a donation within the admission policy will admit you"
+                ),
+            }
+        return {
+            "label": "wait_for_founder",
+            "reason": (
+                "the community treasury is empty and you are not the "
+                "gatekeeper; the founder must donate before joiners can be admitted"
+            ),
+        }
+
+    if _pending_purchases_by(me, state) > 0:
+        return {
+            "label": "record_seedbox_provisioned (suggested tool: seedbox_provisioned)",
+            "reason": (
+                "one of your own seedbox_purchase_intent entries is still "
+                "open; closing it with a provisioned event advances seedbox_count"
+            ),
+        }
+
+    has_completed_torrent = any(
+        float(t.progress) >= 1.0 for t in agent.bittorrent.stats()
+    )
+    if not is_gatekeeper and not has_completed_torrent:
+        return {
+            "label": "retrieve_content (suggested tool: content_search_and_fetch)",
+            "reason": (
+                "you are admitted but no local torrent has reached "
+                "progress=1.0; the network exposes content overlays you "
+                "can search and fetch from"
+            ),
+        }
+
+    cost = manifest.admission.seedbox_cost_sats
+    if (
+        state.threshold_active(manifest)
+        and treasury >= cost
+        and state.pending_purchases == 0
+    ):
+        return {
+            "label": "propose_seedbox_purchase (suggested tool: seedbox_purchase_propose)",
+            "reason": (
+                "member_count has grown past the current seedbox capacity, "
+                "the treasury can cover seedbox_cost_sats, and no purchase "
+                "intent is open"
+            ),
+        }
+
+    return None
+
+
+def _pending_purchases_by(reporter_id: str, state: Any) -> int:
+    intents = {p.entry_hash for p in state.purchases if p.reporter_id == reporter_id}
+    provisioned = {pv.purchase_intent_hash for pv in state.provisioned}
+    return len(intents - provisioned)
 
 
 def _security_snapshot() -> dict[str, Any] | None:

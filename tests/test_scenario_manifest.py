@@ -115,6 +115,145 @@ def test_seed_content_parses(tmp_path: Path):
     assert seed[0].tags == ("cc",)
 
 
+# ---------------------------------------------------------------------------
+# library_csv: seedbox content catalog
+# ---------------------------------------------------------------------------
+
+CC_LIBRARY_CSV = "protocol/examples/cc_library/content_catalog.csv"
+
+
+def test_library_csv_parses_to_absolute_path(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["alice"]["library_csv"] = CC_LIBRARY_CSV
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    library_csv = s.agents["alice"].library_csv
+    assert library_csv is not None
+    assert library_csv.is_absolute()
+    assert library_csv.name == "content_catalog.csv"
+    assert library_csv.is_file()
+
+
+def test_library_csv_defaults_to_none(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.agents["alice"].library_csv is None
+
+
+def test_library_csv_missing_file_rejected(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["agents"]["alice"]["library_csv"] = "does/not/exist.csv"
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="library_csv"):
+        parse_scenario(path)
+
+
+def test_parse_library_csv_reads_real_repo_catalog():
+    """The repo-tracked CC catalog must parse and reference real files."""
+    from deploy.scenario_boot import _parse_library_csv
+
+    csv_path = REPO_ROOT / "protocol" / "examples" / "cc_library" / "content_catalog.csv"
+    rows = _parse_library_csv(csv_path)
+    assert len(rows) >= 5  # the library should have several entries
+    for row in rows:
+        assert row["magnet"].startswith("magnet:?xt=urn:btih:")
+        assert row["name"]
+        assert row["size"] > 0
+        assert row["mime"]
+        assert isinstance(row["tags"], list) and row["tags"]
+        assert row["source_path"].is_file()
+        assert row["source_path"].stat().st_size == row["size"]
+
+
+def test_parse_library_csv_rejects_missing_columns(tmp_path: Path):
+    from deploy.scenario_boot import _parse_library_csv
+
+    csv_path = tmp_path / "bad.csv"
+    csv_path.write_text("magnet,name\nmagnet:?xt=urn:btih:zz,foo.txt\n")
+    with pytest.raises(ValueError, match="missing columns"):
+        _parse_library_csv(csv_path)
+
+
+def test_parse_library_csv_rejects_missing_referenced_file(tmp_path: Path):
+    from deploy.scenario_boot import _parse_library_csv
+
+    csv_path = tmp_path / "lib.csv"
+    csv_path.write_text(
+        "magnet,name,size,mime,tags\n"
+        "magnet:?xt=urn:btih:zz,nope.txt,10,text/plain,cc\n"
+    )
+    with pytest.raises(FileNotFoundError, match="nope.txt"):
+        _parse_library_csv(csv_path)
+
+
+# ---------------------------------------------------------------------------
+# mcp_tool_allowlist propagation from Mission.tools
+# ---------------------------------------------------------------------------
+
+def _alice_mission_with_tools_block(stop_predicate: str, tools_block: str) -> str:
+    """Build a minimal mission.md that includes a # Tools section."""
+    return (
+        "# Identity\n"
+        "- name: alice\n"
+        "- role: general\n"
+        "\n"
+        "# Intent\n"
+        f"Test alice with a custom tool allowlist.\n"
+        "\n"
+        "# Budget\n"
+        "- max_sats_outbound: 0\n"
+        "- max_total_turns: 5\n"
+        "\n"
+        "# Stop\n"
+        f"- predicate: {stop_predicate}\n"
+        + tools_block
+    )
+
+
+def test_mcp_tool_allowlist_absent_propagates_none(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    # Neither alice nor bob has a # Tools section in the default _mission_md.
+    assert s.agents["alice"].mcp_tool_allowlist is None
+    assert s.agents["bob"].mcp_tool_allowlist is None
+
+
+def test_mcp_tool_allowlist_populated_propagates_tuple(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+
+    alice_dir = tmp_path / manifest["name"] / "alice"
+    alice_dir.mkdir(parents=True, exist_ok=True)
+    (alice_dir / "mission.md").write_text(
+        _alice_mission_with_tools_block(
+            "never",
+            "\n# Tools\n- content_search_and_fetch\n- torrent_stats\n",
+        )
+    )
+
+    s = parse_scenario(path)
+    assert s.agents["alice"].mcp_tool_allowlist == (
+        "content_search_and_fetch",
+        "torrent_stats",
+    )
+
+
+def test_mcp_tool_allowlist_empty_propagates_empty_tuple(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+
+    alice_dir = tmp_path / manifest["name"] / "alice"
+    alice_dir.mkdir(parents=True, exist_ok=True)
+    (alice_dir / "mission.md").write_text(
+        _alice_mission_with_tools_block("never", "\n# Tools\n")
+    )
+
+    s = parse_scenario(path)
+    assert s.agents["alice"].mcp_tool_allowlist == ()
+
+
 def test_initial_balance_defaults_to_zero(tmp_path: Path):
     """Agents that don't declare initial_balance_sats keep legacy mock behaviour."""
     manifest = _copy(VALID_BASE)
@@ -363,6 +502,50 @@ def test_build_manifest_md_with_no_overlays_still_parses(tmp_path: Path):
     )
     parsed = parse_manifest(md)
     assert parsed.default_overlays == ()
+
+
+# ---------------------------------------------------------------------------
+# wire_distribute_overlays top-level flag
+# ---------------------------------------------------------------------------
+
+def test_wire_distribute_overlays_defaults_to_false(tmp_path: Path):
+    """Existing scenarios that don't declare the flag keep the legacy
+    PUBLISH_OVERLAY fallback behaviour."""
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.wire_distribute_overlays is False
+
+
+def test_wire_distribute_overlays_parses_true(tmp_path: Path):
+    """When set to true, scenario_boot will omit PUBLISH_OVERLAY for
+    agents without ``publish_overlays`` so they wire-fetch the
+    descriptor instead."""
+    manifest = _copy(VALID_BASE)
+    manifest["wire_distribute_overlays"] = True
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.wire_distribute_overlays is True
+
+
+def test_wire_distribute_overlays_rejects_non_boolean(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["wire_distribute_overlays"] = "yes"
+    path = _write_scenario(tmp_path, manifest)
+    with pytest.raises(ScenarioError, match="wire_distribute_overlays"):
+        parse_scenario(path)
+
+
+def test_file_share_scenario_sets_wire_distribute_overlays():
+    """The repo-tracked file_share scenario opts in."""
+    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "file_share" / "scenario.yaml")
+    assert s.wire_distribute_overlays is True
+
+
+def test_seek_cc_scenario_keeps_wire_distribute_overlays_off():
+    """Backwards-compat: seek_cc still uses the local PUBLISH_OVERLAY fallback."""
+    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "seek_cc" / "scenario.yaml")
+    assert s.wire_distribute_overlays is False
 
 
 # ---------------------------------------------------------------------------

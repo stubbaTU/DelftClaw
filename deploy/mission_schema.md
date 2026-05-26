@@ -69,6 +69,37 @@ Required key/value list.
 |---|---|---|
 | `predicate` | string | Must resolve via `deploy.stop_predicates.resolve(...)`. The watchdog evaluates this predicate each tick; the LLM never decides termination. |
 
+## `# Tools` (optional)
+
+Optional bulleted list of bare MCP tool names this agent is allowed to
+call. When present, scenario boot writes `MCP_TOOL_ALLOWLIST=<csv>`
+into the per-instance env file, and the MCP server filters its
+`tools/list` response to that subset — so the OpenClaw client (and
+therefore the upstream LLM) never sees the suppressed tools at all.
+
+Three states:
+
+| Section | Effect on MCP `tools/list` |
+|---|---|
+| absent | all tools exposed (backwards-compatible default for legacy missions) |
+| present, list non-empty | only the listed tools exposed |
+| present, list empty | no tools exposed — agent can observe state but cannot act this scenario |
+
+Names are bare (no `<scenario>-<agent>__` namespace prefix — OpenClaw
+adds that on the client side; the MCP server registers under bare
+names). Each entry is validated against the same `TOOL_NAMES` set the
+recipe filter uses, so a typo in the allowlist fails fast at scenario
+boot rather than silently muting the agent.
+
+Example:
+
+```
+# Tools
+
+- content_search_and_fetch
+- torrent_stats
+```
+
 ## Parse-time guarantees
 
 `deploy.mission.parse_mission(text)` raises `MissionParseError` if:
@@ -81,6 +112,7 @@ Required key/value list.
    either is not a non-negative integer.
 5. `# Stop` lacks `predicate`, or `predicate` does not resolve via
    `deploy.stop_predicates.resolve(...)`.
+6. `# Tools` (when present) contains an entry that is not in `TOOL_NAMES`.
 
 The watchdog calls `parse_mission(...)` at scenario boot, before
 spawning any LLM turn — so a malformed mission fails fast, not mid-run.

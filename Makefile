@@ -91,12 +91,12 @@ scenarios: ## List active scenarios + agents on the VPS
 		systemctl list-units 'delftclaw-watchdog@*.service' --no-pager"
 
 watch: check-name ## Tail the full journal (every line — Ctrl-C to stop)
-	$(SSH) "journalctl --no-pager -f \
+	$(SSH) "journalctl --no-pager -f -o with-unit \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service'"
 
 watch-ipv8: check-name ## Tail IPv8 + TOOL events; drops the pull-loop + uvicorn noise
-	$(SSH) "journalctl --no-pager -f \
+	$(SSH) "journalctl --no-pager -f -o with-unit \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service' \
 		| grep --line-buffered -E \
@@ -105,13 +105,13 @@ watch-ipv8: check-name ## Tail IPv8 + TOOL events; drops the pull-loop + uvicorn
 		  'GET /head|GET /entries|GET /entry/|httpx INFO HTTP Request.*head|Processing request of type|streamable_http|Negotiated protocol|Received session ID|Created new transport|Terminating session'"
 
 tools: check-name ## Live tail of TOOL audit lines (one entry per agent tool call)
-	$(SSH) "journalctl --no-pager -f \
+	$(SSH) "journalctl --no-pager -f -o with-unit \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service' \
 		| grep --line-buffered -E 'delftclaw\\.agent\\.tools.*TOOL '"
 
 tail-turns: check-name ## Turn-level tail: lock acquire/release + TOOL + IPv8 + errors
-	$(SSH) "journalctl --no-pager -f \
+	$(SSH) "journalctl --no-pager -f -o with-unit \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service' \
 		| grep --line-buffered -E \

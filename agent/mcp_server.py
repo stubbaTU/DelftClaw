@@ -22,15 +22,38 @@ Boot via ``python -m agent ... mcp --mcp-host 0.0.0.0 --mcp-port 8765``.
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
 from agent.runtime import OpenClawAgent
-from agent.tools import _resolve_peer, build_tools  # type: ignore[attr-defined]
+from agent.tools import (  # type: ignore[attr-defined]
+    _resolve_peer,
+    _wire_logger,
+    build_tools,
+)
 from communication.community import overlay_id
 from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
+
+
+_log = logging.getLogger("delftclaw.agent.mcp_server")
+
+
+# Tools that scenario_boot needs to call BEFORE the LLM is involved
+# (wallet_address for self-introspection, peer_add for cross-agent peer
+# introductions, agent_inject_manifest for pushing the network manifest
+# from the boot script into the MCP-process agent). These are always
+# registered regardless of MCP_TOOL_ALLOWLIST — the allowlist is an
+# LLM-facing surface filter, not a security boundary, and these tools
+# are called over MCP from trusted boot scripts only.
+BOOTSTRAP_TOOLS: frozenset[str] = frozenset({
+    "wallet_address",
+    "peer_add",
+    "agent_inject_manifest",
+})
 
 
 SERVER_INSTRUCTIONS = """\
@@ -69,6 +92,50 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
     mcp = FastMCP(name=name, instructions=SERVER_INSTRUCTIONS)
 
+    # MCP tool allowlist. Env var ``MCP_TOOL_ALLOWLIST`` is written by
+    # scenario_boot from the mission's optional ``# Tools`` section.
+    #
+    #   var absent (None) -> register every tool (legacy behaviour).
+    #   var present, empty value -> register nothing — agent can observe
+    #       but cannot act this scenario.
+    #   var present, csv -> register only listed names; the OpenClaw
+    #       client never sees the suppressed tools, so the upstream LLM
+    #       physically cannot call them.
+    #
+    # We bind once at build time (the allowlist is static for the life
+    # of the MCP process).
+    _allowlist_raw = os.environ.get("MCP_TOOL_ALLOWLIST")
+    _allowlist: set[str] | None = (
+        None if _allowlist_raw is None
+        else {part.strip() for part in _allowlist_raw.split(",") if part.strip()}
+    )
+    if _allowlist is not None:
+        _log.info(
+            "MCP tool allowlist active (%d entries): %s",
+            len(_allowlist),
+            sorted(_allowlist),
+        )
+
+    def _add(fn):
+        """Register ``fn`` with FastMCP iff the allowlist permits it.
+
+        Filtering by ``fn.__name__`` matches how OpenClaw's MCP client
+        addresses tools (bare name) before applying its own namespace
+        prefix. Tools in ``BOOTSTRAP_TOOLS`` are always registered: they
+        are called by ``scenario_boot`` before any LLM is involved, and
+        the allowlist exists to constrain the *LLM-facing* surface only.
+        """
+        if (
+            _allowlist is None
+            or fn.__name__ in _allowlist
+            or fn.__name__ in BOOTSTRAP_TOOLS
+        ):
+            mcp.add_tool(fn)
+        else:
+            _log.debug(
+                "MCP tool %r suppressed by allowlist", fn.__name__
+            )
+
     # ---- Peers ---------------------------------------------------------
 
     async def peers_list() -> list[dict[str, Any]]:
@@ -82,7 +149,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             out.append({"mid_hex": p.mid.hex(), "address": addr})
         return out
 
-    mcp.add_tool(peers_list)
+    _add(peers_list)
 
     async def peer_add(host: str, port: int, pubkey_hex: str) -> dict[str, Any]:
         """Introduce a peer to this agent's IPv8 network at runtime.
@@ -101,7 +168,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             "address": list(peer.addresses.values())[0] if peer.addresses else None,
         }
 
-    mcp.add_tool(peer_add)
+    _add(peer_add)
 
     # ---- Wallet --------------------------------------------------------
 
@@ -109,19 +176,19 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         """Return this agent's testnet receiving address (bech32)."""
         return agent.wallet.address()
 
-    mcp.add_tool(wallet_address)
+    _add(wallet_address)
 
     async def wallet_balance() -> int:
         """Return this agent's wallet balance in satoshis (refreshes from network)."""
         return agent.wallet.balance_sats(refresh=True)
 
-    mcp.add_tool(wallet_balance)
+    _add(wallet_balance)
 
     async def wallet_send(to_address: str, sats: int) -> str:
         """Send satoshis to a Bitcoin address. Returns the broadcast txid (hex)."""
         return agent.wallet.send(to_address, sats)
 
-    mcp.add_tool(wallet_send)
+    _add(wallet_send)
 
     # ---- Seedbox admission --------------------------------------------
 
@@ -141,7 +208,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         accepted = await asyncio.wait_for(future, timeout=60)
         return {"txid": txid, "accepted": bool(accepted)}
 
-    mcp.add_tool(seedbox_donate_and_join)
+    _add(seedbox_donate_and_join)
 
     # ---- Community treasury + signed-log layer -----------------------
 
@@ -186,7 +253,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             )
         return out
 
-    mcp.add_tool(community_log_list_recent)
+    _add(community_log_list_recent)
 
     def _community_summary() -> dict[str, Any]:
         state = agent.community_state()
@@ -210,7 +277,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             return {"error": "no_manifest_loaded"}
         return summary
 
-    mcp.add_tool(community_treasury_balance)
+    _add(community_treasury_balance)
 
     async def community_member_count() -> dict[str, Any]:
         """Current admitted-member count plus this node's membership status."""
@@ -223,14 +290,14 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             "threshold_active": summary["threshold_active"],
         }
 
-    mcp.add_tool(community_member_count)
+    _add(community_member_count)
 
     async def community_donate_and_join(amount_sats: int) -> dict[str, Any]:
         """Append a signed donation_intent entry to this agent's community log."""
         registry = build_tools(agent)
         return await registry.dispatch("community_donate_and_join", {"amount_sats": amount_sats})
 
-    mcp.add_tool(community_donate_and_join)
+    _add(community_donate_and_join)
 
     async def community_join_via_peer(
         gatekeeper_mid: str,
@@ -248,7 +315,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             },
         )
 
-    mcp.add_tool(community_join_via_peer)
+    _add(community_join_via_peer)
 
     async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
         """Append a signed seedbox_purchase_intent if growth threshold is active."""
@@ -256,7 +323,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         args = {} if cost_sats is None else {"cost_sats": cost_sats}
         return await registry.dispatch("seedbox_purchase_propose", args)
 
-    mcp.add_tool(seedbox_purchase_propose)
+    _add(seedbox_purchase_propose)
 
     async def seedbox_provisioned(
         purchase_intent_hash: str,
@@ -274,7 +341,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             },
         )
 
-    mcp.add_tool(seedbox_provisioned)
+    _add(seedbox_provisioned)
 
     # ---- Overlays ------------------------------------------------------
 
@@ -292,7 +359,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             for cid in agent.registry.list_loaded()
         ]
 
-    mcp.add_tool(overlays_list)
+    _add(overlays_list)
 
     async def overlay_describe(community_id_hex: str) -> dict[str, Any]:
         """Return the canonical markdown of a loaded overlay.
@@ -325,7 +392,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             "size_bytes": len(compiled.canonical_md_bytes),
         }
 
-    mcp.add_tool(overlay_describe)
+    _add(overlay_describe)
 
     async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
         """Ask a peer for an overlay descriptor by md_hash, compile + register it locally.
@@ -340,7 +407,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         instance = agent.registry.load(md_bytes.decode("utf-8"))
         return {"community_id_hex": instance.community_id.hex(), "loaded": True}
 
-    mcp.add_tool(overlay_fetch_and_load)
+    _add(overlay_fetch_and_load)
 
     async def overlay_publish(md_text: str) -> str:
         """Publish (serve + locally load) a markdown overlay descriptor.
@@ -351,7 +418,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         agent.registry.load(md_text)
         return md_hash.hex()
 
-    mcp.add_tool(overlay_publish)
+    _add(overlay_publish)
 
     async def overlay_invoke(
         community_id_hex: str,
@@ -387,7 +454,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         instance.ez_send(peer, payload_cls(*coerced))
         return {"sent": True}
 
-    mcp.add_tool(overlay_invoke)
+    _add(overlay_invoke)
 
     # ---- Network manifest ----------------------------------------------
 
@@ -398,20 +465,32 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         ``network_id``. If this agent is named as a genesis peer, the
         manifest is also published into the bootstrap community so future
         joiners can fetch it via MANIFEST_REQUEST.
+
+        After the manifest is cached, the helper
+        ``agent.ensure_default_overlays_loaded`` attempts to wire-fetch
+        any descriptor named in ``default_overlays`` that this agent
+        does not already hold locally — exercising the
+        OVERLAY_REQUEST → OVERLAY_DELIVERY round-trip on the bootstrap
+        community. Per-overlay failures are reported via
+        ``overlays_loaded`` / ``overlay_errors`` and do not raise: the
+        agent's later ``network_join`` will retry.
         """
         from protocol.manifest import ManifestParseError
         try:
             manifest = agent.load_manifest(md_text)
         except ManifestParseError as exc:
             return {"error": f"manifest_parse_failed: {exc}"}
+        overlays_loaded, overlay_errors = await agent.ensure_default_overlays_loaded()
         return {
             "network_id_hex": manifest.network_id.hex(),
             "name": manifest.identity.get("name", ""),
             "genesis_peers": len(manifest.genesis_peers),
             "default_overlays": list(manifest.default_overlays),
+            "overlays_loaded": overlays_loaded,
+            "overlay_errors": overlay_errors,
         }
 
-    mcp.add_tool(agent_inject_manifest)
+    _add(agent_inject_manifest)
 
     async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
         """Join the network end-to-end.
@@ -501,7 +580,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             "txid": txid,
         }
 
-    mcp.add_tool(network_join)
+    _add(network_join)
 
     # ---- BitTorrent ---------------------------------------------------
 
@@ -509,7 +588,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         """Begin seeding a local file. Returns the resulting magnet URI."""
         return agent.bittorrent.seed(Path(path))
 
-    mcp.add_tool(torrent_seed)
+    _add(torrent_seed)
 
     async def torrent_fetch(magnet_uri: str, timeout_s: float = 600.0) -> str:
         """Download a magnet URI to local disk; returns the saved path."""
@@ -518,7 +597,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         path = await asyncio.wait_for(future, timeout=timeout_s)
         return str(path)
 
-    mcp.add_tool(torrent_fetch)
+    _add(torrent_fetch)
 
     async def torrent_stats() -> list[dict[str, Any]]:
         """Snapshot of all currently-known torrents (downloads + seeds)."""
@@ -534,7 +613,124 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             for t in agent.bittorrent.stats()
         ]
 
-    mcp.add_tool(torrent_stats)
+    _add(torrent_stats)
+
+    # ---- Paper-demo helper: SEARCH + fetch in a single tool ------------
+
+    async def content_search_and_fetch(
+        query: str = "",
+        timeout_s: float = 10.0,
+        pick: str | int = "random",
+    ) -> dict[str, Any]:
+        """Search content_community peers and fetch one returned magnet.
+
+        Sends a SEARCH_REQUEST on the loaded ``content_community`` overlay
+        when ``response_cache`` is empty, waits up to ``timeout_s`` for a
+        SEARCH_RESPONSE, then picks one row (``"random"`` by default;
+        ``"first"`` or a 0-based integer index also accepted) and downloads
+        its magnet via the BitTorrent service. The single watchdog-friendly
+        tool for steps 4-5 of the paper-demo storyline; use this instead of
+        composing ``overlay_invoke`` + ``torrent_fetch`` by hand.
+
+        Default ``query=""`` matches every entry in the peer's
+        ``local_index`` — the content_community handler treats an empty
+        query as "return the full catalogue". Pass a non-empty string to
+        narrow the search to entries whose ``name`` or ``tags`` contain
+        that substring.
+        """
+        import asyncio
+        import random
+
+        compiled_item = None
+        overlay = None
+        for community_id in agent.registry.list_loaded():
+            compiled = agent.registry._compiled[community_id]
+            if compiled.parsed is not None and compiled.parsed.identity.get("name") == "content_community":
+                compiled_item = compiled
+                overlay = agent.registry.get(community_id)
+                break
+        if compiled_item is None or overlay is None:
+            return {"error": "content_community_not_loaded"}
+
+        def matching_rows() -> list[dict[str, Any]]:
+            rows = []
+            q = query.lower()
+            for row in getattr(overlay, "response_cache", []) or []:
+                if not isinstance(row, dict):
+                    continue
+                haystack = " ".join([
+                    str(row.get("name", "")),
+                    " ".join(str(t) for t in row.get("tags", []) or []),
+                    str(row.get("magnet", "")),
+                ]).lower()
+                if not q or q in haystack or "creative commons" in haystack:
+                    rows.append(row)
+            return rows
+
+        rows = matching_rows()
+        peers = list(agent.known_peers())
+        sent = False
+        if not rows:
+            payload_cls = compiled_item.payload_classes.get("SEARCH_REQUEST")
+            if payload_cls is None:
+                return {"error": "content_community_missing_SEARCH_REQUEST"}
+            if not peers:
+                return {"error": "no_known_peers_for_content_search"}
+            before = len(getattr(overlay, "response_cache", []) or [])
+            for peer in peers:
+                _wire_logger.info(
+                    "IPv8 send msg=SEARCH_REQUEST peer=%s overlay=content_community via=content_search_and_fetch query=%r",
+                    peer.mid.hex()[:12],
+                    query,
+                )
+                overlay.ez_send(peer, payload_cls(query.encode("utf-8")))
+            sent = True
+
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            while asyncio.get_running_loop().time() < deadline:
+                if len(getattr(overlay, "response_cache", []) or []) > before:
+                    break
+                await asyncio.sleep(0.1)
+            rows = matching_rows()
+
+        if not rows:
+            return {
+                "searched": sent,
+                "peer_count": len(peers),
+                "response_count": len(getattr(overlay, "response_cache", []) or []),
+                "error": "no_matching_content_response",
+            }
+
+        if isinstance(pick, int) and 0 <= pick < len(rows):
+            chosen = rows[pick]
+            pick_mode = f"index_{pick}"
+        elif pick == "first":
+            chosen = rows[0]
+            pick_mode = "first"
+        else:
+            chosen = random.choice(rows)
+            pick_mode = "random"
+        magnet = chosen.get("magnet")
+        if not magnet:
+            return {"error": "matching_content_response_missing_magnet", "result": chosen}
+        _wire_logger.info(
+            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d pick=%s",
+            len(rows),
+            pick_mode,
+        )
+        path = await torrent_fetch(str(magnet), timeout_s=max(timeout_s, 30.0))
+        return {
+            "searched": sent,
+            "peer_count": len(peers),
+            "result": chosen,
+            "magnet": magnet,
+            "download_path": path,
+            "pick": pick_mode,
+            "result_count": len(rows),
+            "torrent_stats": await torrent_stats(),
+        }
+
+    _add(content_search_and_fetch)
 
     return mcp
 

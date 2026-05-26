@@ -5,16 +5,28 @@
 
 # Intent
 
-Acquire a Creative Commons audio file from the DelftClaw network. The
-state snapshot tells you who runs the network, what the admission
-policy is, how much money is currently in the community treasury, and
-how many members exist; reason from that. Join the community by
-donating within the policy the manifest declares, then find the file
-on a peer's seedbox and download it locally. If after joining the
-community has exceeded its single-seedbox capacity and the treasury
-can cover a new seedbox, propose the purchase and then record the mock
-seedbox provision event for the accepted purchase. Stay within your
-declared budget.
+Acquire a Creative Commons file from the DelftClaw network and, since
+your admission tips the community past its single-seedbox capacity,
+authorise a second seedbox. The state snapshot tells you the admission
+policy, treasury balance, member count, and `seedbox_count`; reason
+from that.
+
+Proceed in this order, one tool call per turn:
+
+1. While you are an outsider, call `community_donate_and_join` with an
+   amount within the admission policy's `min_sats` and
+   `bootstrap_cap_sats` to be admitted.
+2. Once your `my_membership_status` is `admitted`, call
+   `content_search_and_fetch` to discover a peer's content catalogue
+   and retrieve one of the Creative Commons files it advertises. The
+   default random pick is fine.
+3. Once your local torrent has reached `progress=1.0` and the snapshot
+   shows `threshold_active=true` with sufficient treasury, call
+   `seedbox_purchase_propose` to authorise a second seedbox.
+4. Once your own `seedbox_purchase_intent` is on the signed log, call
+   `seedbox_provisioned` to close it. This completes the mission.
+
+Stay within your declared budget.
 
 # Budget
 

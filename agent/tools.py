@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -728,10 +729,22 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         ]
 
     async def content_search_and_fetch(
-        query: str = "Creative Commons Audio",
+        query: str = "",
         timeout_s: float = 10.0,
+        pick: str | int = "random",
     ) -> dict[str, Any]:
-        """Search content_community peers, wait for a response, then fetch the first magnet."""
+        """Search content_community peers, wait for a response, then fetch one magnet from the result set.
+
+        ``pick`` controls which result is fetched: ``"random"`` (default)
+        chooses uniformly across matches, ``"first"`` returns the first
+        result in declared order, and an ``int`` selects that 0-based
+        index (out-of-range falls back to ``"random"``).
+
+        Default ``query=""`` matches every entry in the peer's
+        ``local_index`` — the content_community handler returns the full
+        catalogue (up to ``MAX_RESULTS``) when the query is empty. Pass a
+        non-empty string to filter by name/tag substring.
+        """
         compiled_item = None
         overlay = None
         for community_id in agent.registry.list_loaded():
@@ -792,21 +805,32 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
                 "error": "no_matching_content_response",
             }
 
-        first = rows[0]
-        magnet = first.get("magnet")
+        if isinstance(pick, int) and 0 <= pick < len(rows):
+            chosen = rows[pick]
+            pick_mode = f"index_{pick}"
+        elif pick == "first":
+            chosen = rows[0]
+            pick_mode = "first"
+        else:
+            chosen = random.choice(rows)
+            pick_mode = "random"
+        magnet = chosen.get("magnet")
         if not magnet:
-            return {"error": "matching_content_response_missing_magnet", "result": first}
+            return {"error": "matching_content_response_missing_magnet", "result": chosen}
         _wire_logger.info(
-            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d",
+            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d pick=%s",
             len(rows),
+            pick_mode,
         )
         path = await torrent_fetch(str(magnet), timeout_s=max(timeout_s, 30.0))
         return {
             "searched": sent,
             "peer_count": len(peers),
-            "result": first,
+            "result": chosen,
             "magnet": magnet,
             "download_path": path,
+            "pick": pick_mode,
+            "result_count": len(rows),
             "torrent_stats": await torrent_stats(),
         }
 
@@ -1028,12 +1052,21 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
         Tool("content_search_and_fetch",
              "Paper-demo helper: send SEARCH_REQUEST on content_community if needed, "
-             "read response_cache, and fetch the first returned magnet. Use this "
-             "instead of repeating SEARCH_REQUEST when response_cache already has a result.",
+             "read response_cache, and fetch one returned magnet. By default the "
+             "result is chosen at random across all matches; pass pick='first' or a "
+             "0-based integer index to override. Use this instead of repeating "
+             "SEARCH_REQUEST when response_cache already has a result.",
              {"type": "object",
               "properties": {
-                  "query": {"type": "string", "default": "Creative Commons Audio"},
+                  "query": {"type": "string", "default": ""},
                   "timeout_s": {"type": "number", "default": 10.0},
+                  "pick": {
+                      "oneOf": [
+                          {"type": "string", "enum": ["random", "first"]},
+                          {"type": "integer", "minimum": 0},
+                      ],
+                      "default": "random",
+                  },
               },
               "additionalProperties": False},
              content_search_and_fetch),

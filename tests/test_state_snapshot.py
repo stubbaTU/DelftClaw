@@ -18,9 +18,14 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from agent.community_state import (
+    CommunityState,
+    SeedboxProvisioned,
+    SeedboxPurchaseIntent,
+)
 from agent.runtime import AgentConfig, OpenClawAgent
 from communication.community import PeerMeta
-from deploy.state_snapshot import collect_state
+from deploy.state_snapshot import _next_objective, collect_state
 from identity.agent_identity import AgentIdentity
 from identity.seed import Seed
 from protocol.llm import StubLLMClient
@@ -66,10 +71,16 @@ async def test_snapshot_has_expected_top_level_keys(started_agent):
         "torrents",
         "community",
         "security",
+        "next_objective",
     }
     assert snap["network"] is None  # no manifest loaded yet
     assert snap["peers"] == []
     assert snap["overlays"] == []
+    # Pre-manifest, the only honest hint is "wait" — see _next_objective.
+    assert snap["next_objective"] == {
+        "label": "wait_for_manifest",
+        "reason": "no network manifest is loaded yet; nothing to act on",
+    }
 
 
 @pytest.mark.asyncio
@@ -132,6 +143,263 @@ async def test_snapshot_peer_wallet_address_surfaces_from_peer_meta(started_agen
     entry = entries[0]
     assert entry["wallet_address"] == "tb1qfakefakefakefakefakefakefakefakefakefa"
     assert entry["known_overlays"] == ["0b" * 20]
+
+
+# ---------------------------------------------------------------------------
+# _next_objective: rule-table unit tests against synthetic fake agents.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWallet:
+    def __init__(self, address: str) -> None:
+        self._address = address
+
+    def address(self) -> str:
+        return self._address
+
+
+class _FakeTorrent:
+    def __init__(self, progress: float) -> None:
+        self.progress = progress
+
+
+class _FakeBitTorrent:
+    def __init__(self, torrents: list[_FakeTorrent]) -> None:
+        self._torrents = torrents
+
+    def stats(self) -> list[_FakeTorrent]:
+        return list(self._torrents)
+
+
+class _FakeAdmission:
+    def __init__(
+        self,
+        *,
+        gatekeeper_address: str,
+        seedbox_cost_sats: int = 50_000,
+        max_agents_per_seedbox: int = 3,
+        seedbox_growth_enabled: bool = True,
+    ) -> None:
+        self.gatekeeper_address = gatekeeper_address
+        self.seedbox_cost_sats = seedbox_cost_sats
+        self.max_agents_per_seedbox = max_agents_per_seedbox
+        self.seedbox_growth_enabled = seedbox_growth_enabled
+
+
+class _FakeManifest:
+    def __init__(self, admission: _FakeAdmission) -> None:
+        self.admission = admission
+
+
+class _FakeAgent:
+    def __init__(
+        self,
+        *,
+        manifest: _FakeManifest | None,
+        state: CommunityState | None,
+        reporter_id: str = "me-reporter",
+        wallet_address: str = "tb1qme",
+        torrents: list[_FakeTorrent] | None = None,
+    ) -> None:
+        self.network_manifest = manifest
+        self._state = state
+        self.community_reporter_id = reporter_id
+        self.wallet = _FakeWallet(wallet_address)
+        self.bittorrent = _FakeBitTorrent(torrents or [])
+
+    def community_state(self) -> CommunityState | None:
+        return self._state
+
+
+def _state(
+    *,
+    members: set[str],
+    balance_sats: int,
+    purchases: tuple[SeedboxPurchaseIntent, ...] = (),
+    provisioned: tuple[SeedboxProvisioned, ...] = (),
+    seedbox_count: int = 1,
+) -> CommunityState:
+    return CommunityState(
+        members=frozenset(members),
+        donations=(),
+        purchases=purchases,
+        provisioned=provisioned,
+        balance_sats=balance_sats,
+        seedbox_count=seedbox_count,
+    )
+
+
+def test_next_objective_wait_when_no_manifest():
+    agent = _FakeAgent(manifest=None, state=None)
+    assert _next_objective(agent) == {
+        "label": "wait_for_manifest",
+        "reason": "no network manifest is loaded yet; nothing to act on",
+    }
+
+
+def test_next_objective_wait_when_no_community_state():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    agent = _FakeAgent(manifest=manifest, state=None)
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"] == "wait_for_manifest"
+
+
+def test_next_objective_bootstrap_treasury_for_empty_treasury_founder():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    state = _state(members=set(), balance_sats=0)
+    agent = _FakeAgent(
+        manifest=manifest, state=state, wallet_address="tb1qfounder"
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"].startswith("bootstrap_treasury")
+    assert "community_donate_and_join" in obj["label"]
+
+
+def test_next_objective_wait_for_founder_when_treasury_empty_and_not_founder():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    state = _state(members=set(), balance_sats=0)
+    agent = _FakeAgent(
+        manifest=manifest, state=state, wallet_address="tb1qjoiner"
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"] == "wait_for_founder"
+
+
+def test_next_objective_join_community_when_outsider_with_funded_treasury():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    state = _state(members={"founder-reporter"}, balance_sats=100_000)
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        reporter_id="joiner-reporter",
+        wallet_address="tb1qjoiner",
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"].startswith("join_community")
+    assert "community_donate_and_join" in obj["label"]
+
+
+def test_next_objective_retrieve_content_when_admitted_joiner_has_no_torrent():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    state = _state(members={"me-reporter"}, balance_sats=100_000)
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        wallet_address="tb1qjoiner",  # not the gatekeeper
+        torrents=[],
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"].startswith("retrieve_content")
+    assert "content_search_and_fetch" in obj["label"]
+
+
+def test_next_objective_skips_retrieve_for_founder():
+    """Founder seeds content — never needs to 'retrieve'."""
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    state = _state(members={"me-reporter"}, balance_sats=100_000)
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        wallet_address="tb1qfounder",
+        torrents=[],
+    )
+    # Founder admitted, no retrieval needed, no threshold tripped → None.
+    assert _next_objective(agent) is None
+
+
+def test_next_objective_propose_seedbox_when_threshold_active_and_treasury_sufficient():
+    manifest = _FakeManifest(
+        _FakeAdmission(
+            gatekeeper_address="tb1qfounder",
+            seedbox_cost_sats=50_000,
+            max_agents_per_seedbox=3,
+        )
+    )
+    # 4 members, capacity 3 × 1 seedbox = 3 → threshold tripped.
+    state = _state(
+        members={"a", "b", "c", "d"},
+        balance_sats=60_000,
+        seedbox_count=1,
+    )
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        reporter_id="a",
+        wallet_address="tb1qjoiner",
+        # Has a completed torrent already so we skip 'retrieve_content'.
+        torrents=[_FakeTorrent(progress=1.0)],
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"].startswith("propose_seedbox_purchase")
+    assert "seedbox_purchase_propose" in obj["label"]
+
+
+def test_next_objective_record_provisioned_when_own_intent_open():
+    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
+    open_intent = SeedboxPurchaseIntent(
+        reporter_id="me-reporter",
+        cost_sats=50_000,
+        timestamp="2026-05-25T12:00:00Z",
+        entry_hash="hash-open",
+    )
+    closed_intent = SeedboxPurchaseIntent(
+        reporter_id="me-reporter",
+        cost_sats=50_000,
+        timestamp="2026-05-24T12:00:00Z",
+        entry_hash="hash-closed",
+    )
+    state = _state(
+        members={"me-reporter"},
+        balance_sats=10_000,
+        purchases=(open_intent, closed_intent),
+        provisioned=(
+            SeedboxProvisioned(
+                reporter_id="me-reporter",
+                purchase_intent_hash="hash-closed",
+                seedbox_url="mock://seed",
+                seedbox_pubkey_hex="00" * 32,
+                timestamp="2026-05-24T12:30:00Z",
+                entry_hash="prov-hash",
+            ),
+        ),
+        seedbox_count=2,
+    )
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        wallet_address="tb1qjoiner",
+        torrents=[_FakeTorrent(progress=1.0)],
+    )
+    obj = _next_objective(agent)
+    assert obj is not None
+    assert obj["label"].startswith("record_seedbox_provisioned")
+    assert "seedbox_provisioned" in obj["label"]
+
+
+def test_next_objective_none_when_everything_satisfied():
+    manifest = _FakeManifest(
+        _FakeAdmission(
+            gatekeeper_address="tb1qfounder",
+            max_agents_per_seedbox=3,
+        )
+    )
+    # 3 members, capacity 3 → threshold NOT active.
+    state = _state(
+        members={"a", "b", "me-reporter"}, balance_sats=100_000, seedbox_count=1
+    )
+    agent = _FakeAgent(
+        manifest=manifest,
+        state=state,
+        wallet_address="tb1qjoiner",
+        torrents=[_FakeTorrent(progress=1.0)],
+    )
+    assert _next_objective(agent) is None
 
 
 @pytest.mark.asyncio

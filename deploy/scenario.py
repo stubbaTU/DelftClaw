@@ -96,6 +96,19 @@ class AgentSpec:
     stop_predicate: str
     peers: tuple[str, ...] = ()
     seed_content: tuple[SeedContent, ...] = ()
+    # Path (repo-relative or absolute) to a content_catalog.csv that
+    # describes the seedbox library. When set, scenario_boot reads the
+    # CSV at apply-time, copies each row's file into the seedbox content
+    # directory, and writes seed_content.json from it. Takes precedence
+    # over inline seed_content. CSV columns: magnet, name, size, mime,
+    # tags (tags semicolon-delimited).
+    library_csv: Path | None = None
+    # MCP tool allowlist parsed from the mission's optional ``# Tools``
+    # section. ``None`` (default) → no env var written, MCP exposes all
+    # tools (backwards-compatible). ``()`` → MCP_TOOL_ALLOWLIST=<empty>,
+    # MCP exposes nothing. Non-empty tuple → MCP exposes only those
+    # tools. Names are bare (no namespace prefix).
+    mcp_tool_allowlist: tuple[str, ...] | None = None
     # Per-agent synthetic wallet balance the LLM sees via wallet_balance.
     # Default 0 keeps legacy "always-zero" mock behaviour; set >0 for
     # agents that need to make donations (e.g. seek_cc's bob).
@@ -115,6 +128,24 @@ class Scenario:
     agents: dict[str, AgentSpec]
     log_dir: Path
     manifest_path: Path = field(default_factory=Path)
+    # When True, scenario_boot writes FILE_SHARE_MODE=1 into each
+    # per-instance .env file. deploy/state_snapshot.py::_next_objective
+    # checks this env var and skips the admission rule branch so
+    # non-gatekeeper agents see retrieve_content immediately, with no
+    # donate/treasury dance. Used by scenarios that demo only the
+    # SEARCH/fetch path.
+    file_share_mode: bool = False
+    # When True, scenario_boot omits the PUBLISH_OVERLAY env var for
+    # any agent that does not declare ``publish_overlays`` in
+    # scenario.yaml — forcing those agents to wire-fetch missing
+    # ``default_overlays`` from a genesis peer at boot via
+    # ``OpenClawAgent.ensure_default_overlays_loaded``. Makes the
+    # markdown-as-overlay distribution flow (OVERLAY_REQUEST ->
+    # OVERLAY_DELIVERY on the bootstrap community) observable end-to-
+    # end in the demo. Default ``False`` preserves the legacy
+    # local-fallback behaviour for existing scenarios (seek_cc,
+    # community_demo, secure_community_demo, security_layers).
+    wire_distribute_overlays: bool = False
 
     def instance_id(self, agent_name: str) -> str:
         """Systemd instance id: ``<scenario>-<agent>``."""
@@ -209,6 +240,19 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
         or f"/var/log/delftclaw/scenarios/{name}"
     )
 
+    file_share_mode_raw = raw.get("file_share_mode", False)
+    if not isinstance(file_share_mode_raw, bool):
+        raise ScenarioError(
+            f"file_share_mode must be a boolean; got {type(file_share_mode_raw).__name__}"
+        )
+
+    wire_distribute_raw = raw.get("wire_distribute_overlays", False)
+    if not isinstance(wire_distribute_raw, bool):
+        raise ScenarioError(
+            f"wire_distribute_overlays must be a boolean; "
+            f"got {type(wire_distribute_raw).__name__}"
+        )
+
     return Scenario(
         name=name,
         description=str(raw.get("description", "")),
@@ -216,6 +260,8 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
         agents=agents,
         log_dir=log_dir,
         manifest_path=path,
+        file_share_mode=file_share_mode_raw,
+        wire_distribute_overlays=wire_distribute_raw,
     )
 
 
@@ -256,8 +302,10 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
 
     mission_file = _resolve_relative(scenario_dir, d["mission_file"], "mission_file", name)
     # Parse the mission now — schema violations fail at boot, not mid-run.
+    # We also keep the parsed Mission so its optional ``# Tools`` allowlist
+    # can propagate into AgentSpec.mcp_tool_allowlist below.
     try:
-        parse_mission(mission_file.read_text(encoding="utf-8"))
+        mission = parse_mission(mission_file.read_text(encoding="utf-8"))
     except MissionParseError as exc:
         raise ScenarioError(f"agent {name!r}: mission_file {mission_file}: {exc}") from exc
 
@@ -277,6 +325,17 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
     if not isinstance(seed_raw, list):
         raise ScenarioError(f"agent {name!r}: seed_content must be a list")
     seed_content = tuple(SeedContent.from_dict(s) for s in seed_raw)
+
+    library_csv_raw = d.get("library_csv")
+    library_csv: Path | None = None
+    if library_csv_raw is not None:
+        library_csv = Path(str(library_csv_raw))
+        if not library_csv.is_absolute():
+            library_csv = (REPO_ROOT / library_csv).resolve()
+        if not library_csv.is_file():
+            raise ScenarioError(
+                f"agent {name!r}: library_csv {library_csv} is not a file"
+            )
 
     initial_balance_sats = d.get("initial_balance_sats", 0)
     try:
@@ -307,6 +366,8 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         seed_content=seed_content,
         initial_balance_sats=initial_balance_sats,
         redteam_port=redteam_port,
+        library_csv=library_csv,
+        mcp_tool_allowlist=mission.tools,
     )
 
 

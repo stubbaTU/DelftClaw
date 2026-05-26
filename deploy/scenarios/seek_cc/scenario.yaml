@@ -34,13 +34,16 @@ description: >-
   a second seedbox is authorised.
 
 watchdog:
-  # interval_s doubles as the per-turn ``openclaw agent --timeout``.
-  # 180s gives each of 4 agents a 45s slot in the staggered cycle, so
-  # any rolling 60s window only contains 2 agents' worth of LLM calls
-  # (~28K input tokens) — comfortably under Anthropic Tier 1's 50K ITPM
-  # cap. Drop to 90 once we move to Tier 2 (1000 RPM) or to a provider
-  # with higher token throughput.
-  interval_s: 180
+  # interval_s doubles as the per-turn budget. The subprocess timeout
+  # is ``interval_s + 30``. Bumped from 180 to 300 on 2026-05-25 after
+  # observed runs showed Haiku turns landing at ~177s and timing out
+  # at the 210s cap — 330s now gives comfortable headroom so each
+  # turn completes and the chosen tool call actually lands. Trade-off
+  # is slower wall-clock per scenario (~40 min for the 7-step demo
+  # instead of ~25); fewer wasted Anthropic dollars on killed
+  # subprocesses. Drop back to 90-180 once on a provider with higher
+  # token throughput.
+  interval_s: 300
   # Vestigial: openclaw has no flag for this; the equivalent control is
   # the HARD RULE block in deploy/turn_builder.py asking for exactly
   # one tool call per turn.
@@ -63,12 +66,12 @@ agents:
       - protocol/examples/content_community.md
     mission_file: alice/mission.md
     stop_predicate: never
-    seed_content:
-      - magnet: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=cc_audio_2023.mp3"
-        name: "Creative Commons Audio Archive 2023.mp3"
-        size: 4200000
-        mime: audio/mpeg
-        tags: [cc, audio]
+    # Library of real (placeholder) CC-licensed files. Files live next
+    # to the CSV; scenario_boot copies each into alice's seedbox dir
+    # and primes the BitTorrent stub so joiners' torrent_fetch returns
+    # actual bytes. Replaces the single synthetic magnet that used to
+    # live inline.
+    library_csv: protocol/examples/cc_library/content_catalog.csv
     # Alice's wallet holds the founder donation that bootstraps the
     # treasury (caps subsequent donors at the running average) plus
     # headroom for the seedbox-purchase spend if she's the first
@@ -107,7 +110,10 @@ agents:
     redteam_port: 28768
     publish_overlays: []
     mission_file: dave/mission.md
-    stop_predicate: torrent_progress_gte_1
+    # Dave's procedural mission asks him to also do step 7 (the second
+    # seedbox purchase), so stopping at torrent_progress_gte_1 would
+    # kill him right after step 2. Wait for the seedbox count to climb.
+    stop_predicate: community_seedbox_count_gte_N(n=2)
     peers:
       - alice
     initial_balance_sats: 100000

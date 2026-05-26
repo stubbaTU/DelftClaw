@@ -433,6 +433,23 @@ async def _run_loop(args: argparse.Namespace) -> int:
         except Exception as exc:
             _log.warning("failed to load MANIFEST_FILE=%s: %s; state.network will be null",
                          manifest_file, exc)
+        else:
+            # Wire-fetch any default_overlays we don't already hold from
+            # PUBLISH_OVERLAY. scenarios that flip wire_distribute_overlays
+            # on (file_share) rely on this path to actually exercise the
+            # OVERLAY_REQUEST -> OVERLAY_DELIVERY round-trip on the
+            # bootstrap community. Per-overlay errors are logged but
+            # non-fatal — the watchdog can still drive turns; the snapshot
+            # will simply omit the missing overlays.
+            try:
+                loaded, errors = await agent.ensure_default_overlays_loaded()
+                if loaded:
+                    _log.info("wire-loaded %d default overlay(s): %s",
+                              len(loaded), loaded)
+                for entry in errors:
+                    _log.warning("default overlay fetch failed: %s", entry)
+            except Exception as exc:
+                _log.warning("ensure_default_overlays_loaded raised: %s", exc)
 
     try:
         return await _drive(

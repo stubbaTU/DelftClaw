@@ -1,0 +1,8 @@
+Creative Commons Audio Archive 2023 - placeholder.
+
+This file stands in for a small CC-BY licensed audio recording in the
+DelftClaw demo library. Its real magnet-equivalent is derived from the
+filename via sha1, so the stub BitTorrent service can resolve it
+deterministically without depending on a tracker.
+
+Licence: CC BY 4.0 (placeholder attribution).

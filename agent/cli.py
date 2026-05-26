@@ -96,8 +96,22 @@ def _load_seed(args: argparse.Namespace):
 def _discover_stub_sources(md_paths: list[str]) -> dict[str, str]:
     """For each `foo.md` next to a `foo_stub.py` exporting an `*_SOURCE` constant,
     return ``{community_id_hex: fenced_source}`` so a ``StubLLMClient`` can route.
+
+    When ``md_paths`` is empty (or contains only empty / sentinel entries),
+    fall back to scanning every ``*_stub.py`` next to a sibling ``*.md``
+    under ``protocol/examples/``. This is the wire-distribute case: an
+    agent that does not publish anything at boot may still receive a
+    descriptor over the wire and need to stub-compile it locally. Without
+    this fallback, ``--compiler-stub`` would refuse to start.
     """
     import importlib.util
+    # Treat empty strings and the literal ``"none"`` sentinel as "no path
+    # given" so the systemd unit's ``--publish-overlay ${PUBLISH_OVERLAY}``
+    # expansion can pass a value even when the env var is unset.
+    md_paths = [p for p in md_paths if p and p.strip().lower() != "none"]
+    if not md_paths:
+        examples_dir = Path(__file__).resolve().parent.parent / "protocol" / "examples"
+        md_paths = [str(p) for p in examples_dir.glob("*.md")]
     sources: dict[str, str] = {}
     for md_path in md_paths:
         md_path_obj = Path(md_path)
@@ -440,10 +454,17 @@ async def _run(args: argparse.Namespace) -> int:
     print("[boot] IPv8 up", flush=True)
 
     # Publish overlays at boot (if any). Done before peer-introduction so
-    # peers immediately see the descriptor in our published map when they ask.
-    if args.publish_overlay:
-        print(f"[boot] publishing {len(args.publish_overlay)} overlay(s)", flush=True)
-    published = _publish_overlays(agent, args.publish_overlay or [])
+    # peers immediately see the descriptor in our published map when they
+    # ask. Filter the systemd-empty / sentinel ``"none"`` value so a
+    # wire-distribute agent (which has nothing to publish at boot) does
+    # not call _publish_overlays with a bogus path.
+    overlay_paths = [
+        p for p in (args.publish_overlay or [])
+        if p and p.strip().lower() != "none"
+    ]
+    if overlay_paths:
+        print(f"[boot] publishing {len(overlay_paths)} overlay(s)", flush=True)
+    published = _publish_overlays(agent, overlay_paths)
     _apply_seed_content(agent, _os.environ.get("SEED_CONTENT_FILE"))
 
     # Register hand-written Python Community classes (if any). These are
@@ -463,6 +484,19 @@ async def _run(args: argparse.Namespace) -> int:
         md_text = Path(args.manifest).read_text(encoding="utf-8")
         manifest = agent.load_manifest(md_text)
         manifest_loaded = f"consumed {manifest.identity.get('name', '?')} ({manifest.network_id.hex()[:8]})"
+        # Wire-fetch any default_overlays this agent does not already hold
+        # locally. Genesis peers were just pre-introduced by load_manifest,
+        # so a fetch over the bootstrap community can succeed immediately.
+        # Per-overlay failures are non-fatal: subsequent network_join will
+        # retry, and operator-driven flows (overlay_fetch_and_load) remain.
+        try:
+            loaded, errors = await agent.ensure_default_overlays_loaded()
+            if loaded:
+                print(f"[boot] wire-loaded {len(loaded)} default overlay(s)", flush=True)
+            for entry in errors:
+                print(f"[boot] WARN overlay fetch failed: {entry}", flush=True)
+        except Exception as exc:
+            print(f"[boot] WARN ensure_default_overlays_loaded raised: {exc}", flush=True)
     elif args.genesis:
         print(f"[boot] loading genesis manifest from {args.genesis}", flush=True)
         md_text = Path(args.genesis).read_text(encoding="utf-8")

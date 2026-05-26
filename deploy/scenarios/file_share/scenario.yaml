@@ -1,0 +1,97 @@
+# Scenario: file_share
+#
+# Minimal three-agent scenario that demos *only* peer-to-peer file
+# sharing — no donations, no treasury, no signed-log replication, no
+# seedbox-growth step.
+#
+#   seeder      hosts the Creative Commons content library and answers
+#               SEARCH requests on the content_community overlay. Never
+#               stops. Wallet balance zero (no btc activity).
+#   fetcher_1   knows seeder; mission: search and fetch one file.
+#               Stops on torrent_progress_gte_1.
+#   fetcher_2   same as fetcher_1.
+#
+# `file_share_mode: true` flips deploy/state_snapshot.py::_next_objective
+# into bypass mode — non-gatekeeper agents see retrieve_content
+# immediately, no donation prompt. The admission machinery is still
+# present in the codebase but inert for this scenario.
+#
+# `redteam_port: 0` on every agent disables the signed-log pull loop —
+# no inter-agent log replication. The /head HTTP chatter that dominates
+# seek_cc journals will not appear here.
+#
+# Port windows (disjoint from seek_cc / community_demo / etc.):
+#   IPv8 UDP    8210-8212
+#   MCP TCP     18790-18792
+#   Redteam TCP unused (redteam_port=0 on every agent)
+
+name: file_share
+description: >-
+  Three-agent peer-to-peer file sharing demo. One seeder serves a
+  Creative Commons library; two fetchers each search the network and
+  download a single file. No donations, no replication, no seedbox
+  growth — only steps 4-5 of the seven-step storyline.
+
+file_share_mode: true
+
+# Honestly exercise the markdown-as-overlay wire distribution path: only
+# the seeder gets PUBLISH_OVERLAY pointing at content_community.md at
+# boot; fetchers must request the descriptor from the seeder over the
+# bootstrap community (OVERLAY_REQUEST -> OVERLAY_DELIVERY) before they
+# can run the content overlay's SEARCH messages. scenario_boot also
+# cross-registers each agent's watchdog IPv8 port so OVERLAY_DELIVERY
+# replies can route back. See agent.runtime.ensure_default_overlays_loaded.
+wire_distribute_overlays: true
+
+watchdog:
+  # interval_s doubles as the per-turn subprocess budget +30. 240s
+  # gives each agent ~75s of LLM headroom while keeping ticks tight
+  # for a short live demo. Joiners only need ~1-2 successful turns
+  # (search -> download) so total wall-clock should stay under 10 min.
+  interval_s: 240
+  max_iterations_per_turn: 1
+  # 3 agents × ~4 turns each + slack.
+  max_total_turns: 16
+  # Hard 20-minute cap so the scenario auto-terminates if something
+  # hangs. Live demo should complete in 5-10 min when healthy.
+  max_wall_clock_s: 1200
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/file_share
+
+agents:
+
+  seeder:
+    ipv8_port: 8210
+    mcp_port: 18790
+    redteam_port: 0
+    publish_overlays:
+      - protocol/examples/content_community.md
+    mission_file: seeder/mission.md
+    stop_predicate: never
+    library_csv: protocol/examples/cc_library/content_catalog.csv
+    # Wallet balance irrelevant — no donations in this scenario. Kept
+    # at zero so any accidental wallet_send tool call fails closed.
+    initial_balance_sats: 0
+
+  fetcher_1:
+    ipv8_port: 8211
+    mcp_port: 18791
+    redteam_port: 0
+    publish_overlays: []
+    mission_file: fetcher_1/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - seeder
+    initial_balance_sats: 0
+
+  fetcher_2:
+    ipv8_port: 8212
+    mcp_port: 18792
+    redteam_port: 0
+    publish_overlays: []
+    mission_file: fetcher_2/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - seeder
+    initial_balance_sats: 0

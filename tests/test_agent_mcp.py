@@ -105,7 +105,69 @@ async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
         "overlay_publish", "overlay_invoke",
         "agent_inject_manifest", "network_join",
         "torrent_seed", "torrent_fetch", "torrent_stats",
+        "content_search_and_fetch",
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_allowlist_filters_tools_list(
+    two_agents_with_mcp, monkeypatch
+):
+    """When MCP_TOOL_ALLOWLIST is set, only listed tools (plus BOOTSTRAP_TOOLS)
+    are advertised.
+
+    The env var is read at ``build_mcp_server`` time, so the test sets
+    it via ``monkeypatch`` before constructing the server and asserts
+    the resulting ``tools/list`` round-trip returns exactly the allowed
+    subset + the bootstrap exemption set.
+    """
+    from agent.mcp_server import BOOTSTRAP_TOOLS
+
+    alice, _bob = two_agents_with_mcp
+    monkeypatch.setenv(
+        "MCP_TOOL_ALLOWLIST", "content_search_and_fetch,torrent_stats"
+    )
+    server = build_mcp_server(alice)
+    async with Client(server) as client:
+        tools = await client.list_tools()
+    names = {t.name for t in tools}
+    assert names == {"content_search_and_fetch", "torrent_stats"} | set(
+        BOOTSTRAP_TOOLS
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_allowlist_empty_value_keeps_only_bootstrap_tools(
+    two_agents_with_mcp, monkeypatch
+):
+    """MCP_TOOL_ALLOWLIST set to empty string suppresses everything except
+    the always-on BOOTSTRAP_TOOLS that scenario_boot calls at boot.
+    """
+    from agent.mcp_server import BOOTSTRAP_TOOLS
+
+    alice, _bob = two_agents_with_mcp
+    monkeypatch.setenv("MCP_TOOL_ALLOWLIST", "")
+    server = build_mcp_server(alice)
+    async with Client(server) as client:
+        tools = await client.list_tools()
+    assert {t.name for t in tools} == set(BOOTSTRAP_TOOLS)
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_allowlist_absent_exposes_full_surface(
+    two_agents_with_mcp, monkeypatch
+):
+    """No MCP_TOOL_ALLOWLIST env var falls back to the legacy full surface."""
+    alice, _bob = two_agents_with_mcp
+    monkeypatch.delenv("MCP_TOOL_ALLOWLIST", raising=False)
+    server = build_mcp_server(alice)
+    async with Client(server) as client:
+        tools = await client.list_tools()
+    names = {t.name for t in tools}
+    # Sanity: at least the search tool and the wallet trio are present.
+    assert "content_search_and_fetch" in names
+    assert "wallet_address" in names
+    assert "torrent_fetch" in names
 
 
 @pytest.mark.asyncio

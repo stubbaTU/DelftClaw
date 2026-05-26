@@ -1,0 +1,8 @@
+Open textbook excerpt - introductory calculus.
+
+The derivative of a function f at a point a measures the instantaneous
+rate of change of f with respect to its input near a. It is defined as
+the limit of the average rate of change over an interval as the
+interval shrinks to zero, provided that limit exists.
+
+Licence: CC BY 4.0 (placeholder attribution, open educational resource).

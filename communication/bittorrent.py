@@ -85,11 +85,20 @@ class StubBitTorrentService:
     def add_magnet(self, magnet_uri: str) -> "asyncio.Future[Path]":
         loop = asyncio.get_event_loop()
         future: asyncio.Future[Path] = loop.create_future()
-        path = self._seeded.get(magnet_uri)
-        known = path is not None
-        if path is None:
+        source = self._seeded.get(magnet_uri)
+        known = source is not None
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        if source is not None and source.is_file():
+            # Real local file copy: bytes move from the seedbox's primed
+            # path into this agent's save_dir, so progress=1.0 reflects an
+            # actual file the agent now owns. Not P2P; deliberate.
+            path = self.save_dir / source.name
+            if path.resolve() != source.resolve():
+                path.write_bytes(source.read_bytes())
+        elif source is not None:
+            path = source
+        else:
             path = self.save_dir / f"stub-{_magnet_btih(magnet_uri)}.bin"
-            path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 path.write_text(f"mock payload for {magnet_uri}\n", encoding="utf-8")
         info = TorrentInfo(

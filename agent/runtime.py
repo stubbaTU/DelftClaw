@@ -379,6 +379,76 @@ class OpenClawAgent:
 
         return manifest
 
+    async def ensure_default_overlays_loaded(
+        self,
+        *,
+        timeout_s: float = 10.0,
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Ensure every overlay named in ``manifest.default_overlays`` is loaded.
+
+        For each ``community_id`` listed in the cached manifest's
+        ``default_overlays`` field that is not already in
+        ``self.registry``, the helper sends ``OVERLAY_REQUEST`` to a
+        reachable genesis peer (via ``self._seedbox.fetch_overlay``),
+        waits up to ``timeout_s`` for the ``OVERLAY_DELIVERY`` reply,
+        and runs the canonical ``.md`` bytes through the registry's
+        compile + register pipeline.
+
+        Returns ``(loaded, errors)`` where ``loaded`` is the list of
+        community-id hex strings now present in the registry (already
+        loaded plus newly fetched) and ``errors`` is a list of
+        ``{"sha1": <hex>, "error": <message>}`` records for each
+        descriptor that could not be obtained. The helper never raises
+        on a per-overlay failure — boot continues with whatever loaded
+        successfully; the snapshot will simply not include the missing
+        overlays. The caller can decide whether to retry.
+
+        No-ops cleanly when no manifest is loaded or the manifest has
+        no default overlays (returns ``([], [])``).
+        """
+        manifest = self._manifest
+        if manifest is None or not manifest.default_overlays:
+            return ([], [])
+        if self._seedbox is None:
+            return ([], [])
+
+        genesis_pubkey_set = {
+            gp.pubkey_hex.lower() for gp in manifest.genesis_peers
+        }
+        own_pubkey_hex = self.pubkey_hex.lower()
+        genesis_peers = [
+            p
+            for p in self.known_peers()
+            if p.public_key.key_to_bin().hex().lower() in genesis_pubkey_set
+            and p.public_key.key_to_bin().hex().lower() != own_pubkey_hex
+        ]
+
+        loaded: list[str] = []
+        errors: list[dict[str, str]] = []
+        for h_hex in manifest.default_overlays:
+            h = bytes.fromhex(h_hex)
+            if self.registry.get(h) is not None:
+                loaded.append(h_hex)
+                continue
+            if not genesis_peers:
+                errors.append({
+                    "sha1": h_hex,
+                    "error": "no_genesis_peers_reachable",
+                })
+                continue
+            primary = genesis_peers[0]
+            try:
+                fut = self._seedbox.fetch_overlay(primary, h)
+                md_bytes = await asyncio.wait_for(fut, timeout=timeout_s)
+                await self.registry.aload(md_bytes.decode("utf-8"))
+                loaded.append(h_hex)
+            except Exception as exc:
+                errors.append({
+                    "sha1": h_hex,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        return loaded, errors
+
     # ------------------------------------------------------------------
     # Community log (own chain) + peer-log cache (foreign chains)
     # ------------------------------------------------------------------

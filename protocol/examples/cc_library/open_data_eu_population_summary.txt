@@ -1,0 +1,8 @@
+Open data summary - EU population (placeholder).
+
+The population of the European Union was approximately 447 million as
+of 2023, distributed across 27 member states. Germany, France, and
+Italy are the three most populous countries. Population growth is
+slow or negative in most member states, balanced by net migration.
+
+Licence: CC BY 4.0 (placeholder attribution, derived from EU open data).

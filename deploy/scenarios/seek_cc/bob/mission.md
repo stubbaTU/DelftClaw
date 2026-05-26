@@ -5,13 +5,22 @@
 
 # Intent
 
-Acquire a Creative Commons audio file from the DelftClaw network. The
-state snapshot tells you who runs the network, what the admission
-policy is, how much money is currently in the community treasury, and
-how many members exist; reason from that. Join the community by
-donating within the policy the manifest declares, then find the file
-on a peer's seedbox and download it locally. Stay within your declared
-budget.
+Acquire a Creative Commons file from the DelftClaw network. The state
+snapshot tells you who runs the network, what the admission policy is,
+how much money is currently in the community treasury, and how many
+members exist; reason from that.
+
+Proceed in this order, one tool call per turn:
+
+1. While you are an outsider, call `community_donate_and_join` with an
+   amount within the admission policy's `min_sats` and
+   `bootstrap_cap_sats` to be admitted.
+2. Once your `my_membership_status` is `admitted`, call
+   `content_search_and_fetch` to discover a peer's content catalogue
+   and retrieve one of the Creative Commons files it advertises. The
+   default random pick is fine; this completes the mission.
+
+Stay within your declared budget.
 
 # Budget
 

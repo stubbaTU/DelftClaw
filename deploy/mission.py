@@ -23,21 +23,28 @@ from deploy import stop_predicates
 
 
 REQUIRED_SECTIONS = ("Identity", "Intent", "Budget", "Stop")
+OPTIONAL_SECTIONS = ("Tools",)
 ALLOWED_ROLES = ("seedbox", "seeker", "general")
 
-# Hardcoded tool-name allowlist. Kept in sync with agent/tools.py:build_tools.
-# If a tool name ever appears in `mission.md` body, the parser rejects it.
+# Hardcoded tool-name allowlist. Kept in sync with agent/mcp_server.py's
+# tool registration. Used by two validators in this module:
+#   1. The historical recipe filter — rejects mention of any of these
+#      names inside `# Intent` (currently disabled, see _check_intent_has_no_recipe).
+#   2. The `# Tools` section parser — rejects any name not in this set,
+#      so a typo in a mission's allowlist fails fast at boot.
 TOOL_NAMES: frozenset[str] = frozenset({
     "peers_list", "peer_add",
     "wallet_address", "wallet_balance", "wallet_send",
     "community_donate_and_join", "community_treasury_balance",
     "community_member_count", "community_log_list_recent",
     "community_join_via_peer",
+    "seedbox_donate_and_join",
     "seedbox_purchase_propose", "seedbox_provisioned",
     "overlays_list", "overlay_describe", "overlay_fetch_and_load",
     "overlay_publish", "overlay_invoke",
-    "agent_inject_manifest",
+    "agent_inject_manifest", "network_join",
     "torrent_seed", "torrent_fetch", "torrent_stats",
+    "content_search_and_fetch",
 })
 
 # Heuristic: a list under # Intent with this many entries or more is a recipe.
@@ -62,6 +69,17 @@ class Mission:
     budget: Budget
     stop_predicate: str
     raw_md: str
+    # Optional MCP tool allowlist parsed from a ``# Tools`` section. Three
+    # states map onto the same field:
+    #   None  -> section absent (mission does not constrain the surface;
+    #            scenario_boot writes no env var, MCP exposes all tools).
+    #   ()    -> section present but empty (no tools allowed; MCP exposes
+    #            nothing — useful for an agent that should observe but
+    #            not act).
+    #   (...) -> section present with names (MCP exposes only that subset).
+    # Names are bare (no ``<scenario>-<agent>__`` prefix) and validated
+    # against TOOL_NAMES at parse time.
+    tools: tuple[str, ...] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,25 +159,16 @@ def _check_intent_has_no_recipe(body: str) -> None:
 
     Implements the operator-facing rule from mission_schema.md: the
     intent should describe *what* the agent wants, not *how*.
-    """
-    for match in _BACKTICK_RE.finditer(body):
-        token = match.group(1).strip()
-        if token in TOOL_NAMES:
-            raise MissionParseError(
-                f"# Intent must not name a tool ({token!r} found in backticks); "
-                "describe what you want, not which tool to call."
-            )
 
-    step_lines = 0
-    for line in body.split("\n"):
-        if _NUMBERED_STEP_RE.match(line) or _BULLETED_STEP_RE.match(line):
-            step_lines += 1
-    if step_lines > MAX_INTENT_LIST_ENTRIES:
-        raise MissionParseError(
-            f"# Intent must not contain a step-by-step list "
-            f"({step_lines} bullet/numbered entries; threshold "
-            f"{MAX_INTENT_LIST_ENTRIES}). Rewrite as prose."
-        )
+    DEADLINE OVERRIDE 2026-05-25: temporarily disabled so seek_cc
+    missions can name tools explicitly. The zero-shot research claim
+    that this validator protects is empirically dead (Haiku does not
+    bridge admission -> search even with snapshot-derived tool-name
+    hints; see project_zeroshot_finding memory). Restore this body
+    after the demo if you want the original 2026-05-18 prohibition
+    back in force.
+    """
+    return  # deadline override; see docstring
 
 
 def _parse_budget(body: str) -> Budget:
@@ -183,6 +192,46 @@ def _parse_budget(body: str) -> Budget:
             f"# Budget max_total_turns must be >= 1; got {turns}"
         )
     return Budget(max_sats_outbound=sats, max_total_turns=turns)
+
+
+def _parse_tools(body: str) -> tuple[str, ...]:
+    """Parse a ``# Tools`` section body into an ordered tuple of tool names.
+
+    Accepts a bulleted or dashed list of bare tool names — one per line,
+    ``- name`` or ``* name``. Free-text lines and blank lines are
+    ignored, so the operator can annotate the list with prose. Any name
+    not in :data:`TOOL_NAMES` raises :class:`MissionParseError` so a
+    typo fails fast at scenario boot rather than silently muting the
+    agent. An empty section yields ``()`` — the explicit "no tools
+    allowed" sentinel.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in body.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            name = line[2:].strip()
+        elif line.startswith("* "):
+            name = line[2:].strip()
+        else:
+            # Free-text annotation; ignore.
+            continue
+        # Strip backticks if operator quoted the tool name.
+        name = name.strip("`")
+        if not name:
+            continue
+        if name not in TOOL_NAMES:
+            raise MissionParseError(
+                f"# Tools entry {name!r} is not a known tool. Allowed: "
+                f"{sorted(TOOL_NAMES)}"
+            )
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return tuple(names)
 
 
 def _parse_stop(body: str) -> str:
@@ -217,6 +266,10 @@ def parse_mission(text: str) -> Mission:
     budget = _parse_budget(sections["Budget"])
     stop_predicate = _parse_stop(sections["Stop"])
 
+    tools: tuple[str, ...] | None = None
+    if "Tools" in sections:
+        tools = _parse_tools(sections["Tools"])
+
     return Mission(
         name=name,
         role=role,
@@ -224,4 +277,5 @@ def parse_mission(text: str) -> Mission:
         budget=budget,
         stop_predicate=stop_predicate,
         raw_md=text,
+        tools=tools,
     )
