@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,8 @@ def run_agentdojo_vukzero(
     system_message_name: str | None = None,
     system_message: str | None = None,
     tool_output_format: str | None = None,
+    openrouter_api_key: str | None = None,
+    openrouter_base_url: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     if dry_run or importlib.util.find_spec("agentdojo") is None:
@@ -59,6 +62,8 @@ def run_agentdojo_vukzero(
         system_message_name=system_message_name,
         system_message=system_message,
         tool_output_format=tool_output_format,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_base_url=openrouter_base_url,
     )
 
 
@@ -152,6 +157,8 @@ def _run_real_agentdojo(
     system_message_name: str | None,
     system_message: str | None,
     tool_output_format: str | None,
+    openrouter_api_key: str | None,
+    openrouter_base_url: str | None,
 ) -> dict[str, Any]:
     import agentdojo.attacks  # noqa: F401 - registers bundled attacks
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
@@ -176,6 +183,8 @@ def _run_real_agentdojo(
             system_message_name=system_message_name,
             system_message=system_message,
             tool_output_format=tool_output_format,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_base_url=openrouter_base_url,
         )
 
         if condition == C1_AGENTDOJO_VUKZERO:
@@ -254,8 +263,20 @@ def _build_agentdojo_pipeline(
     system_message_name: str | None,
     system_message: str | None,
     tool_output_format: str | None,
+    openrouter_api_key: str | None,
+    openrouter_base_url: str | None,
 ) -> Any:
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
+
+    if _should_use_openrouter(model, openrouter_api_key):
+        return _build_openrouter_pipeline(
+            model=model,
+            api_key=openrouter_api_key,
+            base_url=openrouter_base_url,
+            system_message_name=system_message_name,
+            system_message=system_message,
+            tool_output_format=tool_output_format,
+        )
 
     return AgentPipeline.from_config(PipelineConfig(
         llm=model,
@@ -266,6 +287,53 @@ def _build_agentdojo_pipeline(
         system_message=system_message,
         tool_output_format=tool_output_format,
     ))
+
+
+def _should_use_openrouter(model: str, openrouter_api_key: str | None = None) -> bool:
+    if openrouter_api_key or os.getenv("OPENROUTER_API_KEY"):
+        return "/" in model and model not in {"local", "vllm_parsed"}
+    return False
+
+
+def _build_openrouter_pipeline(
+    *,
+    model: str,
+    api_key: str | None,
+    base_url: str | None,
+    system_message_name: str | None,
+    system_message: str | None,
+    tool_output_format: str | None,
+) -> Any:
+    import openai
+    from functools import partial
+
+    from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
+    from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
+    from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM
+    from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop, ToolsExecutor, tool_result_to_str
+
+    resolved_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    if not resolved_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter models")
+    resolved_base_url = base_url or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+
+    config = PipelineConfig(
+        llm="gpt-4o-mini-2024-07-18",
+        model_id=None,
+        defense=None,
+        tool_delimiter="tool",
+        system_message_name=system_message_name,
+        system_message=system_message,
+        tool_output_format=tool_output_format,
+    )
+    client = openai.OpenAI(api_key=resolved_key, base_url=resolved_base_url)
+    llm = OpenAILLM(client, model)
+    assert config.system_message is not None
+    formatter = partial(tool_result_to_str, dump_fn=json.dumps) if tool_output_format == "json" else tool_result_to_str
+    tools_loop = ToolsExecutionLoop([ToolsExecutor(formatter), llm])
+    pipeline = AgentPipeline([SystemMessage(config.system_message), InitQuery(), llm, tools_loop])
+    pipeline.name = f"openrouter-{model.replace('/', '_')}"
+    return pipeline
 
 
 def _insert_vukzero_pipeline_element(pipeline: Any, decision_logs: list[DecisionLog]) -> None:
@@ -325,6 +393,8 @@ def main() -> int:
     parser.add_argument("--system-message-name", default=None)
     parser.add_argument("--system-message", default=None)
     parser.add_argument("--tool-output-format", choices=["yaml", "json"], default=None)
+    parser.add_argument("--openrouter-api-key", default=None)
+    parser.add_argument("--openrouter-base-url", default=None)
     parser.add_argument("--no-force-rerun", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -343,6 +413,8 @@ def main() -> int:
         system_message_name=args.system_message_name,
         system_message=args.system_message,
         tool_output_format=args.tool_output_format,
+        openrouter_api_key=args.openrouter_api_key,
+        openrouter_base_url=args.openrouter_base_url,
         dry_run=args.dry_run,
     )
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))

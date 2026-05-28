@@ -18,20 +18,24 @@ Run the local smoke path:
 python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
-  --model gpt-4o-mini-2024-07-18 \
+  --model inclusionai/ling-2.6-flash \
   --conditions C0_agentdojo_baseline C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace \
   --dry-run
 ```
 
-Run the real workspace comparison after installing AgentDojo and configuring the
-model credentials required by AgentDojo:
+Run the real workspace comparison after installing AgentDojo and configuring an
+OpenRouter key:
+
+```bash
+export OPENROUTER_API_KEY="your_openrouter_key"
+```
 
 ```bash
 python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
-  --model gpt-4o-mini-2024-07-18 \
+  --model inclusionai/ling-2.6-flash \
   --conditions C0_agentdojo_baseline C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace
 ```
@@ -42,7 +46,7 @@ Run only the baseline:
 python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
-  --model gpt-4o-mini-2024-07-18 \
+  --model inclusionai/ling-2.6-flash \
   --conditions C0_agentdojo_baseline \
   --logdir results/agentdojo_vukzero_workspace
 ```
@@ -53,7 +57,7 @@ Run only VukZero:
 python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
-  --model gpt-4o-mini-2024-07-18 \
+  --model inclusionai/ling-2.6-flash \
   --conditions C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace
 ```
