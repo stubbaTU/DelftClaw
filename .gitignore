@@ -35,6 +35,8 @@ htmlcov/
 node_modules/
 pnpm-lock.yaml
 
+results/
+*.results
 # uv
 .uv/
 
@@ -54,3 +56,4 @@ configs/host.env
 # pull_sync_demo writes signed logs + per-source peer caches here for
 # inspection; regenerated on every run
 examples/pull_sync_artifacts/
+/results/
