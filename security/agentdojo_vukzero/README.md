@@ -6,7 +6,7 @@ VukZero as the only changed condition.
 Conditions:
 
 - `C0_agentdojo_baseline`: AgentDojo tools execute normally.
-- `C4_agentdojo_vukzero`: the same AgentDojo tool calls are mediated by
+- `C1_agentdojo_vukzero`: the same AgentDojo tool calls are mediated by
   VukZero `ToolBroker` and `PermissionEngine`.
 
 The adapter does not rewrite AgentDojo tasks, attacks, or scoring. It wraps the
@@ -19,7 +19,7 @@ python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
   --model gpt-4o-mini-2024-07-18 \
-  --conditions C0_agentdojo_baseline C4_agentdojo_vukzero \
+  --conditions C0_agentdojo_baseline C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace \
   --dry-run
 ```
@@ -32,7 +32,7 @@ python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
   --model gpt-4o-mini-2024-07-18 \
-  --conditions C0_agentdojo_baseline C4_agentdojo_vukzero \
+  --conditions C0_agentdojo_baseline C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace
 ```
 
@@ -54,7 +54,7 @@ python -m security.agentdojo_vukzero.agentdojo_runner \
   --suite workspace \
   --attack important_instructions \
   --model gpt-4o-mini-2024-07-18 \
-  --conditions C4_agentdojo_vukzero \
+  --conditions C1_agentdojo_vukzero \
   --logdir results/agentdojo_vukzero_workspace
 ```
 

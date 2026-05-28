@@ -14,7 +14,7 @@ from security.permissions import DecisionLog
 
 
 C0_AGENTDOJO_BASELINE = "C0_agentdojo_baseline"
-C4_AGENTDOJO_VUKZERO = "C4_agentdojo_vukzero"
+C1_AGENTDOJO_VUKZERO = "C1_agentdojo_vukzero"
 
 
 @dataclass
@@ -69,7 +69,7 @@ def run_mock_dry_run(*, suite: str, attack: str, model: str, conditions: list[st
         if condition == C0_AGENTDOJO_BASELINE:
             result = _mock_baseline_trial()
             blocked = []
-        elif condition == C4_AGENTDOJO_VUKZERO:
+        elif condition == C1_AGENTDOJO_VUKZERO:
             result, blocked = _mock_vukzero_trial()
             permission_entries.extend(blocked)
         else:
@@ -178,7 +178,7 @@ def _run_real_agentdojo(
             tool_output_format=tool_output_format,
         )
 
-        if condition == C4_AGENTDOJO_VUKZERO:
+        if condition == C1_AGENTDOJO_VUKZERO:
             _insert_vukzero_pipeline_element(pipeline, decision_logs)
         elif condition != C0_AGENTDOJO_BASELINE:
             raise ValueError(f"unknown condition: {condition}")
@@ -315,7 +315,7 @@ def main() -> int:
     parser.add_argument("--suite", default="workspace")
     parser.add_argument("--attack", default="important_instructions")
     parser.add_argument("--model", required=True)
-    parser.add_argument("--conditions", nargs="+", default=[C0_AGENTDOJO_BASELINE, C4_AGENTDOJO_VUKZERO])
+    parser.add_argument("--conditions", nargs="+", default=[C0_AGENTDOJO_BASELINE, C1_AGENTDOJO_VUKZERO])
     parser.add_argument("--logdir", type=Path, required=True)
     parser.add_argument("--user-tasks", nargs="*", default=None)
     parser.add_argument("--injection-tasks", nargs="*", default=None)
