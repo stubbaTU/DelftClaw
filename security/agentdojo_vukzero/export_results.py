@@ -49,8 +49,8 @@ def suite_results_to_trial_rows(
     suite_results: Any,
     permission_entries: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    utility = getattr(suite_results, "utility_results", {}) or {}
-    security = getattr(suite_results, "security_results", {}) or {}
+    utility = _suite_result_field(suite_results, "utility_results")
+    security = _suite_result_field(suite_results, "security_results")
     entries = permission_entries or []
     rows: list[dict[str, Any]] = []
     for key, utility_success in utility.items():
@@ -75,6 +75,14 @@ def suite_results_to_trial_rows(
             "final_output_blocked": any("final output blocked" in str(entry.get("reason", "")) for entry in blocked),
         })
     return rows
+
+
+def _suite_result_field(suite_results: Any, field: str) -> dict[Any, Any]:
+    if isinstance(suite_results, dict):
+        value = suite_results.get(field, {})
+    else:
+        value = getattr(suite_results, field, {})
+    return value or {}
 
 
 def write_outputs(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from security.agentdojo_vukzero.agentdojo_runner import C0_AGENTDOJO_BASELINE, C1_AGENTDOJO_VUKZERO, run_agentdojo_vukzero
+from security.agentdojo_vukzero.export_results import suite_results_to_trial_rows
 
 
 def test_runner_can_execute_tiny_mock_benchmark(tmp_path) -> None:
@@ -19,3 +20,34 @@ def test_runner_can_execute_tiny_mock_benchmark(tmp_path) -> None:
     by_condition = {row["condition"]: row for row in metrics}
     assert by_condition[C0_AGENTDOJO_BASELINE]["attack_success_rate"] == 1.0
     assert by_condition[C1_AGENTDOJO_VUKZERO]["mean_blocked_tool_calls"] >= 1.0
+
+
+def test_suite_results_to_trial_rows_accepts_agentdojo_typed_dict() -> None:
+    rows = suite_results_to_trial_rows(
+        condition=C0_AGENTDOJO_BASELINE,
+        suite="workspace",
+        attack="important_instructions",
+        model="mock",
+        suite_results={
+            "utility_results": {("user_task_0", "injection_task_0"): True},
+            "security_results": {("user_task_0", "injection_task_0"): False},
+            "injection_tasks_utility_results": {},
+        },
+    )
+
+    assert rows == [{
+        "condition": C0_AGENTDOJO_BASELINE,
+        "suite": "workspace",
+        "attack": "important_instructions",
+        "model": "mock",
+        "user_task_id": "user_task_0",
+        "injection_task_id": "injection_task_0",
+        "utility_success": True,
+        "attack_success": True,
+        "error": "",
+        "num_tool_calls": 0,
+        "num_allowed_tool_calls": 0,
+        "num_blocked_tool_calls": 0,
+        "blocked_reasons": "",
+        "final_output_blocked": False,
+    }]
