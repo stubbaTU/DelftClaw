@@ -1,0 +1,162 @@
+version: 1
+default_effect: deny
+
+roles:
+  normal_agent:
+    description: "Standard autonomous agent"
+  auditor_agent:
+    description: "Can inspect public logs and submit bounded security reports"
+  reputation_engine:
+    description: "Internal engine allowed to update reputation via mediated APIs"
+  admin_test_harness:
+    description: "Test harness for controlled experiments"
+
+resource_labels:
+  public.task:
+    description: "Task data that agents may read"
+  untrusted.input:
+    description: "External input from peers, torrents, or seedbox reports"
+  secret.identity:
+    description: "Private identity key material"
+  secret.wallet:
+    description: "Wallet secrets or private wallet state"
+  protected.log:
+    description: "Tamper-evident behavioral records"
+  protected.reputation:
+    description: "Reputation state"
+  protected.seedbox:
+    description: "Seedbox access controls and privileged seedbox state"
+  external.peer_sink:
+    description: "Outgoing peer/network messages"
+  external.report_sink:
+    description: "Reports visible outside the agent"
+  internal.audit:
+    description: "Internal permission decision log"
+  legacy.safe:
+    description: "Legacy safe SQ1/gateway compatibility tool"
+
+rules:
+  - id: allow_read_public_task_data
+    role: normal_agent
+    action: read
+    resource_label: public.task
+    effect: allow
+
+  - id: allow_read_untrusted_input
+    role: normal_agent
+    action: read
+    resource_label: untrusted.input
+    effect: allow
+
+  - id: deny_direct_identity_read
+    role: normal_agent
+    action: read
+    resource_label: secret.identity
+    effect: deny
+
+  - id: deny_direct_wallet_read
+    role: normal_agent
+    action: read
+    resource_label: secret.wallet
+    effect: deny
+
+  - id: allow_identity_sign_proxy
+    role: normal_agent
+    action: sign
+    resource_label: secret.identity
+    effect: allow_via_proxy
+    proxy: identity_signing_proxy
+    requires_capability: true
+    validators:
+      - nonce_only
+
+  - id: allow_append_behavior_log
+    role: normal_agent
+    action: append
+    resource_label: protected.log
+    effect: allow_via_proxy
+    proxy: append_only_log_proxy
+    requires_capability: true
+    validators:
+      - bounded_log_event_schema
+
+  - id: deny_rewrite_behavior_log
+    role: normal_agent
+    action: rewrite
+    resource_label: protected.log
+    effect: deny
+
+  - id: deny_delete_behavior_log
+    role: normal_agent
+    action: delete
+    resource_label: protected.log
+    effect: deny
+
+  - id: allow_peer_send_guarded
+    role: normal_agent
+    action: send
+    resource_label: external.peer_sink
+    effect: allow
+    requires_capability: true
+    validators:
+      - peer_message_schema
+      - egress_no_secret_canary
+
+  - id: allow_report_write_guarded
+    role: normal_agent
+    action: write
+    resource_label: external.report_sink
+    effect: allow
+    requires_capability: true
+    validators:
+      - report_schema
+      - egress_no_secret_canary
+
+  - id: allow_internal_audit_write_guarded
+    role: normal_agent
+    action: write
+    resource_label: internal.audit
+    effect: allow
+    requires_capability: true
+    validators:
+      - report_schema
+      - egress_no_secret_canary
+
+  - id: allow_reputation_engine_update
+    role: reputation_engine
+    action: mutate
+    resource_label: protected.reputation
+    effect: allow_via_proxy
+    proxy: reputation_update_proxy
+    validators:
+      - reputation_update_schema
+
+  - id: deny_agent_direct_reputation_mutation
+    role: normal_agent
+    action: mutate
+    resource_label: protected.reputation
+    effect: deny
+
+  - id: allow_seedbox_request_proxy
+    role: normal_agent
+    action: request
+    resource_label: protected.seedbox
+    effect: allow_via_proxy
+    proxy: seedbox_request_proxy
+    requires_capability: true
+    validators:
+      - seedbox_request_schema
+
+  - id: deny_seedbox_direct_mutation
+    role: normal_agent
+    action: mutate
+    resource_label: protected.seedbox
+    effect: deny
+
+  - id: allow_legacy_safe
+    role: normal_agent
+    action: execute
+    resource_label: legacy.safe
+    effect: allow
+    validators:
+      - max_payload_size

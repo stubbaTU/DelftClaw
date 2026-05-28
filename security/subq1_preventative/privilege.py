@@ -1,6 +1,17 @@
 from typing import Any, Callable
 
 from security.contracts import ExecutionResult, ToolDecision, ToolPolicy, ToolRisk, attack_success_rate
+from security.permissions import (
+    CapabilityStore,
+    DecisionLog,
+    PermissionEngine,
+    PermissionRequest,
+    Resource,
+    ResourceRegistry,
+    Subject,
+    default_validator_registry,
+    load_default_policy,
+)
 
 
 RISK_ORDER = {
@@ -113,9 +124,10 @@ class Hands:
     """
     Trusted actor/execution layer.
 
-    Hands owns the actual tool registry and enforces an allowlist. It is the
-    structural preventative defense for ASR experiments: malicious Brain
-    decisions may still be produced, but unauthorized tools should not execute.
+    Hands owns legacy SQ1/gateway tool handlers, but authorization is delegated
+    to the reusable VukZero permission engine. This keeps older callers working
+    while replacing the previous ad hoc allowlist check with the same
+    Brain-vs-Hands reference monitor used by the SQ1 real-tool harness.
     """
     def __init__(
         self,
@@ -128,6 +140,7 @@ class Hands:
         self.agent_id = agent_id
         self.max_tool_risk = risk_value(max_tool_risk)
         self.allowed_tools = self._normalize_tools(allowed_tools or self.default_tools())
+        self._permission_engine = self._build_permission_engine()
 
     def execute(self, decision: ToolDecision | dict) -> ExecutionResult:
         if isinstance(decision, dict):
@@ -148,6 +161,28 @@ class Hands:
                 authorized=False,
                 attack_success=False,
                 reason="blocked: tool is not in actor allowlist",
+                payload_id=decision.payload_id,
+                sender_id=decision.sender_id,
+            )
+            self._log_block(decision, result)
+            return result
+
+        permission = self._permission_engine.decide(PermissionRequest(
+            request_id=f"legacy-{decision.payload_id or id(decision)}-{decision.tool_name}",
+            subject=Subject(subject_id=self.agent_id, role="normal_agent"),
+            tool_name=decision.tool_name,
+            action="execute",
+            resource_id=f"legacy_tool:{decision.tool_name}",
+            resource_label=None,
+            args=decision.tool_kwargs,
+        ))
+        if permission.decision == "deny":
+            result = ExecutionResult(
+                requested_tool=decision.tool_name,
+                executed=False,
+                authorized=False,
+                attack_success=False,
+                reason=f"blocked: {permission.reason}",
                 payload_id=decision.payload_id,
                 sender_id=decision.sender_id,
             )
@@ -251,6 +286,29 @@ class Hands:
             else:
                 normalized[name] = ToolPolicy(name=name, handler=tool)
         return normalized
+
+    def _build_permission_engine(self) -> PermissionEngine:
+        validators = default_validator_registry()
+        policy = load_default_policy(
+            known_validators=validators.names(),
+            known_proxies={
+                "identity_signing_proxy",
+                "wallet_status_proxy",
+                "append_only_log_proxy",
+                "reputation_update_proxy",
+                "seedbox_request_proxy",
+            },
+        )
+        registry = ResourceRegistry()
+        for name in self.allowed_tools:
+            registry.register(Resource(f"legacy_tool:{name}", "legacy.safe"))
+        return PermissionEngine(
+            policy=policy,
+            resource_registry=registry,
+            capability_store=CapabilityStore(),
+            validator_registry=validators,
+            decision_log=DecisionLog(),
+        )
 
 
 class BaselineExecutor:
