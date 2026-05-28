@@ -30,11 +30,11 @@ AGENTDOJO_TOOL_MAP: dict[str, dict[str, Any]] = {
         "resource_label": "protected.email_state",
         "requires_capability": True,
     },
-    "search_emails": {"action": "read", "resource_id": "agentdojo_email_state", "resource_label": "untrusted.input"},
-    "get_unread_emails": {"action": "read", "resource_id": "agentdojo_email_state", "resource_label": "untrusted.input"},
-    "get_received_emails": {"action": "read", "resource_id": "agentdojo_email_state", "resource_label": "untrusted.input"},
-    "get_sent_emails": {"action": "read", "resource_id": "agentdojo_email_state", "resource_label": "untrusted.input"},
-    "get_draft_emails": {"action": "read", "resource_id": "agentdojo_email_state", "resource_label": "untrusted.input"},
+    "search_emails": {"action": "read", "resource_id": "agentdojo_email_read_state", "resource_label": "untrusted.input"},
+    "get_unread_emails": {"action": "read", "resource_id": "agentdojo_email_read_state", "resource_label": "untrusted.input"},
+    "get_received_emails": {"action": "read", "resource_id": "agentdojo_email_read_state", "resource_label": "untrusted.input"},
+    "get_sent_emails": {"action": "read", "resource_id": "agentdojo_email_read_state", "resource_label": "untrusted.input"},
+    "get_draft_emails": {"action": "read", "resource_id": "agentdojo_email_read_state", "resource_label": "untrusted.input"},
     "search_contacts_by_name": {"action": "read", "resource_id": "agentdojo_contacts", "resource_label": "public.task"},
     "search_contacts_by_email": {"action": "read", "resource_id": "agentdojo_contacts", "resource_label": "public.task"},
     "create_calendar_event": {
@@ -65,8 +65,8 @@ AGENTDOJO_TOOL_MAP: dict[str, dict[str, Any]] = {
         "requires_capability": True,
         "validator": "agentdojo_calendar_capability",
     },
-    "search_calendar_events": {"action": "read", "resource_id": "agentdojo_calendar_state", "resource_label": "untrusted.input"},
-    "get_day_calendar_events": {"action": "read", "resource_id": "agentdojo_calendar_state", "resource_label": "untrusted.input"},
+    "search_calendar_events": {"action": "read", "resource_id": "agentdojo_calendar_read_state", "resource_label": "untrusted.input"},
+    "get_day_calendar_events": {"action": "read", "resource_id": "agentdojo_calendar_read_state", "resource_label": "untrusted.input"},
     "get_current_day": {"action": "read", "resource_id": "agentdojo_clock", "resource_label": "public.task"},
     "create_file": {
         "action": "write",
@@ -97,10 +97,10 @@ AGENTDOJO_TOOL_MAP: dict[str, dict[str, Any]] = {
         "requires_capability": True,
         "validator": "agentdojo_file_share_capability",
     },
-    "search_files": {"action": "read", "resource_id": "agentdojo_file_state", "resource_label": "untrusted.input"},
-    "search_files_by_filename": {"action": "read", "resource_id": "agentdojo_file_state", "resource_label": "untrusted.input"},
-    "get_file_by_id": {"action": "read", "resource_id": "agentdojo_file_state", "resource_label": "untrusted.input"},
-    "list_files": {"action": "read", "resource_id": "agentdojo_file_state", "resource_label": "untrusted.input"},
+    "search_files": {"action": "read", "resource_id": "agentdojo_file_read_state", "resource_label": "untrusted.input"},
+    "search_files_by_filename": {"action": "read", "resource_id": "agentdojo_file_read_state", "resource_label": "untrusted.input"},
+    "get_file_by_id": {"action": "read", "resource_id": "agentdojo_file_read_state", "resource_label": "untrusted.input"},
+    "list_files": {"action": "read", "resource_id": "agentdojo_file_read_state", "resource_label": "untrusted.input"},
 }
 
 
