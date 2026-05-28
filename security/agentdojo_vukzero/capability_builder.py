@@ -82,6 +82,8 @@ def _constraints_for_tool(ctx: AgentDojoCapabilityContext, tool_name: str) -> di
     if emails:
         constraints["allowed_recipients"] = emails
         constraints["allowed_participants"] = emails
+    elif tool_name in {"send_email", "share_file", "create_calendar_event", "add_calendar_event_participants"}:
+        constraints["requires_authorized_recipients"] = True
     if quotes:
         constraints["quoted_values"] = quotes
         if tool_name == "send_email":
@@ -90,4 +92,6 @@ def _constraints_for_tool(ctx: AgentDojoCapabilityContext, tool_name: str) -> di
             constraints["allowed_file_refs"] = quotes
         if "calendar" in tool_name or "event" in tool_name:
             constraints["allowed_calendar_text"] = quotes
+    elif tool_name in {"share_file", "create_file", "append_to_file", "delete_file"}:
+        constraints["requires_authorized_file_ref"] = True
     return constraints

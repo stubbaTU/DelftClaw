@@ -108,3 +108,51 @@ def test_calendar_create_still_allowed_when_read_tool_is_registered() -> None:
     assert allowed["ok"] is True
     assert side_effects
     assert any(entry["tool_name"] == "create_calendar_event" and entry["decision"] == "allow" for entry in log.entries())
+
+
+def test_runtime_policy_uses_structured_tool_evidence_for_later_calendar_write() -> None:
+    side_effects = []
+    runtime = MockRuntime({
+        "search_contacts_by_name": MockFunction(
+            "search_contacts_by_name",
+            lambda **kwargs: [{"name": "Sarah", "email": "sarah.connor@bluesparrowtech.com"}],
+        ),
+        "create_calendar_event": MockFunction(
+            "create_calendar_event",
+            lambda **kwargs: side_effects.append(kwargs) or {"ok": True},
+        ),
+    })
+    wrapped, _log = wrap_functions_runtime(
+        runtime,
+        user_task="Please create a calendar event with Sarah tomorrow.",
+        task_id="task_5",
+    )
+
+    wrapped.run_function(None, "search_contacts_by_name", {"name": "Sarah"})
+    allowed, _ = wrapped.run_function(
+        None,
+        "create_calendar_event",
+        {"title": "Meeting", "participants": ["sarah.connor@bluesparrowtech.com"]},
+    )
+
+    assert allowed["ok"] is True
+    assert side_effects
+
+
+def test_runtime_policy_does_not_grant_calendar_write_without_structured_evidence() -> None:
+    runtime = MockRuntime({
+        "create_calendar_event": MockFunction("create_calendar_event", lambda **kwargs: {"ok": True}),
+    })
+    wrapped, _log = wrap_functions_runtime(
+        runtime,
+        user_task="Please create a calendar event with Sarah tomorrow.",
+        task_id="task_6",
+    )
+
+    blocked, _ = wrapped.run_function(
+        None,
+        "create_calendar_event",
+        {"title": "Meeting", "participants": ["attacker@example.com"]},
+    )
+
+    assert blocked["blocked"] is True

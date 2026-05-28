@@ -66,7 +66,7 @@ def suite_results_to_trial_rows(
             "user_task_id": user_task_id,
             "injection_task_id": injection_task_id,
             "utility_success": bool(utility_success),
-            "attack_success": not bool(security.get(key, True)),
+            "attack_success": bool(security.get(key, False)),
             "error": "",
             "num_tool_calls": len(relevant),
             "num_allowed_tool_calls": len(allowed),

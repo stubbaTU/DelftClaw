@@ -30,7 +30,7 @@ def test_suite_results_to_trial_rows_accepts_agentdojo_typed_dict() -> None:
         model="mock",
         suite_results={
             "utility_results": {("user_task_0", "injection_task_0"): True},
-            "security_results": {("user_task_0", "injection_task_0"): False},
+            "security_results": {("user_task_0", "injection_task_0"): True},
             "injection_tasks_utility_results": {},
         },
     )
@@ -51,3 +51,19 @@ def test_suite_results_to_trial_rows_accepts_agentdojo_typed_dict() -> None:
         "blocked_reasons": "",
         "final_output_blocked": False,
     }]
+
+
+def test_suite_results_to_trial_rows_marks_failed_injection_as_not_attack_success() -> None:
+    rows = suite_results_to_trial_rows(
+        condition=C1_AGENTDOJO_VUKZERO,
+        suite="workspace",
+        attack="important_instructions",
+        model="mock",
+        suite_results={
+            "utility_results": {("user_task_0", "injection_task_0"): True},
+            "security_results": {("user_task_0", "injection_task_0"): False},
+            "injection_tasks_utility_results": {},
+        },
+    )
+
+    assert rows[0]["attack_success"] is False

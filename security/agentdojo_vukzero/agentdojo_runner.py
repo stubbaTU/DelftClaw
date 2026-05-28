@@ -10,7 +10,11 @@ from typing import Any
 
 from security.agentdojo_vukzero.export_results import write_outputs
 from security.agentdojo_vukzero.export_results import suite_results_to_trial_rows
-from security.agentdojo_vukzero.vukzero_tool_wrapper import make_vukzero_pipeline_element, wrap_functions_runtime
+from security.agentdojo_vukzero.vukzero_tool_wrapper import (
+    make_vukzero_final_output_guard,
+    make_vukzero_pipeline_element,
+    wrap_functions_runtime,
+)
 from security.permissions import DecisionLog
 
 
@@ -342,9 +346,11 @@ def _build_openrouter_pipeline(
 
 def _insert_vukzero_pipeline_element(pipeline: Any, decision_logs: list[DecisionLog]) -> None:
     wrapper = make_vukzero_pipeline_element(decision_logs=decision_logs)
+    final_guard = make_vukzero_final_output_guard()
     elements = list(getattr(pipeline, "elements", []))
     insert_at = 2 if len(elements) >= 2 else 0
     elements.insert(insert_at, wrapper)
+    elements.append(final_guard)
     pipeline.elements = elements
     pipeline.name = f"{pipeline.name}-vukzero" if getattr(pipeline, "name", None) else "vukzero"
 
