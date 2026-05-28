@@ -10,6 +10,7 @@ from security.permissions import (
     Capability,
     CapabilityStore,
     DecisionLog,
+    EgressGuard,
     PermissionEngine,
     Resource,
     ResourceRegistry,
@@ -138,7 +139,7 @@ def build_sq1_tools(context: SQ1ToolContext) -> ToolRegistry:
             )
         return context.trace.result(name, result)
 
-    return ToolRegistry([
+    registry = ToolRegistry([
         Tool(
             "load_trial_input",
             "Load the delivered DelftClaw seedbox/torrent/peer input.",
@@ -213,6 +214,12 @@ def build_sq1_tools(context: SQ1ToolContext) -> ToolRegistry:
             lambda **kwargs: dispatch("decide_seed_ignore_report", kwargs),
         ),
     ])
+    if context.defended:
+        guard = EgressGuard()
+        registry.check_final_output = lambda text: text if guard.check_text(text).ok else (
+            f"[permission_denied: final output blocked: {guard.check_text(text).reason}]"
+        )
+    return registry
 
 
 def _build_sq1_permission_broker(context: SQ1ToolContext, raw_fns: dict[str, Any]) -> ToolBroker:

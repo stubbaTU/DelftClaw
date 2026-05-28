@@ -5,6 +5,14 @@ boundary. The LLM-facing brain may propose actions, but the hands that touch
 files, network sinks, logs, wallets, identity material, seedbox controls, or
 reputation state must pass through the reference monitor.
 
+For the main OpenClaw runtime, permission enforcement is enabled by default.
+You can also force it with `VUKZERO_PERMISSION_SYSTEM=enabled` before
+constructing tools with `agent.tools.build_tools(agent)`. Set
+`AgentConfig(permissions_enabled=False)` or `VUKZERO_PERMISSION_SYSTEM=disabled`
+only for intentional baseline or compatibility runs. The returned registry
+routes all tool dispatch through `ToolBroker` and checks final assistant text
+for protected canaries before returning it from the tool loop.
+
 Main components:
 
 - `default_policy.yaml`: deny-by-default policy rules.

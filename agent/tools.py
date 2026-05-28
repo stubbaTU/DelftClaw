@@ -25,6 +25,7 @@ from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
 from communication.community import overlay_id
+from security.permissions.openclaw_integration import build_permissioned_registry, permissions_enabled
 
 
 # Tool-dispatch logger — one line per LLM tool invocation, paired with
@@ -814,7 +815,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
     P_NONE = {"type": "object", "properties": {}, "additionalProperties": False}
 
-    return ToolRegistry([
+    tools = [
         Tool("peers_list",
              "List peers verified on any overlay this agent runs.",
              P_NONE, peers_list),
@@ -1041,4 +1042,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         Tool("torrent_stats",
              "Snapshot of all currently-known torrents (downloads + seeds).",
              P_NONE, torrent_stats),
-    ])
+    ]
+    if permissions_enabled(agent.config):
+        return build_permissioned_registry(agent, tools, Tool, ToolRegistry)
+    return ToolRegistry(tools)

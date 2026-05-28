@@ -34,6 +34,16 @@ resource_labels:
     description: "Internal permission decision log"
   legacy.safe:
     description: "Legacy safe SQ1/gateway compatibility tool"
+  public.network:
+    description: "Public peer, overlay, torrent, and manifest metadata"
+  public.wallet:
+    description: "Public wallet address and balance metadata"
+  protected.wallet:
+    description: "Wallet-spending operations that must be scoped"
+  protected.community_log:
+    description: "High-level append-only community-log operations"
+  protected.seedbox_command:
+    description: "High-level seedbox, overlay, and torrent operations"
 
 rules:
   - id: allow_read_public_task_data
@@ -160,3 +170,49 @@ rules:
     effect: allow
     validators:
       - max_payload_size
+
+  - id: allow_read_public_network_metadata
+    role: normal_agent
+    action: read
+    resource_label: public.network
+    effect: allow
+    validators:
+      - max_payload_size
+
+  - id: allow_read_public_wallet_metadata
+    role: normal_agent
+    action: read
+    resource_label: public.wallet
+    effect: allow
+    validators:
+      - max_payload_size
+
+  - id: allow_wallet_request_guarded
+    role: normal_agent
+    action: request
+    resource_label: protected.wallet
+    effect: allow
+    requires_capability: true
+    validators:
+      - max_payload_size
+
+  - id: allow_community_log_command_guarded
+    role: normal_agent
+    action: append
+    resource_label: protected.community_log
+    effect: allow
+    requires_capability: true
+    validators:
+      - max_payload_size
+      - egress_no_secret_canary
+
+  - id: allow_seedbox_command_guarded
+    role: normal_agent
+    action: request
+    resource_label: protected.seedbox_command
+    effect: allow
+    requires_capability: true
+    validators:
+      - max_payload_size
+      - no_path_traversal
+      - egress_no_secret_canary

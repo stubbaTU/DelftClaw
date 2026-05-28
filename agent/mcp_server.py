@@ -22,15 +22,13 @@ Boot via ``python -m agent ... mcp --mcp-host 0.0.0.0 --mcp-port 8765``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
 from agent.runtime import OpenClawAgent
 from agent.tools import _resolve_peer, build_tools  # type: ignore[attr-defined]
-from communication.community import overlay_id
-from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
+from security.permissions.openclaw_integration import authorize_openclaw_tool
 
 
 SERVER_INSTRUCTIONS = """\
@@ -66,8 +64,22 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     FastMCP can produce the OpenAI-style JSON schema automatically. The
     functions close over ``agent``.
     """
-    OVERLAY_DESCRIBE_MAX_BYTES = 32 * 1024
     mcp = FastMCP(name=name, instructions=SERVER_INSTRUCTIONS)
+    registry = build_tools(agent)
+
+    async def _dispatch(tool_name: str, args: dict[str, Any]) -> Any:
+        return await registry.dispatch(tool_name, args)
+
+    async def _authorize_mcp_only(tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        decision = authorize_openclaw_tool(agent, tool_name, args)
+        if decision.decision == "deny":
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "permission_denied",
+                "reason": decision.reason,
+            }
+        return None
 
     # ---- Peers ---------------------------------------------------------
 
@@ -76,11 +88,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         Returns a list of {mid_hex, address} dicts.
         """
-        out: list[dict[str, Any]] = []
-        for p in agent.known_peers():
-            addr = list(p.addresses.values())[0] if p.addresses else None
-            out.append({"mid_hex": p.mid.hex(), "address": addr})
-        return out
+        return await _dispatch("peers_list", {})
 
     mcp.add_tool(peers_list)
 
@@ -95,11 +103,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         Returns ``{mid_hex, address}``.
         """
-        peer = agent.add_peer(host, port, pubkey_hex)
-        return {
-            "mid_hex": peer.mid.hex(),
-            "address": list(peer.addresses.values())[0] if peer.addresses else None,
-        }
+        return await _dispatch("peer_add", {"host": host, "port": port, "pubkey_hex": pubkey_hex})
 
     mcp.add_tool(peer_add)
 
@@ -107,19 +111,19 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     async def wallet_address() -> str:
         """Return this agent's testnet receiving address (bech32)."""
-        return agent.wallet.address()
+        return await _dispatch("wallet_address", {})
 
     mcp.add_tool(wallet_address)
 
     async def wallet_balance() -> int:
         """Return this agent's wallet balance in satoshis (refreshes from network)."""
-        return agent.wallet.balance_sats(refresh=True)
+        return await _dispatch("wallet_balance", {})
 
     mcp.add_tool(wallet_balance)
 
     async def wallet_send(to_address: str, sats: int) -> str:
         """Send satoshis to a Bitcoin address. Returns the broadcast txid (hex)."""
-        return agent.wallet.send(to_address, sats)
+        return await _dispatch("wallet_send", {"to_address": to_address, "sats": sats})
 
     mcp.add_tool(wallet_send)
 
@@ -135,6 +139,12 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         Returns {txid, accepted}.
         """
         import asyncio
+        denied = await _authorize_mcp_only(
+            "seedbox_donate_and_join",
+            {"gatekeeper_mid": gatekeeper_mid, "sats": sats, "gatekeeper_address": gatekeeper_address},
+        )
+        if denied is not None:
+            return denied
         peer = _resolve_peer(agent, gatekeeper_mid)
         txid = agent.wallet.send(gatekeeper_address, sats)
         future = agent.seedbox.request_join(peer, bytes.fromhex(txid))
@@ -147,44 +157,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     async def community_log_list_recent(limit: int = 50) -> list[dict[str, Any]]:
         """Return recent accepted/rejected community-log entries from local + peer logs."""
-        from agent.community_state import COMMUNITY_ACTIONS, replay_community
-
-        manifest = agent.network_manifest
-        if manifest is None:
-            return []
-        all_entries = agent.all_community_entries()
-        relevant = [entry for entry in all_entries if entry.get("action") in COMMUNITY_ACTIONS]
-        ordered = sorted(
-            relevant,
-            key=lambda entry: (
-                entry.get("timestamp", ""),
-                entry.get("reporter_id", ""),
-                entry.get("entry_hash", ""),
-            ),
-        )
-        state = replay_community(manifest, ordered)
-        accepted_hashes = (
-            {donation.entry_hash for donation in state.donations}
-            | {purchase.entry_hash for purchase in state.purchases}
-            | {provisioned.entry_hash for provisioned in state.provisioned}
-        )
-        out: list[dict[str, Any]] = []
-        for entry in ordered[-max(0, int(limit)):]:
-            details = entry.get("details") or {}
-            out.append(
-                {
-                    "action": entry.get("action"),
-                    "reporter_id": entry.get("reporter_id"),
-                    "timestamp": entry.get("timestamp"),
-                    "entry_hash": entry.get("entry_hash"),
-                    "amount_sats": details.get("amount_sats"),
-                    "cost_sats": details.get("cost_sats"),
-                    "purchase_intent_hash": details.get("purchase_intent_hash"),
-                    "seedbox_url": details.get("seedbox_url"),
-                    "accepted": entry.get("entry_hash") in accepted_hashes,
-                }
-            )
-        return out
+        return await _dispatch("community_log_list_recent", {"limit": limit})
 
     mcp.add_tool(community_log_list_recent)
 
@@ -205,30 +178,19 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     async def community_treasury_balance() -> dict[str, Any]:
         """Current no-custody treasury balance derived by replaying signed logs."""
-        summary = _community_summary()
-        if not summary:
-            return {"error": "no_manifest_loaded"}
-        return summary
+        return await _dispatch("community_treasury_balance", {})
 
     mcp.add_tool(community_treasury_balance)
 
     async def community_member_count() -> dict[str, Any]:
         """Current admitted-member count plus this node's membership status."""
-        summary = _community_summary()
-        if not summary:
-            return {"error": "no_manifest_loaded"}
-        return {
-            "member_count": summary["member_count"],
-            "my_membership_status": summary["my_membership_status"],
-            "threshold_active": summary["threshold_active"],
-        }
+        return await _dispatch("community_member_count", {})
 
     mcp.add_tool(community_member_count)
 
     async def community_donate_and_join(amount_sats: int) -> dict[str, Any]:
         """Append a signed donation_intent entry to this agent's community log."""
-        registry = build_tools(agent)
-        return await registry.dispatch("community_donate_and_join", {"amount_sats": amount_sats})
+        return await _dispatch("community_donate_and_join", {"amount_sats": amount_sats})
 
     mcp.add_tool(community_donate_and_join)
 
@@ -238,8 +200,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         timeout_s: float = 30.0,
     ) -> dict[str, Any]:
         """Ship a signed donation_intent to a gatekeeper peer and await admission."""
-        registry = build_tools(agent)
-        return await registry.dispatch(
+        return await _dispatch(
             "community_join_via_peer",
             {
                 "gatekeeper_mid": gatekeeper_mid,
@@ -252,9 +213,8 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
         """Append a signed seedbox_purchase_intent if growth threshold is active."""
-        registry = build_tools(agent)
         args = {} if cost_sats is None else {"cost_sats": cost_sats}
-        return await registry.dispatch("seedbox_purchase_propose", args)
+        return await _dispatch("seedbox_purchase_propose", args)
 
     mcp.add_tool(seedbox_purchase_propose)
 
@@ -264,8 +224,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         seedbox_pubkey_hex: str,
     ) -> dict[str, Any]:
         """Append a signed seedbox_provisioned entry closing a purchase intent."""
-        registry = build_tools(agent)
-        return await registry.dispatch(
+        return await _dispatch(
             "seedbox_provisioned",
             {
                 "purchase_intent_hash": purchase_intent_hash,
@@ -286,11 +245,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         handler_text}], errors, dependencies}``. Read this before calling
         ``overlay_invoke`` so you know each message's field shape.
         """
-        from protocol.registry import overlay_to_dict
-        return [
-            overlay_to_dict(agent.registry._compiled[cid])
-            for cid in agent.registry.list_loaded()
-        ]
+        return await _dispatch("overlays_list", {})
 
     mcp.add_tool(overlays_list)
 
@@ -304,26 +259,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         registered via ``register_community(cls)`` — there is no
         canonical text for a hand-written Python class.
         """
-        try:
-            community_id = bytes.fromhex(community_id_hex)
-        except ValueError as exc:
-            return {"error": f"bad_hex:{exc}"}
-        compiled = agent.registry._compiled.get(community_id)
-        if compiled is None:
-            return {"error": f"overlay_not_loaded:{community_id_hex}"}
-        if compiled.origin == "python_class":
-            return {"error": "no_canonical_md:python_class"}
-        md_bytes = compiled.canonical_md_bytes
-        truncated = False
-        if len(md_bytes) > OVERLAY_DESCRIBE_MAX_BYTES:
-            md_bytes = md_bytes[:OVERLAY_DESCRIBE_MAX_BYTES]
-            truncated = True
-        return {
-            "community_id_hex": community_id_hex,
-            "md_text": md_bytes.decode("utf-8", errors="replace"),
-            "truncated": truncated,
-            "size_bytes": len(compiled.canonical_md_bytes),
-        }
+        return await _dispatch("overlay_describe", {"community_id_hex": community_id_hex})
 
     mcp.add_tool(overlay_describe)
 
@@ -332,13 +268,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         Returns {community_id_hex, loaded}.
         """
-        import asyncio
-        peer = _resolve_peer(agent, peer_mid)
-        md_hash = bytes.fromhex(md_hash_hex)
-        future = agent.seedbox.fetch_overlay(peer, md_hash)
-        md_bytes = await asyncio.wait_for(future, timeout=10)
-        instance = agent.registry.load(md_bytes.decode("utf-8"))
-        return {"community_id_hex": instance.community_id.hex(), "loaded": True}
+        return await _dispatch("overlay_fetch_and_load", {"peer_mid": peer_mid, "md_hash_hex": md_hash_hex})
 
     mcp.add_tool(overlay_fetch_and_load)
 
@@ -347,9 +277,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         Returns the 20-byte md_hash as hex.
         """
-        md_hash = agent.seedbox.publish_overlay(md_text)
-        agent.registry.load(md_text)
-        return md_hash.hex()
+        return await _dispatch("overlay_publish", {"md_text": md_text})
 
     mcp.add_tool(overlay_publish)
 
@@ -363,29 +291,15 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
         ``fields`` maps field_name -> value (str / int / list / dict).
         """
-        community_id = bytes.fromhex(community_id_hex)
-        instance = agent.registry.get(community_id)
-        if instance is None:
-            return {"error": f"overlay_not_loaded:{community_id_hex}"}
-        compiled = agent.registry._compiled[community_id]
-        if message_name not in compiled.payload_classes:
-            return {"error": f"unknown_message:{message_name}"}
-        if (
-            compiled.parsed is not None
-            and compiled.parsed.identity.get("name") == "content_community"
-            and message_name == "SEARCH_RESPONSE"
-        ):
-            return {
-                "error": (
-                    "do_not_send_SEARCH_RESPONSE_manually: content seekers must send "
-                    "SEARCH_REQUEST; the seedbox handler sends SEARCH_RESPONSE automatically"
-                )
-            }
-        payload_cls = compiled.payload_classes[message_name]
-        coerced = [_coerce_field_value(v) for v in fields.values()]
-        peer = _resolve_peer(agent, peer_mid)
-        instance.ez_send(peer, payload_cls(*coerced))
-        return {"sent": True}
+        return await _dispatch(
+            "overlay_invoke",
+            {
+                "community_id_hex": community_id_hex,
+                "message_name": message_name,
+                "peer_mid": peer_mid,
+                "fields": fields,
+            },
+        )
 
     mcp.add_tool(overlay_invoke)
 
@@ -399,17 +313,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         manifest is also published into the bootstrap community so future
         joiners can fetch it via MANIFEST_REQUEST.
         """
-        from protocol.manifest import ManifestParseError
-        try:
-            manifest = agent.load_manifest(md_text)
-        except ManifestParseError as exc:
-            return {"error": f"manifest_parse_failed: {exc}"}
-        return {
-            "network_id_hex": manifest.network_id.hex(),
-            "name": manifest.identity.get("name", ""),
-            "genesis_peers": len(manifest.genesis_peers),
-            "default_overlays": list(manifest.default_overlays),
-        }
+        return await _dispatch("agent_inject_manifest", {"md_text": md_text})
 
     mcp.add_tool(agent_inject_manifest)
 
@@ -430,6 +334,9 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         """
         import asyncio
         from protocol.manifest import ManifestParseError
+        denied = await _authorize_mcp_only("network_join", {"manifest_md_text": manifest_md_text})
+        if denied is not None:
+            return denied
 
         if manifest_md_text is not None:
             try:
@@ -507,32 +414,19 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     async def torrent_seed(path: str) -> str:
         """Begin seeding a local file. Returns the resulting magnet URI."""
-        return agent.bittorrent.seed(Path(path))
+        return await _dispatch("torrent_seed", {"path": path})
 
     mcp.add_tool(torrent_seed)
 
     async def torrent_fetch(magnet_uri: str, timeout_s: float = 600.0) -> str:
         """Download a magnet URI to local disk; returns the saved path."""
-        import asyncio
-        future = agent.bittorrent.add_magnet(magnet_uri)
-        path = await asyncio.wait_for(future, timeout=timeout_s)
-        return str(path)
+        return await _dispatch("torrent_fetch", {"magnet_uri": magnet_uri, "timeout_s": timeout_s})
 
     mcp.add_tool(torrent_fetch)
 
     async def torrent_stats() -> list[dict[str, Any]]:
         """Snapshot of all currently-known torrents (downloads + seeds)."""
-        return [
-            {
-                "magnet": t.magnet,
-                "name": t.name,
-                "progress": t.progress,
-                "seeding": t.seeding,
-                "save_path": str(t.save_path) if t.save_path else None,
-                "peers": t.peers,
-            }
-            for t in agent.bittorrent.stats()
-        ]
+        return await _dispatch("torrent_stats", {})
 
     mcp.add_tool(torrent_stats)
 

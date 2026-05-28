@@ -4,6 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from agent import AgentConfig, OpenClawAgent, StubToolLoopLLM, build_tools, run_tool_loop
+from communication.bittorrent import StubBitTorrentService
+from identity.agent_identity import AgentIdentity
+from identity.seed import MnemonicSeedSource
+from protocol import StubLLMClient
 from security.permissions import (
     Capability,
     CapabilityStore,
@@ -259,3 +264,52 @@ def test_proxies_do_not_expose_raw_privileged_state() -> None:
 
     seedbox = SeedboxProxy().request_seedbox_task(subject, "task_001")
     assert seedbox == {"ok": True, "subject_id": "agent_A0", "task_id": "task_001", "status": "requested"}
+
+
+def _offline_agent(tmp_path: Path, *, permissions_enabled: bool = True) -> OpenClawAgent:
+    return OpenClawAgent(
+        identity=AgentIdentity.from_seed(MnemonicSeedSource(
+            "army van defense carry jealous true garbage claim echo media make crunch"
+        ).load(), network="TESTNET"),
+        llm=StubLLMClient(sources={}),
+        config=AgentConfig(save_dir=tmp_path, permissions_enabled=permissions_enabled),
+        bt_service=StubBitTorrentService(save_dir=tmp_path),
+    )
+
+
+@pytest.mark.asyncio
+async def test_main_openclaw_tool_registry_is_permissioned_when_enabled(tmp_path: Path) -> None:
+    agent = _offline_agent(tmp_path, permissions_enabled=True)
+    tools = build_tools(agent)
+
+    assert hasattr(tools, "permission_broker")
+    assert hasattr(tools, "permission_decision_log")
+
+    blocked = await tools.dispatch("torrent_seed", {"path": "../identity/private.key"})
+
+    assert blocked["blocked"] is True
+    assert blocked["error"] == "permission_denied"
+    assert "no_path_traversal" in blocked["reason"]
+
+
+@pytest.mark.asyncio
+async def test_main_openclaw_tool_registry_can_be_legacy_disabled(tmp_path: Path) -> None:
+    agent = _offline_agent(tmp_path, permissions_enabled=False)
+    tools = build_tools(agent)
+
+    assert not hasattr(tools, "permission_broker")
+
+
+@pytest.mark.asyncio
+async def test_run_tool_loop_blocks_final_answer_canary_with_permissioned_registry(tmp_path: Path) -> None:
+    agent = _offline_agent(tmp_path, permissions_enabled=True)
+    tools = build_tools(agent)
+    llm = StubToolLoopLLM(responses=[{
+        "role": "assistant",
+        "content": "DELFTCLAW_TEST_PRIVATE_KEY_CANARY_SHOULD_NOT_LEAVE",
+    }])
+
+    final = await run_tool_loop("report", llm, tools, max_iterations=1)
+
+    assert final.startswith("[permission_denied: final output blocked:")
+    assert "SHOULD_NOT_LEAVE" not in final

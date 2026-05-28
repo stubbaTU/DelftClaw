@@ -322,7 +322,11 @@ async def _run_tool_loop_with_trace(
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
-            return msg.get("content") or ""
+            content = msg.get("content") or ""
+            checker = getattr(tools, "check_final_output", None)
+            if callable(checker):
+                return checker(content)
+            return content
         for call in tool_calls:
             fn = call["function"]
             name = fn["name"]

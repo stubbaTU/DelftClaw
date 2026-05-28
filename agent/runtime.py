@@ -62,6 +62,11 @@ class AgentConfig:
     # redteam pull-sync demo uses, so behaviour is consistent.
     pull_interval_s: float = 5.0
     pull_batch: int = 100
+    # VukZero Layer-1 permission enforcement. Enabled by default for VukZero
+    # agents. Set False only for legacy compatibility tests or intentional
+    # no-defense baselines. The VUKZERO_PERMISSION_SYSTEM environment variable
+    # can still explicitly enable/disable enforcement for deployed agents.
+    permissions_enabled: bool | None = True
 
 
 class OpenClawAgent:
