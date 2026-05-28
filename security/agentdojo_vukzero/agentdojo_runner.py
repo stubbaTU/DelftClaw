@@ -313,7 +313,6 @@ def _build_openrouter_pipeline(
 
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
     from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
-    from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM
     from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop, ToolsExecutor, tool_result_to_str
 
     resolved_key = api_key or os.getenv("OPENROUTER_API_KEY")
@@ -331,7 +330,7 @@ def _build_openrouter_pipeline(
         tool_output_format=tool_output_format,
     )
     client = openai.OpenAI(api_key=resolved_key, base_url=resolved_base_url)
-    llm = OpenAILLM(client, model)
+    llm = _OpenRouterChatLLM(client, model)
     assert config.system_message is not None
     formatter = partial(tool_result_to_str, dump_fn=json.dumps) if tool_output_format == "json" else tool_result_to_str
     tools_loop = ToolsExecutionLoop([ToolsExecutor(formatter), llm])
@@ -342,6 +341,96 @@ def _build_openrouter_pipeline(
     # arbitrary OpenRouter model IDs are treated as AgentDojo's "Local model".
     pipeline.name = f"local-openrouter-{model.replace('/', '_')}"
     return pipeline
+
+
+class _OpenRouterChatLLM:
+    name = "local-openrouter"
+
+    def __init__(self, client: Any, model: str) -> None:
+        self.client = client
+        self.model = model
+
+    def query(self, query, runtime, env=None, messages=(), extra_args=None):  # type: ignore[no-untyped-def]
+        from openai._types import NOT_GIVEN
+
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=[_agentdojo_message_to_openrouter(message) for message in messages],
+            tools=[_agentdojo_function_to_openrouter(tool) for tool in runtime.functions.values()] or NOT_GIVEN,
+            tool_choice="auto" if runtime.functions else NOT_GIVEN,
+            temperature=0,
+        )
+        return query, runtime, env, [*messages, _openrouter_message_to_agentdojo(completion.choices[0].message)], extra_args or {}
+
+
+def _agentdojo_message_to_openrouter(message: Any) -> dict[str, Any]:
+    role = message["role"]
+    if role == "system":
+        return {"role": "system", "content": _content_text(message)}
+    if role == "user":
+        return {"role": "user", "content": _content_text(message)}
+    if role == "assistant":
+        out: dict[str, Any] = {"role": "assistant", "content": _content_text(message) or None}
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            out["tool_calls"] = [{
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.function,
+                    "arguments": json.dumps(tool_call.args),
+                },
+            } for tool_call in tool_calls]
+        return out
+    if role == "tool":
+        return {
+            "role": "tool",
+            "content": message.get("error") or _content_text(message),
+            "tool_call_id": message.get("tool_call_id"),
+            "name": message["tool_call"].function,
+        }
+    raise ValueError(f"unsupported AgentDojo message role: {role}")
+
+
+def _agentdojo_function_to_openrouter(function: Any) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": function.name,
+            "description": function.description,
+            "parameters": function.parameters.model_json_schema(),
+        },
+    }
+
+
+def _openrouter_message_to_agentdojo(message: Any) -> Any:
+    from agentdojo.functions_runtime import FunctionCall
+    from agentdojo.types import ChatAssistantMessage, text_content_block_from_string
+
+    tool_calls = None
+    if message.tool_calls:
+        tool_calls = [
+            FunctionCall(
+                function=tool_call.function.name,
+                args=json.loads(tool_call.function.arguments or "{}"),
+                id=tool_call.id,
+            )
+            for tool_call in message.tool_calls
+        ]
+    content = None if message.content is None else [text_content_block_from_string(message.content)]
+    return ChatAssistantMessage(role="assistant", content=content, tool_calls=tool_calls)
+
+
+def _content_text(message: Any) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("content", "")) if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return ""
 
 
 def _insert_vukzero_pipeline_element(pipeline: Any, decision_logs: list[DecisionLog]) -> None:
