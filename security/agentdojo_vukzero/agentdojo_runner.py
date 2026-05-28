@@ -332,7 +332,11 @@ def _build_openrouter_pipeline(
     formatter = partial(tool_result_to_str, dump_fn=json.dumps) if tool_output_format == "json" else tool_result_to_str
     tools_loop = ToolsExecutionLoop([ToolsExecutor(formatter), llm])
     pipeline = AgentPipeline([SystemMessage(config.system_message), InitQuery(), llm, tools_loop])
-    pipeline.name = f"openrouter-{model.replace('/', '_')}"
+    # AgentDojo's bundled important_instructions attack derives a prose model
+    # name by checking whether a known model enum string is contained in the
+    # pipeline name. Keep "local" in this custom OpenRouter pipeline name so
+    # arbitrary OpenRouter model IDs are treated as AgentDojo's "Local model".
+    pipeline.name = f"local-openrouter-{model.replace('/', '_')}"
     return pipeline
 
 
