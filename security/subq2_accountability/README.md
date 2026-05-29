@@ -60,12 +60,13 @@ python -m security.subq2_accountability.live_orchestrator \
   --api-key "$OPENROUTER_API_KEY" \
   --max-iterations 5 \
   --estimator-interval 1 \
-  --expulsion-threshold 5 \
-  --start-openclaw-runtime
+  --expulsion-threshold 5
 ```
 
-`--start-openclaw-runtime` starts disposable OpenClawAgent runtimes for the
-agents in each scenario. Deterministic smoke tests may omit it.
+`live-llm` drives the SQ2 OpenClaw-style tool loop with a real
+OpenAI-compatible model. Add `--start-openclaw-runtime` only when the VPS has
+the full IPv8/OpenClaw runtime dependencies installed and you specifically want
+to start disposable network runtimes for each actor.
 
 ## Conditions
 

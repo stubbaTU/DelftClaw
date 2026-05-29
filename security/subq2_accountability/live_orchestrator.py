@@ -9,6 +9,8 @@ import platform
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -793,15 +795,60 @@ def _stable_identity_hash(public_key: bytes, network: str) -> str:
 
 
 def _build_live_tool_llm(*, base_url: str, model: str, api_key: str, temperature: float) -> Any:
-    from agent import OpenAICompatibleToolLLM
-
-    return OpenAICompatibleToolLLM(
+    return _HTTPToolLLM(
         base_url=base_url,
         model_id=model,
         api_key=api_key,
         temperature=temperature,
         timeout_s=120.0,
     )
+
+
+@dataclass
+class _HTTPToolLLM:
+    base_url: str
+    model_id: str
+    api_key: str = ""
+    temperature: float = 0.0
+    timeout_s: float = 120.0
+
+    def complete_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        max_tokens: int = 4096,
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.model_id,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": max_tokens,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self.base_url.rstrip("/") + "/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "DelftClaw-SQ2/1.0",
+                **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code} from OpenAI-compatible endpoint: {error_body[:1000]}") from exc
+
+        choices = response_payload.get("choices") or []
+        if not choices or not choices[0].get("message"):
+            raise RuntimeError(f"OpenAI-compatible endpoint returned no assistant message: {response_payload}")
+        return {"message": choices[0]["message"]}
 
 
 def _build_disposable_openclaw_agent(trial_dir: Path, agent_id: str) -> Any:
@@ -1091,7 +1138,7 @@ def main() -> int:
         estimator_interval=args.estimator_interval,
         expulsion_threshold=args.expulsion_threshold,
         limit=args.limit,
-        start_openclaw_runtime=args.start_openclaw_runtime or args.mode == "live-llm",
+        start_openclaw_runtime=args.start_openclaw_runtime,
     ))
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
     return 0
