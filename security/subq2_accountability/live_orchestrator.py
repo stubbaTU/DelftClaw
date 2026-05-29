@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import platform
@@ -21,6 +22,7 @@ from identity.seed import Seed
 from protocol.llm import StubLLMClient
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.results import write_csv, write_json
+from security.subq2_accountability.event_gateway import normalize_reputation_tool_call
 from security.subq2_accountability.generate_live_scenarios import generate_scenarios
 from security.subq2_accountability.live_agent_tools import (
     SQ2ToolContext,
@@ -39,8 +41,8 @@ from security.subq2_accountability.live_scenario_schema import (
     SQ2LiveEvent,
     SQ2LiveScenario,
     load_scenarios,
+    normalize_condition,
     sanitized_event_for_agent,
-    scenario_to_dict,
     write_scenarios,
 )
 from security.subq2_accountability.naive_reputation import NaiveReputationState
@@ -57,6 +59,75 @@ AGENT_SPECS = {
     "sybil": AGENT_SPEC_DIR / "sybil_agent.md",
     "auditor": AGENT_SPEC_DIR / "auditor_agent.md",
 }
+
+TRIAL_COLUMNS = [
+    "scenario_id",
+    "family",
+    "intensity",
+    "seed",
+    "condition",
+    "mode",
+    "model",
+    "num_events",
+    "first_malicious_event_index",
+    "first_malicious_round",
+    "first_flag_event_index",
+    "first_flag_round",
+    "expelled",
+    "expulsion_event_index",
+    "expulsion_round",
+    "reputation_lag_events",
+    "reputation_lag_rounds",
+    "censored",
+    "fallout_broadcasts",
+    "fraudulent_microtasks_accepted",
+    "wash_trades_accepted",
+    "collusive_endorsements_accepted",
+    "fraudulent_reputation_gain",
+    "false_positive_count",
+    "false_positive_rate",
+    "final_attacker_reputation",
+    "final_attacker_suspicion",
+    "detection_reasons",
+    "log_chain_valid",
+    "error",
+]
+
+TIMESERIES_COLUMNS = [
+    "scenario_id",
+    "condition",
+    "round",
+    "event_index",
+    "agent_id",
+    "reputation_score",
+    "suspicion_score",
+    "is_expelled",
+]
+
+LAG_COLUMNS = [
+    "condition",
+    "family",
+    "runs",
+    "expelled_runs",
+    "expulsion_rate",
+    "mean_reputation_lag_events",
+    "median_reputation_lag_events",
+    "mean_reputation_lag_rounds",
+    "median_reputation_lag_rounds",
+    "censored_runs",
+]
+
+FALLOUT_COLUMNS = [
+    "condition",
+    "family",
+    "runs",
+    "mean_fallout_broadcasts",
+    "median_fallout_broadcasts",
+    "mean_fraudulent_microtasks_accepted",
+    "mean_wash_trades_accepted",
+    "mean_collusive_endorsements_accepted",
+    "mean_fraudulent_reputation_gain",
+]
 
 
 @dataclass
@@ -82,6 +153,8 @@ class SQ2TrialRun:
     intensity: str
     seed: int
     condition: str
+    mode: str
+    model: str
     num_events: int
     first_malicious_event_index: int
     first_malicious_round: int
@@ -113,6 +186,8 @@ class SQ2RunContext:
     condition: str
     trial_dir: Path
     threshold: int
+    mode: str
+    model: str
     naive: NaiveReputationState | None = None
     signed_log: SignedAppendOnlyLog | None = None
     estimator: TrustworthyEstimator | None = None
@@ -203,6 +278,7 @@ async def run_live_measurement(
         scenarios = generate_scenarios()
         write_scenarios(scenarios_path, scenarios)
     scenarios = load_scenarios(scenarios_path)
+    conditions = [normalize_condition(condition) for condition in conditions]
     if limit is not None:
         scenarios = scenarios[:limit]
 
@@ -275,7 +351,7 @@ async def run_scenario_condition(
 ) -> dict[str, Any]:
     trial_dir = root / "trials" / _safe(condition) / _safe(scenario.scenario_id)
     trial_dir.mkdir(parents=True, exist_ok=True)
-    ctx = _build_run_context(scenario, condition, trial_dir, expulsion_threshold)
+    ctx = _build_run_context(scenario, condition, trial_dir, expulsion_threshold, mode=mode, model=model)
     agents: dict[str, OpenClawAgent] = {}
     started: list[OpenClawAgent] = []
     error: str | None = None
@@ -409,8 +485,10 @@ async def run_scenario_condition(
     )
     log_valid: bool | None = None
     log_errors: list[str] = []
+    num_log_entries = 0
     if ctx.signed_log is not None:
         log_valid, log_errors = ctx.signed_log.verify_integrity()
+        num_log_entries = len(ctx.signed_log.read_entries())
     return {
         "trial": trial,
         "events": ctx.event_records,
@@ -419,6 +497,8 @@ async def run_scenario_condition(
             "scenario_id": scenario.scenario_id,
             "condition": condition,
             "log_chain_valid": log_valid,
+            "num_log_entries": num_log_entries,
+            "tampering_detected": bool(log_errors),
             "errors": ";".join(log_errors),
             "log_path": str(ctx.signed_log.log_path) if ctx.signed_log is not None else "",
         },
@@ -431,6 +511,32 @@ async def _submit_event(
     tool_name: str,
     tool_args: dict[str, Any],
 ) -> dict[str, Any]:
+    gateway = normalize_reputation_tool_call(
+        scenario=ctx.scenario,
+        condition=ctx.condition,
+        event=event,
+        tool_name=tool_name,
+        tool_args=tool_args,
+    )
+    if not gateway.ok:
+        record = SQ2EventRecord(
+            scenario_id=ctx.scenario.scenario_id,
+            condition=ctx.condition,
+            event_index=event.index,
+            round=event.round,
+            actor_id=event.actor_id,
+            event_type=event.event_type,
+            accepted=False,
+            blocked=True,
+            expelled_after_event=ctx.is_expelled(event.actor_id),
+            reason=gateway.reason,
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
+        ctx.event_records.append(record)
+        _record_timeseries(ctx, event)
+        return {"ok": False, "accepted": False, "blocked": True, "reason": gateway.reason}
+
     if ctx.is_expelled(event.actor_id):
         record = SQ2EventRecord(
             scenario_id=ctx.scenario.scenario_id,
@@ -470,6 +576,7 @@ async def _submit_event(
                 details={
                     "scenario_id": ctx.scenario.scenario_id,
                     "event": sanitized_event_for_agent(event),
+                    "canonical_event": gateway.canonical_event,
                     "agent_tool": tool_name,
                     "agent_tool_args": tool_args,
                 },
@@ -537,6 +644,9 @@ def _build_run_context(
     condition: str,
     trial_dir: Path,
     threshold: int,
+    *,
+    mode: str,
+    model: str,
 ) -> SQ2RunContext:
     if condition == CONDITION_C0:
         return SQ2RunContext(
@@ -544,6 +654,8 @@ def _build_run_context(
             condition=condition,
             trial_dir=trial_dir,
             threshold=threshold,
+            mode=mode,
+            model=model if mode == "live-llm" else "scripted-deterministic",
             naive=NaiveReputationState(primary_attacker=scenario.primary_attacker),
         )
     if condition == CONDITION_C1:
@@ -560,6 +672,8 @@ def _build_run_context(
             condition=condition,
             trial_dir=trial_dir,
             threshold=threshold,
+            mode=mode,
+            model=model if mode == "live-llm" else "scripted-deterministic",
             signed_log=signed_log,
             estimator=estimator,
             reporter_id=identity.identity_hash,
@@ -632,6 +746,8 @@ def _trial_from_context(ctx: SQ2RunContext, error: str | None) -> SQ2TrialRun:
         intensity=scenario.intensity,
         seed=scenario.seed,
         condition=ctx.condition,
+        mode=ctx.mode,
+        model=ctx.model,
         num_events=len(scenario.events),
         first_malicious_event_index=scenario.first_malicious_event_index,
         first_malicious_round=scenario.first_malicious_round,
@@ -762,19 +878,19 @@ def _export(
     write_json(export_dir / "sq2_run_metadata.json", metadata)
     write_json(export_dir / "sq2_summary.json", _summary(trials))
     shutil.copyfile(scenarios_path, export_dir / "sq2_scenarios.jsonl")
-    write_csv(export_dir / "sq2_trials.csv", trial_rows)
+    _write_csv_ordered(export_dir / "sq2_trials.csv", trial_rows, TRIAL_COLUMNS)
     with (export_dir / "sq2_trials.jsonl").open("w", encoding="utf-8") as handle:
         for trial in trials:
             handle.write(json.dumps(asdict(trial), sort_keys=True) + "\n")
     with (export_dir / "sq2_event_log.jsonl").open("w", encoding="utf-8") as handle:
         for row in event_rows:
             handle.write(json.dumps(row, default=str, sort_keys=True) + "\n")
-    write_csv(export_dir / "sq2_reputation_timeseries.csv", timeseries_rows)
+    _write_csv_ordered(export_dir / "sq2_reputation_timeseries.csv", timeseries_rows, TIMESERIES_COLUMNS)
     write_csv(export_dir / "sq2_expulsions.csv", _expulsion_rows(trials))
-    write_csv(export_dir / "sq2_lag_by_condition.csv", _lag_rows(trials, "condition"))
-    write_csv(export_dir / "sq2_lag_by_family.csv", _lag_rows(trials, "family"))
-    write_csv(export_dir / "sq2_fallout_by_condition.csv", _fallout_rows(trials, "condition"))
-    write_csv(export_dir / "sq2_fallout_by_family.csv", _fallout_rows(trials, "family"))
+    _write_csv_ordered(export_dir / "sq2_lag_by_condition.csv", _lag_rows(trials, "condition"), [c for c in LAG_COLUMNS if c != "family"])
+    _write_csv_ordered(export_dir / "sq2_lag_by_family.csv", _lag_rows(trials, "family"), [c for c in LAG_COLUMNS if c != "condition"])
+    _write_csv_ordered(export_dir / "sq2_fallout_by_condition.csv", _fallout_rows(trials, "condition"), [c for c in FALLOUT_COLUMNS if c != "family"])
+    _write_csv_ordered(export_dir / "sq2_fallout_by_family.csv", _fallout_rows(trials, "family"), [c for c in FALLOUT_COLUMNS if c != "condition"])
     write_csv(export_dir / "sq2_detection_reasons.csv", _detection_reason_rows(trials))
     write_csv(export_dir / "sq2_false_positives.csv", _false_positive_rows(trials))
     write_csv(export_dir / "sq2_log_integrity.csv", log_integrity_rows)
@@ -785,6 +901,16 @@ def _export(
             f"trials={len(trials)} scenarios={len(scenarios)}\n",
             encoding="utf-8",
         )
+
+
+def _write_csv_ordered(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    extras = sorted({key for row in rows for key in row if key not in columns})
+    fieldnames = [*columns, *extras]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _summary(trials: list[SQ2TrialRun]) -> dict[str, Any]:

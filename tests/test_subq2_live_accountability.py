@@ -5,8 +5,16 @@ import json
 from pathlib import Path
 
 from security.subq2_accountability.generate_live_scenarios import FAMILIES, INTENSITIES, generate_scenarios
+from security.subq2_accountability.event_gateway import normalize_reputation_tool_call
 from security.subq2_accountability.live_orchestrator import run_live_measurement
-from security.subq2_accountability.live_scenario_schema import CONDITION_C0, CONDITION_C1, write_scenarios
+from security.subq2_accountability.live_agent_tools import event_tool_for_type, tool_args_for_event
+from security.subq2_accountability.live_scenario_schema import (
+    CONDITION_C0,
+    CONDITION_C1,
+    HONEST_AGENTS,
+    sanitized_event_for_agent,
+    write_scenarios,
+)
 
 
 def test_generate_live_scenarios_produces_frozen_matrix() -> None:
@@ -16,12 +24,21 @@ def test_generate_live_scenarios_produces_frozen_matrix() -> None:
     assert {scenario.family for scenario in scenarios} == set(FAMILIES)
     assert {scenario.intensity for scenario in scenarios} == set(INTENSITIES)
     assert all(scenario.primary_attacker == "M0" for scenario in scenarios)
+    assert all(scenario.honest_agents == HONEST_AGENTS for scenario in scenarios)
     assert all(scenario.events for scenario in scenarios)
+    assert all(event.instruction for scenario in scenarios for event in scenario.events)
     assert all(
         scenario.first_malicious_event_index
         == next(event.index for event in scenario.events if event.ground_truth == "malicious")
         for scenario in scenarios
     )
+
+
+def test_generate_live_scenarios_can_scale_beyond_paper_default() -> None:
+    scenarios = generate_scenarios(seeds_per_cell=7)
+
+    assert len(scenarios) == 4 * 3 * 7
+    assert "seed07" in {scenario.scenario_id.rsplit("_", 1)[-1] for scenario in scenarios}
 
 
 def test_live_orchestrator_deterministic_smoke_exports_required_files(tmp_path: Path) -> None:
@@ -108,3 +125,38 @@ def test_c1_signed_logs_verify_and_do_not_expose_ground_truth(tmp_path: Path) ->
     assert "ground_truth" not in content
     assert "signature" in content
     assert "entry_hash" in content
+
+
+def test_sanitized_scenario_step_hides_evaluator_fields() -> None:
+    event = generate_scenarios()[0].events[0]
+    visible = sanitized_event_for_agent(event)
+
+    assert "ground_truth" not in visible
+    assert "first_malicious_event_index" not in visible
+    assert visible["instruction"]
+
+
+def test_event_gateway_normalizes_and_rejects_wrong_tool() -> None:
+    scenario = generate_scenarios()[0]
+    event = scenario.events[0]
+
+    ok = normalize_reputation_tool_call(
+        scenario=scenario,
+        condition=CONDITION_C1,
+        event=event,
+        tool_name=event_tool_for_type(event.event_type),
+        tool_args=tool_args_for_event(event),
+    )
+    bad = normalize_reputation_tool_call(
+        scenario=scenario,
+        condition=CONDITION_C1,
+        event=event,
+        tool_name="broadcast_donation",
+        tool_args={},
+    )
+
+    assert ok.ok is True
+    assert ok.canonical_event["source"] == "live_openclaw_tool_call"
+    assert "ground_truth" not in json.dumps(ok.canonical_event)
+    assert bad.ok is False
+    assert "tool mismatch" in bad.reason

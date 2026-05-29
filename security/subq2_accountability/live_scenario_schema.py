@@ -13,8 +13,10 @@ PRIMARY_ATTACKER = "M0"
 SYBIL_AGENTS = ["S1", "S2"]
 ALL_AGENTS = HONEST_AGENTS + [PRIMARY_ATTACKER] + SYBIL_AGENTS
 
-CONDITION_C0 = "C0_no_accountability"
-CONDITION_C1 = "C1_tamper_evident_accountability"
+CONDITION_C0 = "C0_naive_reputation"
+CONDITION_C1 = "C1_vukzero_accountability"
+LEGACY_CONDITION_C0 = "C0_no_accountability"
+LEGACY_CONDITION_C1 = "C1_tamper_evident_accountability"
 
 EVENT_TYPES = {
     "microtask_assigned",
@@ -40,6 +42,7 @@ class SQ2LiveEvent:
     actor_id: str
     event_type: str
     payload: dict[str, Any]
+    instruction: str = ""
     ground_truth: str = "benign"
 
     @property
@@ -61,6 +64,7 @@ class SQ2LiveScenario:
     defection_event_index: int
     defection_round: int
     events: list[SQ2LiveEvent] = field(default_factory=list)
+    honest_agents: list[str] = field(default_factory=lambda: list(HONEST_AGENTS))
 
 
 def scenario_to_dict(scenario: SQ2LiveScenario) -> dict[str, Any]:
@@ -74,6 +78,7 @@ def scenario_from_dict(raw: dict[str, Any]) -> SQ2LiveScenario:
     ]
     data = dict(raw)
     data["events"] = events
+    data.setdefault("honest_agents", list(HONEST_AGENTS))
     return SQ2LiveScenario(**data)
 
 
@@ -107,6 +112,10 @@ def validate_scenarios(scenarios: list[SQ2LiveScenario]) -> list[str]:
         seen_ids.add(scenario.scenario_id)
         if scenario.primary_attacker not in scenario.malicious_agents:
             errors.append(f"{scenario.scenario_id}: primary attacker not in malicious_agents")
+        if scenario.honest_agents != HONEST_AGENTS:
+            errors.append(f"{scenario.scenario_id}: honest_agents mismatch")
+        if scenario.num_honest_agents != len(HONEST_AGENTS):
+            errors.append(f"{scenario.scenario_id}: num_honest_agents mismatch")
         if scenario.primary_attacker != PRIMARY_ATTACKER:
             errors.append(f"{scenario.scenario_id}: expected primary attacker {PRIMARY_ATTACKER}")
         event_indices = [event.index for event in scenario.events]
@@ -139,6 +148,14 @@ def sanitized_event_for_agent(event: SQ2LiveEvent) -> dict[str, Any]:
         "timestamp": event.timestamp,
         "actor_id": event.actor_id,
         "event_type": event.event_type,
+        "instruction": event.instruction,
         "payload": event.payload,
     }
 
+
+def normalize_condition(condition: str) -> str:
+    if condition == LEGACY_CONDITION_C0:
+        return CONDITION_C0
+    if condition == LEGACY_CONDITION_C1:
+        return CONDITION_C1
+    return condition

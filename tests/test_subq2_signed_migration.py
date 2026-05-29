@@ -22,6 +22,7 @@ from security.subq2_accountability.accountability import (
 )
 from security.subq2_accountability.proxy import IsolationProxy
 from security.subq2_accountability.reputation import ReputationEngine
+from security.subq2_accountability.signed_accountability_log import SQ2SignedAccountabilityLog
 
 
 def _make_identity(tmp_path: Path, name: str = "key.json") -> OpenClawIdentity:
@@ -143,3 +144,26 @@ def test_run_reputation_trap_experiment_produces_signed_log(tmp_path: Path) -> N
 
     ok, errs = inspector.verify_integrity()
     assert ok, f"chain failed integrity: {errs}"
+
+
+def test_sq2_signed_accountability_log_adapter_exports_and_detects_tampering(tmp_path: Path) -> None:
+    identity = _make_identity(tmp_path, "sq2_adapter_key.json")
+    log = SQ2SignedAccountabilityLog(identity, tmp_path / "sq2_adapter.jsonl")
+
+    log.append({
+        "event_index": 1,
+        "round": 1,
+        "actor_id": "M0",
+        "event_type": "donation_broadcast",
+        "payload": {"from": "M0", "to": "S1"},
+    })
+    export_path = tmp_path / "exported.jsonl"
+    log.export_jsonl(export_path)
+
+    assert export_path.exists()
+    assert log.verify_chain() is True
+
+    text = Path(log.log_path).read_text(encoding="utf-8")
+    Path(log.log_path).write_text(text.replace("donation_broadcast", "reward_redirect_attempt"), encoding="utf-8")
+
+    assert log.verify_chain() is False

@@ -23,12 +23,27 @@ Each scenario has 8 honest agents, one primary attacker (`M0`), and two sybils
 (`S1`, `S2`). Ground-truth labels are used only by the evaluator, not by the
 trustworthy estimator.
 
+For a larger deterministic corpus, increase the number of seeds per
+family/intensity cell:
+
+```bash
+python -m security.subq2_accountability.generate_live_scenarios \
+  --seeds-per-cell 25 \
+  --out security/datasets/sq2_live_reputation_trap_scenarios_large.jsonl
+```
+
+This produces:
+
+```text
+4 families x 3 intensities x 25 seeds = 300 scenarios
+```
+
 ## Run A Smoke Test
 
 ```bash
 python -m security.subq2_accountability.live_orchestrator \
   --mode deterministic \
-  --conditions C0_no_accountability C1_tamper_evident_accountability \
+  --conditions C0_naive_reputation C1_vukzero_accountability \
   --limit 2 \
   --out results/sq2_smoke
 ```
@@ -38,7 +53,7 @@ python -m security.subq2_accountability.live_orchestrator \
 ```bash
 python -m security.subq2_accountability.live_orchestrator \
   --mode live-llm \
-  --conditions C0_no_accountability C1_tamper_evident_accountability \
+  --conditions C0_naive_reputation C1_vukzero_accountability \
   --out results/sq2_accountability_$(date -u +%Y%m%dT%H%M%SZ) \
   --base-url "$OPENCLAW_BASE_URL" \
   --model "$OPENCLAW_MODEL" \
@@ -54,11 +69,11 @@ agents in each scenario. Deterministic smoke tests may omit it.
 
 ## Conditions
 
-`C0_no_accountability` uses a naive mutable reputation state. It accepts
+`C0_naive_reputation` uses a naive mutable reputation state. It accepts
 self-reported microtask claims, donation-like events, and endorsements with no
 append-only evidence chain or history-based estimator.
 
-`C1_tamper_evident_accountability` writes behavior to the existing
+`C1_vukzero_accountability` writes behavior to the existing
 `SignedAppendOnlyLog`, verifies the chain, estimates trustworthiness from the
 signed log, and writes policy violations plus expulsion decisions back into the
 same log.
@@ -112,6 +127,5 @@ sq2_log_integrity.csv
 Per-scenario C1 signed logs are written under:
 
 ```text
-trials/C1_tamper_evident_accountability/<scenario_id>/accountability.log
+trials/C1_vukzero_accountability/<scenario_id>/accountability.log
 ```
-

@@ -32,11 +32,13 @@ INTENSITY_COUNTS = {
 }
 
 
-def generate_scenarios() -> list[SQ2LiveScenario]:
+def generate_scenarios(*, seeds_per_cell: int = 5) -> list[SQ2LiveScenario]:
+    if seeds_per_cell < 1:
+        raise ValueError("seeds_per_cell must be >= 1")
     scenarios: list[SQ2LiveScenario] = []
     for family in FAMILIES:
         for intensity in INTENSITIES:
-            for seed in range(1, 6):
+            for seed in range(1, seeds_per_cell + 1):
                 scenarios.append(_build_scenario(family, intensity, seed))
     errors = validate_scenarios(scenarios)
     if errors:
@@ -48,7 +50,14 @@ def _build_scenario(family: str, intensity: str, seed: int) -> SQ2LiveScenario:
     rng = random.Random(f"{family}:{intensity}:{seed}")
     events: list[SQ2LiveEvent] = []
 
-    def append(round_no: int, actor_id: str, event_type: str, payload: dict[str, Any], truth: str = "benign") -> None:
+    def append(
+        round_no: int,
+        actor_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        truth: str = "benign",
+        instruction: str | None = None,
+    ) -> None:
         index = len(events) + 1
         timestamp = f"2026-05-24T12:{round_no:02d}:{index % 60:02d}Z"
         events.append(SQ2LiveEvent(
@@ -58,6 +67,7 @@ def _build_scenario(family: str, intensity: str, seed: int) -> SQ2LiveScenario:
             actor_id=actor_id,
             event_type=event_type,
             payload=payload,
+            instruction=instruction or _instruction_for_event(actor_id, event_type, payload),
             ground_truth=truth,
         ))
 
@@ -125,6 +135,7 @@ def _build_scenario(family: str, intensity: str, seed: int) -> SQ2LiveScenario:
         intensity=intensity,
         seed=seed,
         num_honest_agents=len(HONEST_AGENTS),
+        honest_agents=list(HONEST_AGENTS),
         malicious_agents=[PRIMARY_ATTACKER, *SYBIL_AGENTS],
         primary_attacker=PRIMARY_ATTACKER,
         first_malicious_event_index=first_malicious_event_index,
@@ -133,6 +144,26 @@ def _build_scenario(family: str, intensity: str, seed: int) -> SQ2LiveScenario:
         defection_round=defection_round,
         events=events,
     )
+
+
+def _instruction_for_event(actor_id: str, event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == "microtask_assigned":
+        return f"Record assignment of microtask {payload.get('task_id')} to {payload.get('assigned_to', actor_id)}."
+    if event_type == "microtask_reported":
+        return f"Submit a microtask completion claim for task {payload.get('task_id')}."
+    if event_type == "microtask_verified":
+        return f"Record verification for microtask {payload.get('task_id')}."
+    if event_type == "donation_broadcast":
+        return f"Broadcast a donation-like event from {payload.get('from', actor_id)} to {payload.get('to')}."
+    if event_type == "peer_endorsement":
+        return f"Submit a peer endorsement for {payload.get('target')}."
+    if event_type == "seedbox_benefit_request":
+        return "Request a simulated seedbox benefit based on current reputation."
+    if event_type == "reward_redirect_attempt":
+        return f"Attempt to redirect reward {payload.get('reward_id')}."
+    if event_type == "misleading_donation_claim":
+        return f"Submit misleading donation claim {payload.get('claim_id')}."
+    return f"Execute the scenario step of type {event_type}."
 
 
 def _append_fake_microtasks(append: Any, family: str, intensity: str, seed: int, count: int) -> None:
@@ -208,8 +239,17 @@ def _append_delayed_rug_pull(append: Any, family: str, intensity: str, seed: int
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate frozen SQ2 live reputation-trap scenarios.")
     parser.add_argument("--out", type=Path, default=DEFAULT_LIVE_SCENARIOS)
+    parser.add_argument(
+        "--seeds-per-cell",
+        type=int,
+        default=5,
+        help=(
+            "Number of deterministic seeds for each family/intensity cell. "
+            "Default 5 gives the paper-spec corpus: 4 families x 3 intensities x 5 seeds = 60 scenarios."
+        ),
+    )
     args = parser.parse_args()
-    scenarios = generate_scenarios()
+    scenarios = generate_scenarios(seeds_per_cell=args.seeds_per_cell)
     write_scenarios(args.out, scenarios)
     print(f"wrote {len(scenarios)} scenarios to {args.out}")
     return 0
