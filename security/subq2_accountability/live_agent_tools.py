@@ -5,8 +5,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
-from agent.tools import Tool, ToolRegistry
 from security.subq2_accountability.live_scenario_schema import SQ2LiveEvent, sanitized_event_for_agent
+
+try:
+    from agent.tools import Tool, ToolRegistry
+except ModuleNotFoundError:
+    @dataclass
+    class Tool:
+        name: str
+        description: str
+        parameters: dict[str, Any]
+        fn: Callable[..., Awaitable[Any]]
+
+        def spec(self) -> dict[str, Any]:
+            return {
+                "type": "function",
+                "function": {
+                    "name": self.name,
+                    "description": self.description,
+                    "parameters": self.parameters,
+                },
+            }
+
+    class ToolRegistry:
+        def __init__(self, tools: list[Tool]) -> None:
+            self._tools = {tool.name: tool for tool in tools}
+
+        def specs(self) -> list[dict[str, Any]]:
+            return [tool.spec() for tool in self._tools.values()]
+
+        async def dispatch(self, name: str, args: dict[str, Any]) -> Any:
+            if name not in self._tools:
+                return {"error": f"unknown_tool:{name}"}
+            return await self._tools[name].fn(**args)
 
 
 @dataclass
@@ -219,4 +250,3 @@ def scripted_tool_message(call_id: str, name: str, args: dict[str, Any]) -> dict
             "function": {"name": name, "arguments": json.dumps(args, sort_keys=True)},
         }],
     }
-

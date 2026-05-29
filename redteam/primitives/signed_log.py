@@ -15,15 +15,17 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from identity.openclaw_identity import OpenClawIdentity
 from shared.logging import get_logger
 
 _logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from identity.openclaw_identity import OpenClawIdentity
 
 
 def _canonical_bytes(payload: Any) -> bytes:

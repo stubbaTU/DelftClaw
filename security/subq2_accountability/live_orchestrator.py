@@ -13,13 +13,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent import AgentConfig, OpenAICompatibleToolLLM, OpenClawAgent
-from agent.tools import ToolRegistry
-from communication.bittorrent import StubBitTorrentService
-from identity.agent_identity import AgentIdentity
-from identity.openclaw_identity import OpenClawIdentity
-from identity.seed import Seed
-from protocol.llm import StubLLMClient
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.results import write_csv, write_json
 from security.subq2_accountability.event_gateway import normalize_reputation_tool_call
@@ -352,16 +347,16 @@ async def run_scenario_condition(
     trial_dir = root / "trials" / _safe(condition) / _safe(scenario.scenario_id)
     trial_dir.mkdir(parents=True, exist_ok=True)
     ctx = _build_run_context(scenario, condition, trial_dir, expulsion_threshold, mode=mode, model=model)
-    agents: dict[str, OpenClawAgent] = {}
-    started: list[OpenClawAgent] = []
+    agents: dict[str, Any] = {}
+    started: list[Any] = []
     error: str | None = None
 
     try:
-        async def agent_for(actor_id: str) -> OpenClawAgent:
+        async def agent_for(actor_id: str) -> Any:
             if actor_id not in agents:
-                agent = _build_disposable_openclaw_agent(trial_dir, actor_id)
+                agent = _build_disposable_openclaw_agent(trial_dir, actor_id) if mode == "live-llm" or start_openclaw_runtime else None
                 agents[actor_id] = agent
-                if start_openclaw_runtime:
+                if start_openclaw_runtime and agent is not None:
                     await agent.start()
                     started.append(agent)
             return agents[actor_id]
@@ -395,13 +390,7 @@ async def run_scenario_condition(
             llm = (
                 ScriptedSQ2LLM(event)
                 if mode == "deterministic"
-                else OpenAICompatibleToolLLM(
-                    base_url=base_url,
-                    model_id=model,
-                    api_key=api_key,
-                    temperature=temperature,
-                    timeout_s=120.0,
-                )
+                else _build_live_tool_llm(base_url=base_url, model=model, api_key=api_key, temperature=temperature)
             )
 
             submit_called = False
@@ -433,7 +422,7 @@ async def run_scenario_condition(
                 "event_index": event.index,
                 "actor_id": event.actor_id,
                 "final_output": final_output,
-                "openclaw_agent_save_dir": str(agent.config.save_dir),
+                "openclaw_agent_save_dir": str(agent.config.save_dir) if agent is not None else str(trial_dir / "scripted_agents" / event.actor_id),
             })
             if not submit_called:
                 ctx.event_records.append(SQ2EventRecord(
@@ -659,7 +648,7 @@ def _build_run_context(
             naive=NaiveReputationState(primary_attacker=scenario.primary_attacker),
         )
     if condition == CONDITION_C1:
-        identity = OpenClawIdentity(network="TESTNET", key_path=str(trial_dir / "accountability_identity.json"))
+        identity = _SQ2SigningIdentity(network="TESTNET", key_path=trial_dir / "accountability_identity.json")
         signed_log = SignedAppendOnlyLog(identity, log_path=str(trial_dir / "accountability.log"))
         estimator = TrustworthyEstimator(
             log=signed_log,
@@ -774,7 +763,54 @@ def _trial_from_context(ctx: SQ2RunContext, error: str | None) -> SQ2TrialRun:
     )
 
 
-def _build_disposable_openclaw_agent(trial_dir: Path, agent_id: str) -> OpenClawAgent:
+class _SQ2SigningIdentity:
+    def __init__(self, *, network: str, key_path: Path) -> None:
+        self.network = network.upper()
+        self.key_path = key_path
+        self.key_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.key_path.exists():
+            private_bytes = bytes.fromhex(json.loads(self.key_path.read_text(encoding="utf-8"))["private_key"])
+            self._private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+        else:
+            self._private_key = Ed25519PrivateKey.generate()
+            private_bytes = self._private_key.private_bytes(
+                encoding=Encoding.Raw,
+                format=PrivateFormat.Raw,
+                encryption_algorithm=NoEncryption(),
+            )
+            self.key_path.write_text(json.dumps({"network": self.network, "private_key": private_bytes.hex()}), encoding="utf-8")
+        self.public_key = self._private_key.public_key().public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+        self.identity_hash = _stable_identity_hash(self.public_key, self.network)
+
+    def sign(self, data: bytes) -> bytes:
+        return self._private_key.sign(data)
+
+
+def _stable_identity_hash(public_key: bytes, network: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(public_key + network.encode("utf-8")).hexdigest()
+
+
+def _build_live_tool_llm(*, base_url: str, model: str, api_key: str, temperature: float) -> Any:
+    from agent import OpenAICompatibleToolLLM
+
+    return OpenAICompatibleToolLLM(
+        base_url=base_url,
+        model_id=model,
+        api_key=api_key,
+        temperature=temperature,
+        timeout_s=120.0,
+    )
+
+
+def _build_disposable_openclaw_agent(trial_dir: Path, agent_id: str) -> Any:
+    from agent import AgentConfig, OpenClawAgent
+    from communication.bittorrent import StubBitTorrentService
+    from identity.agent_identity import AgentIdentity
+    from identity.seed import Seed
+    from protocol.llm import StubLLMClient
+
     mnemonic = Seed.generate_mnemonic(128)
     identity = AgentIdentity(network="TESTNET", mnemonic=mnemonic)
     save_dir = trial_dir / "openclaw_agents" / agent_id
