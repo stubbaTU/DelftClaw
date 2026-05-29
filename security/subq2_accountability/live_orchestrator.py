@@ -356,7 +356,7 @@ async def run_scenario_condition(
     try:
         async def agent_for(actor_id: str) -> Any:
             if actor_id not in agents:
-                agent = _build_disposable_openclaw_agent(trial_dir, actor_id) if mode == "live-llm" or start_openclaw_runtime else None
+                agent = _build_disposable_openclaw_agent(trial_dir, actor_id) if start_openclaw_runtime else None
                 agents[actor_id] = agent
                 if start_openclaw_runtime and agent is not None:
                     await agent.start()
