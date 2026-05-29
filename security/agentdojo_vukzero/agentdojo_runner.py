@@ -196,53 +196,67 @@ def _run_real_agentdojo(
         elif condition != C0_AGENTDOJO_BASELINE:
             raise ValueError(f"unknown condition: {condition}")
 
-        with OutputLogger(str(condition_dir)):
-            if attack:
-                attacker = load_attack(attack, task_suite, pipeline)
-                suite_results = benchmark_suite_with_injections(
-                    pipeline,
-                    task_suite,
-                    attacker,
-                    logdir=condition_dir,
-                    force_rerun=force_rerun,
-                    user_tasks=user_tasks,
-                    injection_tasks=injection_tasks,
-                    benchmark_version=benchmark_version,
-                )
-            else:
-                suite_results = benchmark_suite_without_injections(
-                    pipeline,
-                    task_suite,
-                    logdir=condition_dir,
-                    force_rerun=force_rerun,
-                    user_tasks=user_tasks,
-                    benchmark_version=benchmark_version,
-                )
-
-        permission_entries = _decision_entries(decision_logs)
-        condition_rows = suite_results_to_trial_rows(
-            condition=condition,
-            suite=suite,
-            attack=attack,
-            model=model,
-            suite_results=suite_results,
-            permission_entries=permission_entries,
-        )
-        all_trial_rows.extend(condition_rows)
-        all_permission_entries.extend(permission_entries)
-        write_outputs(
-            condition_dir,
-            metadata={
+        try:
+            with OutputLogger(str(condition_dir)):
+                if attack:
+                    attacker = load_attack(attack, task_suite, pipeline)
+                    suite_results = benchmark_suite_with_injections(
+                        pipeline,
+                        task_suite,
+                        attacker,
+                        logdir=condition_dir,
+                        force_rerun=force_rerun,
+                        user_tasks=user_tasks,
+                        injection_tasks=injection_tasks,
+                        benchmark_version=benchmark_version,
+                    )
+                else:
+                    suite_results = benchmark_suite_without_injections(
+                        pipeline,
+                        task_suite,
+                        logdir=condition_dir,
+                        force_rerun=force_rerun,
+                        user_tasks=user_tasks,
+                        benchmark_version=benchmark_version,
+                    )
+            permission_entries = _decision_entries(decision_logs)
+            condition_rows = suite_results_to_trial_rows(
+                condition=condition,
+                suite=suite,
+                attack=attack,
+                model=model,
+                suite_results=suite_results,
+                permission_entries=permission_entries,
+            )
+            condition_metadata = {
                 "suite": suite,
                 "attack": attack,
                 "model": model,
                 "condition": condition,
                 "benchmark_version": benchmark_version,
                 "dry_run": False,
-            },
-            trial_rows=condition_rows,
-            permission_entries=permission_entries,
-        )
+            }
+        except Exception as exc:  # noqa: BLE001 - preserve partial benchmark artifacts on provider/runtime failures.
+            permission_entries = _decision_entries(decision_logs)
+            condition_rows = [_error_trial_row(
+                condition=condition,
+                suite=suite,
+                attack=attack,
+                model=model,
+                error=exc,
+            )]
+            condition_metadata = {
+                "suite": suite,
+                "attack": attack,
+                "model": model,
+                "condition": condition,
+                "benchmark_version": benchmark_version,
+                "dry_run": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        all_trial_rows.extend(condition_rows)
+        all_permission_entries.extend(permission_entries)
+        write_outputs(condition_dir, metadata=condition_metadata, trial_rows=condition_rows, permission_entries=permission_entries)
 
     return write_outputs(
         logdir,
@@ -257,6 +271,25 @@ def _run_real_agentdojo(
         trial_rows=all_trial_rows,
         permission_entries=all_permission_entries,
     )
+
+
+def _error_trial_row(*, condition: str, suite: str, attack: str, model: str, error: Exception) -> dict[str, Any]:
+    return {
+        "condition": condition,
+        "suite": suite,
+        "attack": attack,
+        "model": model,
+        "user_task_id": "",
+        "injection_task_id": "",
+        "utility_success": False,
+        "attack_success": False,
+        "error": f"{type(error).__name__}: {error}",
+        "num_tool_calls": 0,
+        "num_allowed_tool_calls": 0,
+        "num_blocked_tool_calls": 0,
+        "blocked_reasons": "",
+        "final_output_blocked": False,
+    }
 
 
 def _build_agentdojo_pipeline(
@@ -351,7 +384,10 @@ class _OpenRouterChatLLM:
         self.model = model
 
     def query(self, query, runtime, env=None, messages=(), extra_args=None):  # type: ignore[no-untyped-def]
-        from openai._types import NOT_GIVEN
+        try:
+            from openai._types import NOT_GIVEN
+        except ModuleNotFoundError:
+            NOT_GIVEN = _NotGiven()
 
         completion = self.client.chat.completions.create(
             model=self.model,
@@ -360,7 +396,26 @@ class _OpenRouterChatLLM:
             tool_choice="auto" if runtime.functions else NOT_GIVEN,
             temperature=0,
         )
-        return query, runtime, env, [*messages, _openrouter_message_to_agentdojo(completion.choices[0].message)], extra_args or {}
+        choices = getattr(completion, "choices", None)
+        if not choices:
+            raise RuntimeError(f"OpenRouter returned no completion choices: {_openrouter_response_debug(completion)}")
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        if message is None:
+            raise RuntimeError(f"OpenRouter returned a completion choice without a message: {_openrouter_response_debug(completion)}")
+        return query, runtime, env, [*messages, _openrouter_message_to_agentdojo(message)], extra_args or {}
+
+
+def _openrouter_response_debug(completion: Any) -> str:
+    if hasattr(completion, "model_dump_json"):
+        return completion.model_dump_json(exclude_none=True)
+    if hasattr(completion, "model_dump"):
+        return json.dumps(completion.model_dump(), default=str)
+    return repr(completion)
+
+
+class _NotGiven:
+    pass
 
 
 def _agentdojo_message_to_openrouter(message: Any) -> dict[str, Any]:

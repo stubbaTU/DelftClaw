@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from security.agentdojo_vukzero.agentdojo_runner import C0_AGENTDOJO_BASELINE, C1_AGENTDOJO_VUKZERO, run_agentdojo_vukzero
+import pytest
+
+from security.agentdojo_vukzero.agentdojo_runner import (
+    C0_AGENTDOJO_BASELINE,
+    C1_AGENTDOJO_VUKZERO,
+    _OpenRouterChatLLM,
+    run_agentdojo_vukzero,
+)
 from security.agentdojo_vukzero.export_results import suite_results_to_trial_rows
 
 
@@ -67,3 +74,20 @@ def test_suite_results_to_trial_rows_marks_failed_injection_as_not_attack_succes
     )
 
     assert rows[0]["attack_success"] is False
+
+
+def test_openrouter_llm_reports_empty_provider_response() -> None:
+    class FakeCompletions:
+        def create(self, **kwargs):  # noqa: ANN001
+            return type("Completion", (), {"choices": None})()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    class FakeRuntime:
+        functions = {}
+
+    llm = _OpenRouterChatLLM(FakeClient(), "provider/model")
+
+    with pytest.raises(RuntimeError, match="no completion choices"):
+        llm.query("", FakeRuntime(), messages=())
