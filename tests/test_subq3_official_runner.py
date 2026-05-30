@@ -67,10 +67,10 @@ def test_agent_egress_filter_deletes_exact_inserted_rules(monkeypatch, tmp_path:
     monkeypatch.setattr("security.subq3_containment.official_runner.subprocess.run", fake_run)
     monkeypatch.setattr("security.subq3_containment.official_runner.shutil.which", lambda name: None)
 
-    with _agent_egress_filter(42424, 12345, tmp_path):
+    with _agent_egress_filter("172.31.77.11", "172.31.77.1", 12345, tmp_path):
         pass
 
-    delete_commands = [cmd for cmd in commands if cmd[:3] == ["iptables", "-D", "OUTPUT"]]
+    delete_commands = [cmd for cmd in commands if cmd[:3] == ["iptables", "-D", "DOCKER-USER"]]
     assert len(delete_commands) == 2
     assert all("1" not in cmd[3:] and "2" not in cmd[3:] for cmd in delete_commands)
-    assert ["iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", "42424", "-j", "REJECT"] in delete_commands
+    assert ["iptables", "-D", "DOCKER-USER", "-s", "172.31.77.11", "-j", "REJECT"] in delete_commands

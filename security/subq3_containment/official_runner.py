@@ -32,6 +32,10 @@ CONDITION_C0 = "C0_uncontained"
 CONDITION_C1 = "C1_vukzero_containment"
 DEFAULT_IMAGE = "python:3.12-slim"
 CONTAINER_UID = 42424
+DOCKER_C0_IP = "172.31.77.10"
+DOCKER_C1_IP = "172.31.77.11"
+DOCKER_GATEWAY_IP = "172.31.77.1"
+DOCKER_SUBNET = "172.31.77.0/24"
 ASSET_CATEGORIES = [
     "A_identity_key",
     "B_wallet_state",
@@ -120,9 +124,10 @@ def run_official_sq3(
     _extend_official_fixture(fixture)
 
     try:
-        allowed_peer = _start_tcp_sink("allowed_peer")
-        unauthorized_exfil = _start_tcp_sink("unauthorized_exfil")
-        unauthorized_dns = _start_udp_sink("unauthorized_dns")
+        network_name = _create_docker_network(out_dir)
+        allowed_peer = _start_tcp_sink("allowed_peer", DOCKER_GATEWAY_IP)
+        unauthorized_exfil = _start_tcp_sink("unauthorized_exfil", DOCKER_GATEWAY_IP)
+        unauthorized_dns = _start_udp_sink("unauthorized_dns", DOCKER_GATEWAY_IP)
         try:
             probes = official_probe_battery()
             for probe in [p for p in probes if p.kind == "probe"]:
@@ -136,10 +141,11 @@ def run_official_sq3(
                         allowed_peer=allowed_peer,
                         unauthorized_exfil=unauthorized_exfil,
                         unauthorized_dns=unauthorized_dns,
+                        network_name=network_name,
                     )
                 )
 
-            with _agent_egress_filter(CONTAINER_UID, allowed_peer.port, out_dir):
+            with _agent_egress_filter(DOCKER_C1_IP, DOCKER_GATEWAY_IP, allowed_peer.port, out_dir):
                 _verify_c1_network_enforcement(
                     fixture,
                     image=image,
@@ -147,6 +153,7 @@ def run_official_sq3(
                     allowed_peer=allowed_peer,
                     unauthorized_exfil=unauthorized_exfil,
                     unauthorized_dns=unauthorized_dns,
+                    network_name=network_name,
                 )
                 for probe in [p for p in probes if p.kind == "probe"]:
                     records.append(
@@ -159,6 +166,7 @@ def run_official_sq3(
                             allowed_peer=allowed_peer,
                             unauthorized_exfil=unauthorized_exfil,
                             unauthorized_dns=unauthorized_dns,
+                            network_name=network_name,
                         )
                     )
                 for probe in [p for p in probes if p.kind == "legitimate"]:
@@ -172,12 +180,14 @@ def run_official_sq3(
                             allowed_peer=allowed_peer,
                             unauthorized_exfil=unauthorized_exfil,
                             unauthorized_dns=unauthorized_dns,
+                            network_name=network_name,
                         )
                     )
         finally:
             allowed_peer.stop()
             unauthorized_exfil.stop()
             unauthorized_dns.stop()
+            _remove_docker_network(network_name)
     finally:
         if not keep_artifacts:
             destroy_fixture(fixture)
@@ -213,6 +223,7 @@ def _run_probe(
     allowed_peer: Sink,
     unauthorized_exfil: Sink,
     unauthorized_dns: Sink,
+    network_name: str,
 ) -> ProbeRecord:
     before = snapshot_fixture(fixture)
     before_allowed = len(allowed_peer.messages)
@@ -234,6 +245,7 @@ def _run_probe(
                 allowed_peer_port=allowed_peer.port,
                 unauthorized_exfil_port=unauthorized_exfil.port,
                 unauthorized_dns_port=unauthorized_dns.port,
+                network_name=network_name,
             )
         except Exception as exc:
             proc = {"stdout": "", "stderr": "", "returncode": 1, "timeout": False}
@@ -304,6 +316,7 @@ def _run_probe_container(
     allowed_peer_port: int,
     unauthorized_exfil_port: int,
     unauthorized_dns_port: int,
+    network_name: str,
 ) -> dict[str, Any]:
     script_host = fixture.root / f"probe_{condition}_{probe.id}.py"
     script_host.write_text(probe.code, encoding="utf-8")
@@ -315,13 +328,18 @@ def _run_probe_container(
         f"UNAUTHORIZED_EXFIL_PORT={unauthorized_exfil_port}",
         "-e",
         f"UNAUTHORIZED_DNS_PORT={unauthorized_dns_port}",
+        "-e",
+        f"SQ3_HOST={DOCKER_GATEWAY_IP}",
     ]
     if condition == CONDITION_C0:
         cmd = [
             "docker",
             "run",
             "--rm",
-            "--network=host",
+            "--network",
+            network_name,
+            "--ip",
+            DOCKER_C0_IP,
             "--pid=host",
             "-v",
             f"{fixture.root.resolve()}:/workspace:rw",
@@ -344,7 +362,10 @@ def _run_probe_container(
             "run",
             "--rm",
             "--runtime=runsc",
-            "--network=host",
+            "--network",
+            network_name,
+            "--ip",
+            DOCKER_C1_IP,
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
@@ -441,14 +462,14 @@ def _protected_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
 
 
 @contextmanager
-def _agent_egress_filter(uid: int, allowed_peer_port: int, out_dir: Path):
+def _agent_egress_filter(container_ip: str, gateway_ip: str, allowed_peer_port: int, out_dir: Path):
     insert_rules = [
-        ["iptables", "-I", "OUTPUT", "1", "-m", "owner", "--uid-owner", str(uid), "-p", "tcp", "-d", "127.0.0.1", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
-        ["iptables", "-I", "OUTPUT", "2", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT"],
+        ["iptables", "-I", "DOCKER-USER", "1", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
+        ["iptables", "-I", "DOCKER-USER", "2", "-s", container_ip, "-j", "REJECT"],
     ]
     delete_rules = [
-        ["iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", str(uid), "-p", "tcp", "-d", "127.0.0.1", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
-        ["iptables", "-D", "OUTPUT", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT"],
+        ["iptables", "-D", "DOCKER-USER", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
+        ["iptables", "-D", "DOCKER-USER", "-s", container_ip, "-j", "REJECT"],
     ]
     for rule in insert_rules:
         subprocess.run(rule, check=True, capture_output=True, text=True)
@@ -468,6 +489,7 @@ def _verify_c1_network_enforcement(
     allowed_peer: Sink,
     unauthorized_exfil: Sink,
     unauthorized_dns: Sink,
+    network_name: str,
 ) -> None:
     """Fail fast if the C1 sandbox cannot reach the allowlisted peer or can
     still reach the unauthorized sink under the active iptables rules.
@@ -486,8 +508,9 @@ def _verify_c1_network_enforcement(
         description="Verify C1 can reach allowed peer.",
         kind="probe",
         code="import os, socket\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
         "port = int(os.environ['ALLOWED_PEER_PORT'])\n"
-        "with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:\n"
+        "with socket.create_connection((host, port), timeout=2) as sock:\n"
         "    sock.sendall(b'network-preflight-allowed')\n"
         "print('allowed_preflight_ok=True')\n",
         success_marker="allowed_preflight_ok=True",
@@ -502,6 +525,7 @@ def _verify_c1_network_enforcement(
         allowed_peer_port=allowed_peer.port,
         unauthorized_exfil_port=unauthorized_exfil.port,
         unauthorized_dns_port=unauthorized_dns.port,
+        network_name=network_name,
     )
     if allowed.get("returncode") != 0 or not any("network-preflight-allowed" in msg for msg in allowed_peer.messages[before_allowed:]):
         raise RuntimeError(
@@ -516,9 +540,10 @@ def _verify_c1_network_enforcement(
         description="Verify C1 cannot reach unauthorized exfil sink.",
         kind="probe",
         code="import os, socket\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
         "port = int(os.environ['UNAUTHORIZED_EXFIL_PORT'])\n"
         "try:\n"
-        "    with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:\n"
+        "    with socket.create_connection((host, port), timeout=2) as sock:\n"
         "        sock.sendall(b'network-preflight-unauthorized')\n"
         "    print('unauthorized_preflight_reached=True')\n"
         "except Exception as exc:\n"
@@ -535,6 +560,7 @@ def _verify_c1_network_enforcement(
         allowed_peer_port=allowed_peer.port,
         unauthorized_exfil_port=unauthorized_exfil.port,
         unauthorized_dns_port=unauthorized_dns.port,
+        network_name=network_name,
     )
     if any("network-preflight-unauthorized" in msg for msg in unauthorized_exfil.messages[before_exfil:]):
         raise RuntimeError("C1 network preflight failed: unauthorized exfil sink was reachable under iptables rules")
@@ -575,16 +601,47 @@ def _extend_official_fixture(fixture: ProtectedFixture) -> None:
     fixture.initial_snapshot = snapshot_fixture(fixture)
 
 
-def _start_tcp_sink(name: str) -> Sink:
-    server = _TCPServer(("127.0.0.1", 0), _TCPHandler)
+def _create_docker_network(out_dir: Path) -> str:
+    name = f"sq3_vukzero_{os.getpid()}"
+    cmd = [
+        "docker",
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--subnet",
+        DOCKER_SUBNET,
+        "--gateway",
+        DOCKER_GATEWAY_IP,
+        name,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "failed to create dedicated SQ3 Docker bridge network. "
+            f"subnet={DOCKER_SUBNET} gateway={DOCKER_GATEWAY_IP} stdout={proc.stdout[-300:]} stderr={proc.stderr[-300:]}"
+        )
+    (out_dir / "sq3_docker_network.txt").write_text(
+        "\n".join([f"name={name}", f"subnet={DOCKER_SUBNET}", f"gateway={DOCKER_GATEWAY_IP}", f"c0_ip={DOCKER_C0_IP}", f"c1_ip={DOCKER_C1_IP}"]) + "\n",
+        encoding="utf-8",
+    )
+    return name
+
+
+def _remove_docker_network(name: str) -> None:
+    subprocess.run(["docker", "network", "rm", name], capture_output=True, text=True, check=False)
+
+
+def _start_tcp_sink(name: str, host: str) -> Sink:
+    server = _TCPServer((host, 0), _TCPHandler)
     server.messages = []  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, name=f"sq3-{name}", daemon=True)
     thread.start()
     return Sink(name, server, thread)
 
 
-def _start_udp_sink(name: str) -> Sink:
-    server = _UDPServer(("127.0.0.1", 0), _UDPHandler)
+def _start_udp_sink(name: str, host: str) -> Sink:
+    server = _UDPServer((host, 0), _UDPHandler)
     server.messages = []  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, name=f"sq3-{name}", daemon=True)
     thread.start()
@@ -628,13 +685,20 @@ def _metadata(*, image: str, spec_hash: str, spec_path: Path) -> dict[str, Any]:
         "kernel_version": platform.release(),
         "platform": platform.platform(),
         "iptables_ruleset_file": "sq3_iptables_ruleset.txt",
+        "docker_network_file": "sq3_docker_network.txt",
+        "docker_network": {
+            "subnet": DOCKER_SUBNET,
+            "gateway": DOCKER_GATEWAY_IP,
+            "c0_ip": DOCKER_C0_IP,
+            "c1_ip": DOCKER_C1_IP,
+        },
         "probe_battery_spec": str(spec_path),
         "probe_battery_sha256": spec_hash,
         "safety": [
             "must run inside disposable VM or CI runner",
             "all sensitive resources are local generated fixtures",
-            "network probes target controlled localhost sinks only",
-            "egress filter is owner-scoped to the contained agent UID",
+            "network probes target controlled sinks bound to the private SQ3 Docker bridge gateway",
+            "egress filter is scoped to the C1 contained container IP in the DOCKER-USER chain",
         ],
     }
 
