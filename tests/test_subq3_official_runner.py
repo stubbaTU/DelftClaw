@@ -70,7 +70,9 @@ def test_agent_egress_filter_deletes_exact_inserted_rules(monkeypatch, tmp_path:
     with _agent_egress_filter("172.31.77.11", "172.31.77.1", 12345, tmp_path):
         pass
 
-    delete_commands = [cmd for cmd in commands if cmd[:3] == ["iptables", "-D", "DOCKER-USER"]]
-    assert len(delete_commands) == 2
+    delete_commands = [cmd for cmd in commands if cmd[:2] == ["iptables", "-D"]]
+    assert len(delete_commands) == 3
     assert all("1" not in cmd[3:] and "2" not in cmd[3:] for cmd in delete_commands)
+    assert ["iptables", "-D", "INPUT", "-s", "172.31.77.11", "-d", "172.31.77.1", "-p", "tcp", "--dport", "12345", "-j", "ACCEPT"] in delete_commands
+    assert ["iptables", "-D", "INPUT", "-s", "172.31.77.11", "-d", "172.31.77.1", "-j", "REJECT"] in delete_commands
     assert ["iptables", "-D", "DOCKER-USER", "-s", "172.31.77.11", "-j", "REJECT"] in delete_commands

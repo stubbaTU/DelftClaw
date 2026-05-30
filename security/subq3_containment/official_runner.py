@@ -464,11 +464,20 @@ def _protected_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
 @contextmanager
 def _agent_egress_filter(container_ip: str, gateway_ip: str, allowed_peer_port: int, out_dir: Path):
     insert_rules = [
-        ["iptables", "-I", "DOCKER-USER", "1", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
-        ["iptables", "-I", "DOCKER-USER", "2", "-s", container_ip, "-j", "REJECT"],
+        # Host-bound traffic from a container to the bridge gateway traverses
+        # INPUT, not DOCKER-USER. These two rules enforce the local mock sinks:
+        # allow only the expected P2P peer and reject all other host-bound
+        # traffic from the contained agent.
+        ["iptables", "-I", "INPUT", "1", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
+        ["iptables", "-I", "INPUT", "2", "-s", container_ip, "-d", gateway_ip, "-j", "REJECT"],
+        # Forwarded egress uses DOCKER-USER. The official probes do not contact
+        # the public internet, but these rules keep the containment profile
+        # default-deny for forwarded traffic as well.
+        ["iptables", "-I", "DOCKER-USER", "1", "-s", container_ip, "-j", "REJECT"],
     ]
     delete_rules = [
-        ["iptables", "-D", "DOCKER-USER", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
+        ["iptables", "-D", "INPUT", "-s", container_ip, "-d", gateway_ip, "-p", "tcp", "--dport", str(allowed_peer_port), "-j", "ACCEPT"],
+        ["iptables", "-D", "INPUT", "-s", container_ip, "-d", gateway_ip, "-j", "REJECT"],
         ["iptables", "-D", "DOCKER-USER", "-s", container_ip, "-j", "REJECT"],
     ]
     for rule in insert_rules:
