@@ -38,7 +38,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
 .PHONY: help deploy push bootstrap reinstall-units scenario scenarios watch watch-ipv8 \
         tools tail-turns tools-summary trace stop \
         demo llm-up llm-down llm-logs \
-        ssh test clean check-name
+        ssh test clean check-name sq3-containment-official sq3-containment-preflight
 
 help:
 	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z0-9_-]+:.*## / { printf "  %-15s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -153,6 +153,21 @@ community-demo-real: push ## Start the real-agent community_demo scenario on the
 community-demo-stop: ## Stop the real-agent community_demo scenario on the VPS
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --stop-real-agents"
+
+sq3-containment-preflight: push ## Check VPS has Docker + gVisor/runsc + iptables for SQ3
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m security.subq3_containment.official_runner \
+		--out results/sq3_official_preflight \
+		--timeout 10 \
+		--preflight-only \
+		--image python:3.12-slim"
+
+sq3-containment-official: push ## Run official SQ3 containment battery on the VPS
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		$(VPS_ROOT)/venv/bin/python -m security.subq3_containment.official_runner \
+		--out results/sq3_official_containment \
+		--timeout 10 \
+		--image python:3.12-slim"
 
 # ---------------------------------------------------------------------------
 # Gemini proxy + one-shot demo launcher

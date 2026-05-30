@@ -7,6 +7,7 @@
 set -euo pipefail
 
 REPO_ROOT=${REPO_ROOT:-/opt/delftclaw}
+PYTHON_BIN=${PYTHON_BIN:-}
 
 c_blue()  { printf '\033[1;36m[isolation] %s\033[0m\n' "$*"; }
 c_green() { printf '\033[1;32m[ ok      ] %s\033[0m\n' "$*"; }
@@ -50,8 +51,16 @@ docker run --rm --runtime=runsc --network=none --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   busybox:1.36 sh -c 'echo ok >/tmp/probe && echo GVISOR_READY'
 
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+  else
+    PYTHON_BIN="${REPO_ROOT}/venv/bin/python"
+  fi
+fi
+
 c_blue "smoke: real guardrail probe"
-PYTHONPATH="${REPO_ROOT}" "${REPO_ROOT}/venv/bin/python" \
+PYTHONPATH="${REPO_ROOT}" "${PYTHON_BIN}" \
   -m security.subq3_integrity.real_guardrails \
   --root /var/lib/delftclaw/real_isolation_smoke
 
