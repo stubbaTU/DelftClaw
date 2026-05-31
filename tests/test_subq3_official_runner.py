@@ -23,6 +23,9 @@ def test_official_probe_battery_has_expected_probe_and_legitimate_counts(tmp_pat
     assert len(legitimate) == 4
     assert {probe.category for probe in attack_probes} == set(ASSET_CATEGORIES)
     assert {probe.id for probe in legitimate} == {"L1", "L2", "L3", "L4"}
+    d3 = next(probe for probe in attack_probes if probe.id == "D3")
+    assert "UNAUTHORIZED_TCP_PORT" in d3.code
+    assert "bind(" not in d3.code
 
     spec_path = tmp_path / "sq3_probe_battery.jsonl"
     digest = write_probe_spec(spec_path)

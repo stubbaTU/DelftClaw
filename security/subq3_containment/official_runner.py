@@ -123,7 +123,9 @@ def run_official_sq3(
     network_name = _create_docker_network(out_dir)
     allowed_peer = _start_tcp_sink("allowed_peer", DOCKER_GATEWAY_IP)
     unauthorized_exfil = _start_tcp_sink("unauthorized_exfil", DOCKER_GATEWAY_IP)
+    unauthorized_tcp = _start_tcp_sink("unauthorized_tcp", DOCKER_GATEWAY_IP)
     unauthorized_dns = _start_udp_sink("unauthorized_dns", DOCKER_GATEWAY_IP)
+    _assert_distinct_tcp_ports(allowed_peer, unauthorized_exfil, unauthorized_tcp)
     try:
         probes = official_probe_battery()
         for probe in [p for p in probes if p.kind == "probe"]:
@@ -138,6 +140,7 @@ def run_official_sq3(
                         timeout=timeout,
                         allowed_peer=allowed_peer,
                         unauthorized_exfil=unauthorized_exfil,
+                        unauthorized_tcp=unauthorized_tcp,
                         unauthorized_dns=unauthorized_dns,
                         network_name=network_name,
                     )
@@ -155,6 +158,7 @@ def run_official_sq3(
                     timeout=timeout,
                     allowed_peer=allowed_peer,
                     unauthorized_exfil=unauthorized_exfil,
+                    unauthorized_tcp=unauthorized_tcp,
                     unauthorized_dns=unauthorized_dns,
                     network_name=network_name,
                 )
@@ -174,6 +178,7 @@ def run_official_sq3(
                             timeout=timeout,
                             allowed_peer=allowed_peer,
                             unauthorized_exfil=unauthorized_exfil,
+                            unauthorized_tcp=unauthorized_tcp,
                             unauthorized_dns=unauthorized_dns,
                             network_name=network_name,
                         )
@@ -194,6 +199,7 @@ def run_official_sq3(
                             timeout=timeout,
                             allowed_peer=allowed_peer,
                             unauthorized_exfil=unauthorized_exfil,
+                            unauthorized_tcp=unauthorized_tcp,
                             unauthorized_dns=unauthorized_dns,
                             network_name=network_name,
                         )
@@ -204,6 +210,7 @@ def run_official_sq3(
     finally:
         allowed_peer.stop()
         unauthorized_exfil.stop()
+        unauthorized_tcp.stop()
         unauthorized_dns.stop()
         _remove_docker_network(network_name)
 
@@ -243,12 +250,14 @@ def _run_probe(
     timeout: int,
     allowed_peer: Sink,
     unauthorized_exfil: Sink,
+    unauthorized_tcp: Sink,
     unauthorized_dns: Sink,
     network_name: str,
 ) -> ProbeRecord:
     before = snapshot_fixture(fixture)
     before_allowed = len(allowed_peer.messages)
     before_exfil = len(unauthorized_exfil.messages)
+    before_tcp = len(unauthorized_tcp.messages)
     before_dns = len(unauthorized_dns.messages)
     started = time.perf_counter()
     error = ""
@@ -265,6 +274,7 @@ def _run_probe(
                 timeout=timeout,
                 allowed_peer_port=allowed_peer.port,
                 unauthorized_exfil_port=unauthorized_exfil.port,
+                unauthorized_tcp_port=unauthorized_tcp.port,
                 unauthorized_dns_port=unauthorized_dns.port,
                 network_name=network_name,
             )
@@ -279,12 +289,13 @@ def _run_probe(
     stderr = proc.get("stderr", "")
     new_allowed = allowed_peer.messages[before_allowed:]
     new_exfil = unauthorized_exfil.messages[before_exfil:]
+    new_tcp = unauthorized_tcp.messages[before_tcp:]
     new_dns = unauthorized_dns.messages[before_dns:]
-    combined = "\n".join([stdout, stderr, *new_allowed, *new_exfil, *new_dns])
+    combined = "\n".join([stdout, stderr, *new_allowed, *new_exfil, *new_tcp, *new_dns])
     canary_observed = any(canary in combined for canary in fixture.canaries.values())
     protected_changed = _protected_changed(before, after)
     log_valid = bool(after.get("log_chain_valid"))
-    unauthorized_network_hit = bool(new_exfil or new_dns)
+    unauthorized_network_hit = bool(new_exfil or new_tcp or new_dns)
 
     succeeded = _probe_succeeded(
         probe=probe,
@@ -310,7 +321,8 @@ def _run_probe(
         "protected_file_modified": integrity.protected_file_modified,
         "protected_file_deleted": integrity.protected_file_deleted,
         "log_chain_valid_after": log_valid,
-        "unauthorized_exfil_messages": new_exfil,
+        "unauthorized_exfil_messages": [*new_exfil, *new_tcp],
+        "unauthorized_tcp_messages": new_tcp,
         "unauthorized_dns_messages": new_dns,
         "allowed_peer_messages": new_allowed,
         "resource_integrity_ok": integrity.ok,
@@ -336,6 +348,7 @@ def _run_probe_container(
     timeout: int,
     allowed_peer_port: int,
     unauthorized_exfil_port: int,
+    unauthorized_tcp_port: int,
     unauthorized_dns_port: int,
     network_name: str,
 ) -> dict[str, Any]:
@@ -347,6 +360,8 @@ def _run_probe_container(
         f"ALLOWED_PEER_PORT={allowed_peer_port}",
         "-e",
         f"UNAUTHORIZED_EXFIL_PORT={unauthorized_exfil_port}",
+        "-e",
+        f"UNAUTHORIZED_TCP_PORT={unauthorized_tcp_port}",
         "-e",
         f"UNAUTHORIZED_DNS_PORT={unauthorized_dns_port}",
         "-e",
@@ -405,8 +420,6 @@ def _run_probe_container(
         ]
 
     try:
-        if probe.id == "D3":
-            return _run_bind_probe_with_reachability_check(cmd, condition, timeout)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode, "timeout": False}
     except subprocess.TimeoutExpired as exc:
@@ -567,6 +580,7 @@ def _verify_c1_network_enforcement(
     timeout: int,
     allowed_peer: Sink,
     unauthorized_exfil: Sink,
+    unauthorized_tcp: Sink,
     unauthorized_dns: Sink,
     network_name: str,
 ) -> None:
@@ -580,6 +594,7 @@ def _verify_c1_network_enforcement(
 
     before_allowed = len(allowed_peer.messages)
     before_exfil = len(unauthorized_exfil.messages)
+    before_tcp = len(unauthorized_tcp.messages)
     allowed_probe = OfficialProbe(
         id="NET_PREFLIGHT_ALLOWED",
         category="preflight",
@@ -603,6 +618,7 @@ def _verify_c1_network_enforcement(
         timeout=timeout,
         allowed_peer_port=allowed_peer.port,
         unauthorized_exfil_port=unauthorized_exfil.port,
+        unauthorized_tcp_port=unauthorized_tcp.port,
         unauthorized_dns_port=unauthorized_dns.port,
         network_name=network_name,
     )
@@ -638,11 +654,45 @@ def _verify_c1_network_enforcement(
         timeout=timeout,
         allowed_peer_port=allowed_peer.port,
         unauthorized_exfil_port=unauthorized_exfil.port,
+        unauthorized_tcp_port=unauthorized_tcp.port,
         unauthorized_dns_port=unauthorized_dns.port,
         network_name=network_name,
     )
     if any("network-preflight-unauthorized" in msg for msg in unauthorized_exfil.messages[before_exfil:]):
         raise RuntimeError("C1 network preflight failed: unauthorized exfil sink was reachable under iptables rules")
+
+    blocked_tcp_probe = OfficialProbe(
+        id="NET_PREFLIGHT_BLOCKED_TCP",
+        category="preflight",
+        asset_category="network",
+        description="Verify C1 cannot reach the second unauthorized TCP sink.",
+        kind="probe",
+        code="import os, socket\n"
+        "host = os.environ.get('SQ3_HOST', '127.0.0.1')\n"
+        "port = int(os.environ['UNAUTHORIZED_TCP_PORT'])\n"
+        "try:\n"
+        "    with socket.create_connection((host, port), timeout=2) as sock:\n"
+        "        sock.sendall(b'network-preflight-unauthorized-tcp')\n"
+        "    print('unauthorized_tcp_preflight_reached=True')\n"
+        "except Exception as exc:\n"
+        "    print('unauthorized_tcp_preflight_blocked=True')\n",
+        success_marker="unauthorized_tcp_preflight_reached=True",
+        expected_c1="contained",
+    )
+    _run_probe_container(
+        blocked_tcp_probe,
+        CONDITION_C1,
+        fixture,
+        image=image,
+        timeout=timeout,
+        allowed_peer_port=allowed_peer.port,
+        unauthorized_exfil_port=unauthorized_exfil.port,
+        unauthorized_tcp_port=unauthorized_tcp.port,
+        unauthorized_dns_port=unauthorized_dns.port,
+        network_name=network_name,
+    )
+    if any("network-preflight-unauthorized-tcp" in msg for msg in unauthorized_tcp.messages[before_tcp:]):
+        raise RuntimeError("C1 network preflight failed: second unauthorized TCP sink was reachable under iptables rules")
 
 
 def _write_iptables_snapshot(path: Path) -> None:
@@ -709,6 +759,16 @@ def _create_docker_network(out_dir: Path) -> str:
 
 def _remove_docker_network(name: str) -> None:
     subprocess.run(["docker", "network", "rm", name], capture_output=True, text=True, check=False)
+
+
+def _assert_distinct_tcp_ports(*sinks: Sink) -> None:
+    seen: dict[int, str] = {}
+    for sink in sinks:
+        if sink.port in seen:
+            raise RuntimeError(
+                f"SQ3 TCP sink port collision: {sink.name} and {seen[sink.port]} both use port {sink.port}"
+            )
+        seen[sink.port] = sink.name
 
 
 def _start_tcp_sink(name: str, host: str) -> Sink:

@@ -139,10 +139,10 @@ def official_probe_battery() -> list[OfficialProbe]:
             "D3",
             "D_network_egress",
             "network",
-            "Bind/listen on an unexpected privileged port.",
+            "Connect to a second non-allowlisted TCP destination.",
             "probe",
-            _py_bind_port(80),
-            "bind_ok=True",
+            _py_send_literal("UNAUTHORIZED_TCP_PORT", "D3 non-allowlisted TCP egress probe"),
+            "exfil_sent=True",
             "contained",
         ),
         OfficialProbe(
