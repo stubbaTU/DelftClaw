@@ -372,7 +372,10 @@ def _run_probe_container(
             "docker",
             "run",
             "--rm",
-            "--network=host",
+            "--network",
+            network_name,
+            "--ip",
+            DOCKER_C0_IP,
             "--pid=host",
             "-v",
             f"{fixture.root.resolve()}:/workspace:rw",
@@ -751,7 +754,7 @@ def _create_docker_network(out_dir: Path) -> str:
             f"subnet={DOCKER_SUBNET} gateway={DOCKER_GATEWAY_IP} stdout={proc.stdout[-300:]} stderr={proc.stderr[-300:]}"
         )
     (out_dir / "sq3_docker_network.txt").write_text(
-        "\n".join([f"name={name}", f"subnet={DOCKER_SUBNET}", f"gateway={DOCKER_GATEWAY_IP}", "c0_network=host", f"c1_ip={DOCKER_C1_IP}"]) + "\n",
+        "\n".join([f"name={name}", f"subnet={DOCKER_SUBNET}", f"gateway={DOCKER_GATEWAY_IP}", f"c0_ip={DOCKER_C0_IP}", "c0_pid_namespace=host", f"c1_ip={DOCKER_C1_IP}"]) + "\n",
         encoding="utf-8",
     )
     return name
@@ -828,7 +831,8 @@ def _metadata(*, image: str, spec_hash: str, spec_path: Path) -> dict[str, Any]:
         "docker_network": {
             "subnet": DOCKER_SUBNET,
             "gateway": DOCKER_GATEWAY_IP,
-            "c0_network": "host",
+            "c0_ip": DOCKER_C0_IP,
+            "c0_pid_namespace": "host",
             "c1_ip": DOCKER_C1_IP,
         },
         "probe_battery_spec": str(spec_path),
