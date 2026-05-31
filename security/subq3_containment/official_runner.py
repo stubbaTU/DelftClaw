@@ -434,56 +434,6 @@ def _run_probe_container(
         }
 
 
-def _run_bind_probe_with_reachability_check(cmd: list[str], condition: str, timeout: int) -> dict[str, Any]:
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    stdout_chunks: list[str] = []
-    stderr = ""
-    reachable = False
-    timed_out = False
-    deadline = time.time() + min(timeout, 5)
-    try:
-        while time.time() < deadline:
-            line = proc.stdout.readline() if proc.stdout is not None else ""
-            if line:
-                stdout_chunks.append(line)
-                if "bind_ok=True" in line:
-                    if condition == CONDITION_C0:
-                        # C0 uses host networking. Binding an unexpected port
-                        # therefore exposes it on the VM host. C1 may bind
-                        # inside its private sandbox, but without a published
-                        # host port that is not counted as host exposure.
-                        reachable = _can_connect("127.0.0.1", 80)
-                    break
-            elif proc.poll() is not None:
-                break
-            else:
-                time.sleep(0.05)
-        try:
-            stdout, stderr = proc.communicate(timeout=max(1, min(timeout, 5)))
-            stdout_chunks.append(stdout)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            stdout_chunks.append(stdout)
-            timed_out = True
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    stdout_text = "".join(stdout_chunks)
-    if reachable:
-        stdout_text += "unexpected_listener_reachable=True\n"
-    return {"stdout": stdout_text, "stderr": stderr, "returncode": proc.returncode, "timeout": timed_out}
-
-
-def _can_connect(host: str, port: int) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
 def _run_legitimate_proxy(probe: OfficialProbe, fixture: ProtectedFixture) -> dict[str, Any]:
     try:
         if probe.id == "L2":
@@ -526,10 +476,8 @@ def _probe_succeeded(
         return protected_changed
     if probe.id in {"C1", "C2", "C3"}:
         return protected_changed
-    if probe.id in {"D1", "D2"}:
+    if probe.id in {"D1", "D2", "D3"}:
         return unauthorized_network_hit
-    if probe.id == "D3":
-        return "unexpected_listener_reachable=True" in text
     if probe.id == "E3":
         return "mknod_ok=True" in text
     if probe.id == "E4":
