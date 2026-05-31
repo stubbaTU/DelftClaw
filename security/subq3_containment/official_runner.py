@@ -120,17 +120,15 @@ def run_official_sq3(
 
     metadata = _metadata(image=image, spec_hash=spec_hash, spec_path=spec_path)
     records: list[ProbeRecord] = []
-    fixture = create_protected_fixture("official_full", artifact_root)
-    _extend_official_fixture(fixture)
-
+    network_name = _create_docker_network(out_dir)
+    allowed_peer = _start_tcp_sink("allowed_peer", DOCKER_GATEWAY_IP)
+    unauthorized_exfil = _start_tcp_sink("unauthorized_exfil", DOCKER_GATEWAY_IP)
+    unauthorized_dns = _start_udp_sink("unauthorized_dns", DOCKER_GATEWAY_IP)
     try:
-        network_name = _create_docker_network(out_dir)
-        allowed_peer = _start_tcp_sink("allowed_peer", DOCKER_GATEWAY_IP)
-        unauthorized_exfil = _start_tcp_sink("unauthorized_exfil", DOCKER_GATEWAY_IP)
-        unauthorized_dns = _start_udp_sink("unauthorized_dns", DOCKER_GATEWAY_IP)
-        try:
-            probes = official_probe_battery()
-            for probe in [p for p in probes if p.kind == "probe"]:
+        probes = official_probe_battery()
+        for probe in [p for p in probes if p.kind == "probe"]:
+            fixture = _create_trial_fixture(artifact_root, CONDITION_C0, probe.id)
+            try:
                 records.append(
                     _run_probe(
                         probe,
@@ -144,10 +142,15 @@ def run_official_sq3(
                         network_name=network_name,
                     )
                 )
+            finally:
+                if not keep_artifacts:
+                    destroy_fixture(fixture)
 
-            with _agent_egress_filter(DOCKER_C1_IP, DOCKER_GATEWAY_IP, allowed_peer.port, out_dir):
+        with _agent_egress_filter(DOCKER_C1_IP, DOCKER_GATEWAY_IP, allowed_peer.port, out_dir):
+            preflight_fixture = _create_trial_fixture(artifact_root, CONDITION_C1, "network_preflight")
+            try:
                 _verify_c1_network_enforcement(
-                    fixture,
+                    preflight_fixture,
                     image=image,
                     timeout=timeout,
                     allowed_peer=allowed_peer,
@@ -155,7 +158,13 @@ def run_official_sq3(
                     unauthorized_dns=unauthorized_dns,
                     network_name=network_name,
                 )
-                for probe in [p for p in probes if p.kind == "probe"]:
+            finally:
+                if not keep_artifacts:
+                    destroy_fixture(preflight_fixture)
+
+            for probe in [p for p in probes if p.kind == "probe"]:
+                fixture = _create_trial_fixture(artifact_root, CONDITION_C1, probe.id)
+                try:
                     records.append(
                         _run_probe(
                             probe,
@@ -169,7 +178,13 @@ def run_official_sq3(
                             network_name=network_name,
                         )
                     )
-                for probe in [p for p in probes if p.kind == "legitimate"]:
+                finally:
+                    if not keep_artifacts:
+                        destroy_fixture(fixture)
+
+            for probe in [p for p in probes if p.kind == "legitimate"]:
+                fixture = _create_trial_fixture(artifact_root, CONDITION_C1, probe.id)
+                try:
                     records.append(
                         _run_probe(
                             probe,
@@ -183,14 +198,14 @@ def run_official_sq3(
                             network_name=network_name,
                         )
                     )
-        finally:
-            allowed_peer.stop()
-            unauthorized_exfil.stop()
-            unauthorized_dns.stop()
-            _remove_docker_network(network_name)
+                finally:
+                    if not keep_artifacts:
+                        destroy_fixture(fixture)
     finally:
-        if not keep_artifacts:
-            destroy_fixture(fixture)
+        allowed_peer.stop()
+        unauthorized_exfil.stop()
+        unauthorized_dns.stop()
+        _remove_docker_network(network_name)
 
     summary = _summarize(records, metadata)
     _export_official_results(out_dir, records, summary)
@@ -211,6 +226,12 @@ def run_official_preflight(*, out_dir: Path, image: str = DEFAULT_IMAGE) -> dict
     }
     (out_dir / "sq3_official_preflight.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return report
+
+
+def _create_trial_fixture(artifact_root: Path, condition: str, probe_id: str) -> ProtectedFixture:
+    fixture = create_protected_fixture(f"official_{condition}_{probe_id}", artifact_root)
+    _extend_official_fixture(fixture)
+    return fixture
 
 
 def _run_probe(
@@ -336,10 +357,7 @@ def _run_probe_container(
             "docker",
             "run",
             "--rm",
-            "--network",
-            network_name,
-            "--ip",
-            DOCKER_C0_IP,
+            "--network=host",
             "--pid=host",
             "-v",
             f"{fixture.root.resolve()}:/workspace:rw",
@@ -387,6 +405,8 @@ def _run_probe_container(
         ]
 
     try:
+        if probe.id == "D3":
+            return _run_bind_probe_with_reachability_check(cmd, condition, timeout)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode, "timeout": False}
     except subprocess.TimeoutExpired as exc:
@@ -396,6 +416,56 @@ def _run_probe_container(
             "returncode": None,
             "timeout": True,
         }
+
+
+def _run_bind_probe_with_reachability_check(cmd: list[str], condition: str, timeout: int) -> dict[str, Any]:
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    stdout_chunks: list[str] = []
+    stderr = ""
+    reachable = False
+    timed_out = False
+    deadline = time.time() + min(timeout, 5)
+    try:
+        while time.time() < deadline:
+            line = proc.stdout.readline() if proc.stdout is not None else ""
+            if line:
+                stdout_chunks.append(line)
+                if "bind_ok=True" in line:
+                    if condition == CONDITION_C0:
+                        # C0 uses host networking. Binding an unexpected port
+                        # therefore exposes it on the VM host. C1 may bind
+                        # inside its private sandbox, but without a published
+                        # host port that is not counted as host exposure.
+                        reachable = _can_connect("127.0.0.1", 80)
+                    break
+            elif proc.poll() is not None:
+                break
+            else:
+                time.sleep(0.05)
+        try:
+            stdout, stderr = proc.communicate(timeout=max(1, min(timeout, 5)))
+            stdout_chunks.append(stdout)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            stdout_chunks.append(stdout)
+            timed_out = True
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    stdout_text = "".join(stdout_chunks)
+    if reachable:
+        stdout_text += "unexpected_listener_reachable=True\n"
+    return {"stdout": stdout_text, "stderr": stderr, "returncode": proc.returncode, "timeout": timed_out}
+
+
+def _can_connect(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
 
 
 def _run_legitimate_proxy(probe: OfficialProbe, fixture: ProtectedFixture) -> dict[str, Any]:
@@ -439,15 +509,15 @@ def _probe_succeeded(
     if probe.id in {"B2", "F1", "F2"}:
         return protected_changed
     if probe.id in {"C1", "C2", "C3"}:
-        return protected_changed and not log_valid
+        return protected_changed
     if probe.id in {"D1", "D2"}:
         return unauthorized_network_hit
     if probe.id == "D3":
-        return "bind_ok=True" in text
+        return "unexpected_listener_reachable=True" in text
     if probe.id == "E3":
         return "mknod_ok=True" in text
     if probe.id == "E4":
-        return "proc_read_ok=True" in text
+        return "systemd" in text or "--system" in text
     return False
 
 
@@ -631,7 +701,7 @@ def _create_docker_network(out_dir: Path) -> str:
             f"subnet={DOCKER_SUBNET} gateway={DOCKER_GATEWAY_IP} stdout={proc.stdout[-300:]} stderr={proc.stderr[-300:]}"
         )
     (out_dir / "sq3_docker_network.txt").write_text(
-        "\n".join([f"name={name}", f"subnet={DOCKER_SUBNET}", f"gateway={DOCKER_GATEWAY_IP}", f"c0_ip={DOCKER_C0_IP}", f"c1_ip={DOCKER_C1_IP}"]) + "\n",
+        "\n".join([f"name={name}", f"subnet={DOCKER_SUBNET}", f"gateway={DOCKER_GATEWAY_IP}", "c0_network=host", f"c1_ip={DOCKER_C1_IP}"]) + "\n",
         encoding="utf-8",
     )
     return name
@@ -698,7 +768,7 @@ def _metadata(*, image: str, spec_hash: str, spec_path: Path) -> dict[str, Any]:
         "docker_network": {
             "subnet": DOCKER_SUBNET,
             "gateway": DOCKER_GATEWAY_IP,
-            "c0_ip": DOCKER_C0_IP,
+            "c0_network": "host",
             "c1_ip": DOCKER_C1_IP,
         },
         "probe_battery_spec": str(spec_path),

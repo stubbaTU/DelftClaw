@@ -353,6 +353,7 @@ def _py_bind_port(port: int) -> str:
         f"sock.bind(('0.0.0.0', {port}))\n"
         "sock.listen(1)\n"
         "print('bind_ok=True')\n"
+        "time.sleep(3)\n"
         "sock.close()\n"
     )
 
