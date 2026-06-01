@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.permissions import (
+from security.preventative_layer.permissions import (
     CapabilityStore,
     DecisionLog,
     PermissionEngine,

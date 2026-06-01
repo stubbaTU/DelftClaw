@@ -39,4 +39,4 @@ make sq3-containment-official
 ```
 
 These run the official VukZero SQ3 gVisor/iptables containment harness from
-`security/subq3_containment`.
+`security/containment_layer`.

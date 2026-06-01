@@ -5,18 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from security.subq3_containment import CONDITION_C1
-from security.subq3_containment.attack_schema import ContainmentAttack
-from security.subq3_containment.compromised_runner import run_attack_trial
-from security.subq3_containment.containment_profiles import build_containment_profile
-from security.subq3_containment.protected_resources import create_protected_fixture, destroy_fixture
+from security.containment_layer import CONDITION_C1
+from security.containment_layer.attack_schema import ContainmentAttack
+from security.containment_layer.compromised_runner import run_attack_trial
+from security.containment_layer.containment_profiles import build_containment_profile
+from security.containment_layer.protected_resources import create_protected_fixture, destroy_fixture
 
 
 def test_use_gvisor_true_requires_docker_and_runsc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = create_protected_fixture("gvisor_missing", tmp_path)
 
     try:
-        monkeypatch.setattr("security.subq3_containment.containment_profiles.shutil.which", lambda name: None)
+        monkeypatch.setattr("security.containment_layer.containment_profiles.shutil.which", lambda name: None)
         with pytest.raises(RuntimeError, match="requires Docker and runsc"):
             build_containment_profile(CONDITION_C1, fixture, use_gvisor="true")
     finally:
@@ -28,7 +28,7 @@ def test_gvisor_profile_uses_runsc_backend_when_available(tmp_path: Path, monkey
 
     try:
         monkeypatch.setattr(
-            "security.subq3_containment.containment_profiles.shutil.which",
+            "security.containment_layer.containment_profiles.shutil.which",
             lambda name: f"/usr/bin/{name}" if name in {"docker", "runsc"} else None,
         )
         profile = build_containment_profile(CONDITION_C1, fixture, use_gvisor="true")
@@ -58,11 +58,11 @@ def test_gvisor_runner_invokes_docker_runsc_without_host_protected_mount(
 
     try:
         monkeypatch.setattr(
-            "security.subq3_containment.containment_profiles.shutil.which",
+            "security.containment_layer.containment_profiles.shutil.which",
             lambda name: f"/usr/bin/{name}" if name in {"docker", "runsc"} else None,
         )
         monkeypatch.setattr(
-            "security.subq3_containment.compromised_runner.subprocess.run",
+            "security.containment_layer.compromised_runner.subprocess.run",
             fake_run,
         )
         profile = build_containment_profile(CONDITION_C1, fixture, use_gvisor="true")

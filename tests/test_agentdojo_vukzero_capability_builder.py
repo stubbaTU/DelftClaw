@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.agentdojo_vukzero.capability_builder import build_capabilities_from_user_task
+from security.preventative_layer.capability_builder import build_capabilities_from_user_task
 
 
 def test_email_task_capability_extracts_recipient_and_subject_hint() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from security.permissions import Resource, ResourceRegistry
+from security.preventative_layer.permissions import Resource, ResourceRegistry
 
 
 def test_register_and_resolve_resource() -> None:

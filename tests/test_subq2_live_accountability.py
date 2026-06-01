@@ -4,11 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from security.subq2_accountability.generate_live_scenarios import FAMILIES, INTENSITIES, generate_scenarios
-from security.subq2_accountability.event_gateway import normalize_reputation_tool_call
-from security.subq2_accountability.live_orchestrator import run_live_measurement
-from security.subq2_accountability.live_agent_tools import event_tool_for_type, tool_args_for_event
-from security.subq2_accountability.live_scenario_schema import (
+from security.accountability_layer.generate_live_scenarios import FAMILIES, INTENSITIES, generate_scenarios
+from security.accountability_layer.event_gateway import normalize_reputation_tool_call
+from security.accountability_layer.live_orchestrator import run_live_measurement
+from security.accountability_layer.live_agent_tools import event_tool_for_type, tool_args_for_event
+from security.accountability_layer.live_scenario_schema import (
     CONDITION_C0,
     CONDITION_C1,
     HONEST_AGENTS,

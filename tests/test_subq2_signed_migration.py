@@ -16,13 +16,13 @@ from pathlib import Path
 
 from identity.openclaw_identity import OpenClawIdentity
 from redteam.primitives.signed_log import SignedAppendOnlyLog
-from security.subq2_accountability.accountability import (
+from security.accountability_layer.accountability import (
     AccountabilityMonitor,
     run_reputation_trap_experiment,
 )
-from security.subq2_accountability.proxy import IsolationProxy
-from security.subq2_accountability.reputation import ReputationEngine
-from security.subq2_accountability.signed_accountability_log import SQ2SignedAccountabilityLog
+from security.accountability_layer.proxy import IsolationProxy
+from security.accountability_layer.reputation import ReputationEngine
+from security.accountability_layer.signed_accountability_log import SQ2SignedAccountabilityLog
 
 
 def _make_identity(tmp_path: Path, name: str = "key.json") -> OpenClawIdentity:

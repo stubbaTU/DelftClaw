@@ -9,7 +9,7 @@ from communication.bittorrent import StubBitTorrentService
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
 from protocol import StubLLMClient
-from security.permissions import (
+from security.preventative_layer.permissions import (
     Capability,
     CapabilityStore,
     DecisionLog,
@@ -23,8 +23,8 @@ from security.permissions import (
     default_validator_registry,
     load_default_policy,
 )
-from security.permissions.policy_loader import PolicyLoadError, parse_policy
-from security.permissions.proxies import AppendOnlyLogProxy, IdentityProxy, ReputationProxy, SeedboxProxy
+from security.preventative_layer.permissions.policy_loader import PolicyLoadError, parse_policy
+from security.preventative_layer.permissions.proxies import AppendOnlyLogProxy, IdentityProxy, ReputationProxy, SeedboxProxy
 
 
 PROXIES = {

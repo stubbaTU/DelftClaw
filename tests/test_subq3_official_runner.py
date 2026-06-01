@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from security.subq3_containment.official_probe_suite import official_probe_battery, probe_spec_hash, write_probe_spec
-from security.subq3_containment.official_runner import (
+from security.containment_layer.official_probe_suite import official_probe_battery, probe_spec_hash, write_probe_spec
+from security.containment_layer.official_runner import (
     ASSET_CATEGORIES,
     CONDITION_C0,
     CONDITION_C1,
@@ -95,8 +95,8 @@ def test_agent_egress_filter_deletes_exact_inserted_rules(monkeypatch, tmp_path:
 
         return Result()
 
-    monkeypatch.setattr("security.subq3_containment.official_runner.subprocess.run", fake_run)
-    monkeypatch.setattr("security.subq3_containment.official_runner.shutil.which", lambda name: None)
+    monkeypatch.setattr("security.containment_layer.official_runner.subprocess.run", fake_run)
+    monkeypatch.setattr("security.containment_layer.official_runner.shutil.which", lambda name: None)
 
     with _agent_egress_filter("172.31.77.11", "172.31.77.1", 12345, tmp_path):
         pass

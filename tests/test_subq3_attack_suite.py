@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from security.subq3_containment.attack_schema import load_attacks, write_attacks
-from security.subq3_containment.generate_attack_suite import generate_default_attacks
+from security.containment_layer.attack_schema import load_attacks, write_attacks
+from security.containment_layer.generate_attack_suite import generate_default_attacks
 
 
 def test_attack_suite_generator_creates_expected_number_of_attacks(tmp_path: Path) -> None:

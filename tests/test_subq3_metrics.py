@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from security.subq3_containment.compromised_runner import AttackTrialResult
-from security.subq3_containment.metrics import results_by_condition
+from security.containment_layer.compromised_runner import AttackTrialResult
+from security.containment_layer.metrics import results_by_condition
 
 
 def _result(condition: str, success: bool, score: int) -> AttackTrialResult:

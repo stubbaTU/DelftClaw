@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.agentdojo_vukzero.tool_mapping import get_tool_mapping
+from security.preventative_layer.tool_mapping import get_tool_mapping
 
 
 def test_known_workspace_tools_map_to_expected_labels() -> None:

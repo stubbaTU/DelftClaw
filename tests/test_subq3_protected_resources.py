@@ -4,7 +4,7 @@ from pathlib import Path
 
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 
-from security.subq3_containment.protected_resources import (
+from security.containment_layer.protected_resources import (
     create_protected_fixture,
     destroy_fixture,
     verify_fixture_integrity,

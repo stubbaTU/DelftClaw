@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.agentdojo_vukzero.vukzero_tool_wrapper import wrap_functions_runtime
+from security.preventative_layer.vukzero_tool_wrapper import wrap_functions_runtime
 
 
 class MockFunction:

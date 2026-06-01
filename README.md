@@ -120,13 +120,13 @@ snapshot, and recent history. Stop conditions live in
 
 `security/` contains only the active thesis security code:
 
-- `security/agentdojo_vukzero/`: SQ1 AgentDojo prevention experiments.
-- `security/subq2_accountability/`: SQ2 signed-log accountability and
+- `security/preventative_layer/`: SQ1 AgentDojo prevention experiments.
+- `security/accountability_layer/`: SQ2 signed-log accountability and
   reputation-lag experiments.
-- `security/subq3_containment/`: SQ3 containment-boundary experiments with
+- `security/containment_layer/`: SQ3 containment-boundary experiments with
   mock protected resources, hardened proxies, gVisor/runsc, iptables egress
   checks, deterministic probes, and paper-ready exports.
-- `security/permissions/`: shared permission primitives used by SQ1 and the
+- `security/preventative_layer/permissions/`: shared permission primitives used by SQ1 and the
   OpenClaw tool broker.
 
 ## Configuration

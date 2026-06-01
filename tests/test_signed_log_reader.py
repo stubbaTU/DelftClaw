@@ -4,7 +4,7 @@ from pathlib import Path
 
 from identity.openclaw_identity import OpenClawIdentity
 from redteam.primitives.signed_log import SignedAppendOnlyLog
-from security.subq2_accountability.log_reader import open_accountability_log
+from security.accountability_layer.log_reader import open_accountability_log
 
 
 def test_open_accountability_log_reads_signed_gateway_log(tmp_path: Path) -> None:

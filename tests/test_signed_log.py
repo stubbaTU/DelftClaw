@@ -19,7 +19,7 @@ import pytest
 
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
-from security.subq2_accountability.append_log import AppendOnlyLog
+from security.accountability_layer.append_log import AppendOnlyLog
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 
 

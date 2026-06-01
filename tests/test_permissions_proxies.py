@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from security.permissions import Subject
-from security.permissions.proxies import AppendOnlyLogProxy, IdentityProxy, ReputationProxy, SeedboxProxy, WalletProxy
+from security.preventative_layer.permissions import Subject
+from security.preventative_layer.permissions.proxies import AppendOnlyLogProxy, IdentityProxy, ReputationProxy, SeedboxProxy, WalletProxy
 
 
 def test_safe_proxies_do_not_return_raw_secret_state() -> None:

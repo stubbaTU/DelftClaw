@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from security.subq3_containment import CONDITION_C0, CONDITION_C1
-from security.subq3_containment.attack_schema import ContainmentAttack
-from security.subq3_containment.compromised_runner import run_attack_trial
-from security.subq3_containment.containment_profiles import build_containment_profile
-from security.subq3_containment.generate_attack_suite import generate_default_attacks
-from security.subq3_containment.network_guard import NetworkGuard
-from security.subq3_containment.protected_resources import create_protected_fixture, destroy_fixture, verify_fixture_integrity
+from security.containment_layer import CONDITION_C0, CONDITION_C1
+from security.containment_layer.attack_schema import ContainmentAttack
+from security.containment_layer.compromised_runner import run_attack_trial
+from security.containment_layer.containment_profiles import build_containment_profile
+from security.containment_layer.generate_attack_suite import generate_default_attacks
+from security.containment_layer.network_guard import NetworkGuard
+from security.containment_layer.protected_resources import create_protected_fixture, destroy_fixture, verify_fixture_integrity
 
 
 def _attack(attack_id: str) -> ContainmentAttack:

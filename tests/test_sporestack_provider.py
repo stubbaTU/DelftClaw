@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.subq2_accountability.sporestack_provider import SporeStackSeedboxProvider
+from security.accountability_layer.sporestack_provider import SporeStackSeedboxProvider
 
 
 def test_sporestack_provider_dry_run_uses_real_endpoint_shape() -> None:

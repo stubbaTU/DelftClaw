@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.permissions import Capability, CapabilityStore
+from security.preventative_layer.permissions import Capability, CapabilityStore
 
 
 def test_capability_lifecycle_and_scope() -> None:

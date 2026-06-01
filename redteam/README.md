@@ -14,7 +14,7 @@ These primitives address that with a layered model:
 
 | Layer | What | Status |
 |---|---|---|
-| 1 | Hash-chained log (existing `security/subq2_accountability/append_log.py`). Detects in-place edits, but the host could rewrite the whole file. | already there |
+| 1 | Hash-chained log (existing `security/accountability_layer/append_log.py`). Detects in-place edits, but the host could rewrite the whole file. | already there |
 | 2 | Every entry Ed25519-signed by the host's identity key. Rewrites now require the private key. | **shipped** (`SignedAppendOnlyLog`) |
 | 3 | Peers hold each other's signed claims and serve them to third parties. A's signed advertisements (seedbox offers, identity announcements, receipts) become forwardable evidence. | **shipped** (`witness` entries + HTTP transport) |
 | 4 | TrustChain-style pairwise blocks: every A↔B interaction signed by both, written to both chains. (Pouwelse, FGCS 2020.) | not yet |

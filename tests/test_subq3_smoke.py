@@ -3,10 +3,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from security.subq3_containment import CONDITION_C0, CONDITION_C1
-from security.subq3_containment.attack_schema import write_attacks
-from security.subq3_containment.generate_attack_suite import generate_default_attacks
-from security.subq3_containment.run_containment_tests import run_containment_tests
+from security.containment_layer import CONDITION_C0, CONDITION_C1
+from security.containment_layer.attack_schema import write_attacks
+from security.containment_layer.generate_attack_suite import generate_default_attacks
+from security.containment_layer.run_containment_tests import run_containment_tests
 
 
 def test_full_smoke_run_exports_required_files(tmp_path: Path) -> None:

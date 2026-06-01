@@ -143,7 +143,7 @@ stop: check-name ## Stop scenario NAME + teardown its env files
 
 sq3-containment-preflight: push ## Check VPS has Docker + gVisor/runsc + iptables for SQ3
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m security.subq3_containment.official_runner \
+		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
 		--out results/sq3_official_preflight \
 		--timeout 10 \
 		--preflight-only \
@@ -151,7 +151,7 @@ sq3-containment-preflight: push ## Check VPS has Docker + gVisor/runsc + iptable
 
 sq3-containment-official: push ## Run official SQ3 containment battery on the VPS
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m security.subq3_containment.official_runner \
+		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
 		--out results/sq3_official_containment \
 		--timeout 10 \
 		--image python:3.12-slim"
