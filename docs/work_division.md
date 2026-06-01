@@ -50,10 +50,10 @@ the *current* lane→folder mapping.
 - **Identity → everyone.** `AgentIdentity.from_seed(seed, network)` is
   the entry point. `agent_id = sha256(ipv8_raw_pubkey || network)` is
   the project-wide identifier; nobody else may redefine it.
-- **Communication → Security.** `security/integration/` still consumes
-  `communication/claw/openclaw_agent.py` (the legacy PoC community kept
-  for the colleague's gateway tests). Touching those files crosses lanes;
-  go through the Security owner.
+- **Communication → Security.** The active security lane is now the
+  SQ1/SQ2/SQ3 VukZero evaluation tree under `security/`. Shared agent and
+  deployment interfaces should still be changed deliberately because the
+  security evaluations import the same runtime primitives.
 - **Communication → Replication.** `admission/donation_verifier.py` is
   consumed by Replication for cross-network admission flow.
 
@@ -61,6 +61,5 @@ the *current* lane→folder mapping.
 
 - `shared/` types are frozen — they appear in every lane's signatures.
 - Each lane owns its tests under `tests/`.
-- The colleagues' `security/integration/*` MCP gateway is out of scope
-  for the v5.1 Communication thesis but coexists in the repo. Don't
-  break those tests when refactoring shared/.
+- Security experiment code should stay grouped by subquestion so deploy and
+  communication refactors do not reintroduce stale standalone gateways.

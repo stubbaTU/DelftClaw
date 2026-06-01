@@ -141,19 +141,6 @@ stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
 
-community-demo: push ## Run the direct community demo checklist on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo \
-		--provider mock --root /var/lib/delftclaw/community_demo --reset"
-
-community-demo-real: push ## Start the real-agent community_demo scenario on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --real-agents"
-
-community-demo-stop: ## Stop the real-agent community_demo scenario on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --stop-real-agents"
-
 sq3-containment-preflight: push ## Check VPS has Docker + gVisor/runsc + iptables for SQ3
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m security.subq3_containment.official_runner \

@@ -190,8 +190,7 @@ step_firewall() {
     fi
     c_blue "ufw: adding rules (does NOT enable the firewall — do that manually)"
     ufw allow 22/tcp >/dev/null
-    # Scenario-allocated IPv8 + MCP ranges for seek_cc, community_demo,
-    # security_layers, and secure_community_demo.
+    # Scenario-allocated IPv8 + MCP ranges for seek_cc.
     ufw allow 8190:8399/udp >/dev/null
     ufw allow 18765:18999/tcp >/dev/null
 }

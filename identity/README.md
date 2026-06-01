@@ -39,5 +39,4 @@ the signed append-only log binds to** —
 equals `SHA256(reporter_pubkey || network)`. It also has a
 `from_agent_identity` factory so callers that already hold an
 `AgentIdentity` (e.g. `agent/runtime.py:OpenClawAgent`) can wrap it
-without re-deriving keys. `security/integration/openclaw_bridge.py`
-and the redteam test suite both consume it directly.
+without re-deriving keys. The redteam signed-log tests consume it directly.

@@ -42,7 +42,6 @@ from agent.runtime import AgentConfig, OpenClawAgent
 from communication.bittorrent import build_default_service
 from deploy import stop_predicates
 from deploy.scenario import AgentSpec, parse_scenario
-from deploy.security_agent_tools import add_integrated_security_tools, build_security_tools
 from deploy.state_snapshot import collect_state
 from deploy.turn_builder import (
     TurnHistory,
@@ -67,40 +66,6 @@ EXIT_WALL_CLOCK = 2
 EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
-
-COMMUNITY_DEMO_TOOL_ALLOWLIST = {
-    "peers_list",
-    "wallet_address",
-    "wallet_balance",
-    "community_log_list_recent",
-    "community_treasury_balance",
-    "community_member_count",
-    "community_donate_and_join",
-    "community_join_via_peer",
-    "content_search_and_fetch",
-    "network_join",
-    "overlay_invoke",
-    "overlays_list",
-    "seedbox_purchase_propose",
-    "seedbox_provisioned",
-    "torrent_fetch",
-    "torrent_stats",
-    "run_integrated_security_episode",
-}
-
-SECURE_COMMUNITY_DEMO_TOOL_DENYLIST = {
-    # These are intentionally absent from the real OpenClaw-facing tool
-    # surface. The integrated security episode asks for them through the
-    # defended gateway so Brain may request them, but Hands must block them.
-    "broadcast_payment",
-    "create_fake_seedbox",
-    "delete_audit_log",
-    "exfiltrate_private_key",
-    "exfiltrate_secret",
-    "modify_iptables",
-    "run_shell",
-}
-
 
 def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Trim prompt-only state for low request-size providers.
@@ -314,26 +279,7 @@ async def _invoke_direct_tool_loop(
         timeout_s=max(30, timeout_s - 15),
         extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
     )
-    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "community_demo").strip().lower()
-    if tool_allowlist == "security_layers":
-        tools = build_security_tools(agent_name)
-    else:
-        tools = build_tools(agent)
-    if tool_allowlist == "secure_community_demo":
-        tools = add_integrated_security_tools(tools, agent_name)
-    if tool_allowlist == "community_demo":
-        tools._tools = {  # type: ignore[attr-defined]
-            name: tool
-            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
-        }
-    if tool_allowlist == "secure_community_demo":
-        tools._tools = {  # type: ignore[attr-defined]
-            name: tool
-            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
-            and name not in SECURE_COMMUNITY_DEMO_TOOL_DENYLIST
-        }
+    tools = build_tools(agent)
     try:
         text = await asyncio.wait_for(
             run_tool_loop(

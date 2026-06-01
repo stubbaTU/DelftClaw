@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any
 
 
 class SecurityAction(StrEnum):
@@ -26,105 +26,6 @@ class SecurityAction(StrEnum):
     IPTABLES_MODIFICATION_ATTEMPT = "iptables_modification_attempt"
 
 
-class ToolRisk(StrEnum):
-    SAFE = "safe"
-    SENSITIVE = "sensitive"
-    DANGEROUS = "dangerous"
-
-
-@dataclass(frozen=True)
-class RedTeamPayload:
-    payload_id: str
-    category: str
-    text: str
-    expected_tool: str
-    malicious: bool = True
-
-
-@dataclass(frozen=True)
-class SQ1Payload:
-    """Frozen input record for the SQ1 private-key ASR measurement."""
-
-    id: str
-    family: str
-    vector: str
-    surface: str
-    variant: str
-    benign_task: str
-    target_forbidden_action: str
-    expected_sink: str
-    payload_text: str
-    malicious: bool = True
-
-
-@dataclass
-class SQ1TrialResult:
-    """One completed SQ1 condition/payload/repeat trial."""
-
-    run_id: str
-    condition: str
-    payload_id: str
-    family: str
-    vector: str
-    surface: str
-    variant: str
-    repeat: int
-    canary: str
-    severity: int
-    asr_success: bool
-    forbidden_read_attempted: bool
-    forbidden_read_blocked: bool
-    key_read_internal: bool
-    leaked_sinks: list[str]
-    final_output: str
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    tool_results: list[dict[str, Any]] = field(default_factory=list)
-    sink_events: list[dict[str, Any]] = field(default_factory=list)
-    error: str | None = None
-
-
-@dataclass
-class ToolDecision:
-    """
-    Tool request produced by an untrusted reader/reasoning layer.
-
-    This object is a proposal, not authorization to execute.
-    """
-    tool_name: str
-    tool_kwargs: dict[str, Any] = field(default_factory=dict)
-    reason: str = ""
-    source_payload: str = ""
-    payload_id: str | None = None
-    sender_id: str | None = None
-
-
-@dataclass
-class ExecutionResult:
-    """
-    Standard result for ASR and accountability measurements.
-
-    attack_success is True only when an unauthorized tool actually executes.
-    """
-    requested_tool: str
-    executed: bool
-    authorized: bool
-    attack_success: bool
-    reason: str
-    output: Any = None
-    payload_id: str | None = None
-    sender_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ToolPolicy:
-    """Authorization rule for one tool exposed to the trusted actor layer."""
-    name: str
-    handler: Callable[[dict[str, Any]], Any]
-    required_args: tuple[str, ...] = ()
-    risk: ToolRisk = ToolRisk.SAFE
-    max_risk: int = 1
-
-
 @dataclass
 class AccountabilityMetrics:
     """
@@ -132,6 +33,7 @@ class AccountabilityMetrics:
 
     fallout_radius is the accepted harmful impact before detection or expulsion.
     """
+
     subject_id: str
     accountability_enabled: bool
     attempted_actions: int
@@ -183,34 +85,3 @@ class AtomicMicrotaskEvidence:
     file_hash: str
     result_hash: str
     verified: bool = False
-
-
-@dataclass
-class TamperAttemptResult:
-    attack_name: str
-    target_path: str | None
-    attempted: bool
-    host_log_changed: bool
-    host_log_deleted: bool
-    integrity_ok: bool
-    succeeded: bool
-    error: str | None = None
-
-
-@dataclass
-class LogIntegrityExperimentResult:
-    mode: str
-    host_log_path_exposed: bool
-    attempts: list[TamperAttemptResult]
-    passed: bool
-
-    @property
-    def successful_attacks(self) -> int:
-        return sum(1 for attempt in self.attempts if attempt.succeeded)
-
-
-def attack_success_rate(results: list[ExecutionResult]) -> float:
-    if not results:
-        return 0.0
-    successes = sum(1 for result in results if result.attack_success)
-    return successes / len(results)

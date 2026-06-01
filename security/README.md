@@ -1,35 +1,24 @@
 # DelftClaw Security Research Code
 
-This directory contains the active security code for the three thesis
-subquestions plus a small amount of deploy compatibility code that is still
-referenced by existing demos.
+This directory contains the active VukZero thesis security code. Legacy
+community-demo, standalone gateway, and old sandbox prototypes have been
+removed so the tree maps directly to the three subquestions.
 
-## Active Thesis Packages
+## Active Packages
 
-- `security/agentdojo_vukzero/`: SQ1 AgentDojo evaluation for tool-level
-  prevention with VukZero capability checks.
-- `security/subq2_accountability/`: SQ2 accountability evaluation with signed
-  logs, reputation lag, fallout metrics, and live/deterministic scenarios.
-- `security/subq3_containment/`: SQ3 system containment evaluation with mock
-  protected resources, hardened proxies, gVisor/iptables enforcement checks,
+- `agentdojo_vukzero/`: SQ1 AgentDojo evaluation for tool-level prevention
+  with VukZero capability checks.
+- `subq2_accountability/`: SQ2 accountability evaluation with signed logs,
+  reputation lag, fallout metrics, and live/deterministic scenarios.
+- `subq3_containment/`: SQ3 system containment evaluation with mock protected
+  resources, hardened proxies, gVisor/iptables enforcement checks,
   deterministic attack probes, result exports, and paper tables.
-- `security/permissions/`: shared Brain/Hands permission primitives used by
-  SQ1 and the OpenClaw tool broker.
-- `security/contracts.py` and `security/results.py`: shared dataclasses and
-  result helpers used across the security experiments.
+- `permissions/`: shared Brain/Hands permission primitives used by SQ1 and
+  the OpenClaw tool broker.
+- `contracts.py` and `results.py`: small shared dataclasses and result helpers
+  used by active experiments.
 
-## Retained Compatibility Code
-
-- `security/subq1_preventative/` and `security/integration/` are retained
-  because deploy/community-demo entrypoints and tests still import them. They
-  are not the current SQ1 paper evaluation path; the current SQ1 path is
-  `security/agentdojo_vukzero/`.
-
-The old SQ3 integrity/sandbox package was removed. Its only active helper, the
-real gVisor/iptables preflight probe, now lives in
-`security/subq3_containment/enforcement.py`.
-
-## Common Commands
+## Commands
 
 SQ1 AgentDojo:
 

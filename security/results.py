@@ -4,7 +4,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from security.contracts import AccountabilityMetrics, ExecutionResult, LogIntegrityExperimentResult
+from security.contracts import AccountabilityMetrics
 
 
 def write_json(path: str | Path, data: Any):
@@ -30,23 +30,6 @@ def write_csv(path: str | Path, rows: Iterable[dict[str, Any]]):
         writer.writerows(rows)
 
 
-def execution_rows(label: str, results: list[ExecutionResult]) -> list[dict[str, Any]]:
-    return [
-        {
-            "condition": label,
-            "index": index,
-            "payload_id": result.payload_id,
-            "sender_id": result.sender_id,
-            "requested_tool": result.requested_tool,
-            "executed": result.executed,
-            "authorized": result.authorized,
-            "attack_success": result.attack_success,
-            "reason": result.reason,
-        }
-        for index, result in enumerate(results, start=1)
-    ]
-
-
 def accountability_row(label: str, metrics: AccountabilityMetrics) -> dict[str, Any]:
     return {
         "condition": label,
@@ -70,24 +53,6 @@ def accountability_row(label: str, metrics: AccountabilityMetrics) -> dict[str, 
         "expulsion_step": metrics.expulsion_step,
         "integrity_ok": metrics.integrity_ok,
     }
-
-
-def integrity_rows(result: LogIntegrityExperimentResult) -> list[dict[str, Any]]:
-    return [
-        {
-            "mode": result.mode,
-            "passed": result.passed,
-            "host_log_path_exposed": result.host_log_path_exposed,
-            "attack_name": attempt.attack_name,
-            "attempted": attempt.attempted,
-            "succeeded": attempt.succeeded,
-            "host_log_changed": attempt.host_log_changed,
-            "host_log_deleted": attempt.host_log_deleted,
-            "integrity_ok": attempt.integrity_ok,
-            "error": attempt.error,
-        }
-        for attempt in result.attempts
-    ]
 
 
 def _to_jsonable(value: Any) -> Any:

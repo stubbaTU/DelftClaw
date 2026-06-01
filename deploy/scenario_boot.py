@@ -250,24 +250,7 @@ def _state_dir(scenario_name: str, agent_name: str) -> Path:
 
 def _prepare_shared_state(scenario: Scenario) -> None:
     """Create scenario-level writable state that is shared across agents."""
-    if scenario.name not in {"security_layers", "secure_community_demo"}:
-        return
-    security_root = STATE_ROOT / scenario.name / "security"
-    _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
-    if scenario.name == "secure_community_demo":
-        try:
-            from security.subq3_containment.enforcement import run_real_guardrail_probe
-
-            report = run_real_guardrail_probe(security_root, timeout_s=120)
-            real_path = security_root / "real_guardrails.json"
-            _sudo(["chown", f"{SERVICE_USER}:{SERVICE_USER}", str(real_path)], check=False)
-            c_ok(
-                f"{scenario.name}: real isolation probe "
-                f"{'OK' if report.get('ok') else 'not ready'} ({real_path})"
-            )
-        except Exception as exc:
-            c_warn(f"{scenario.name}: real isolation probe failed: {type(exc).__name__}: {exc}")
-    c_ok(f"{scenario.name}: shared security evidence dir ready ({security_root})")
+    return
 
 
 def _instance_env_path(scenario: Scenario, agent: AgentSpec) -> Path:
@@ -290,7 +273,6 @@ def _seed_content_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
-    security_root = STATE_ROOT / scenario.name / "security"
     openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
     overlay = agent.publish_overlays[0] if agent.publish_overlays else (
         REPO_ROOT / "protocol" / "examples" / "content_community.md"
@@ -343,16 +325,7 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
         f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
         f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
-        f"WATCHDOG_DRIVER={'direct' if scenario.name in {'security_layers', 'secure_community_demo'} else OPENCLAW_LLM.get('watchdog_driver', 'openclaw')}",
-        *(
-            [
-                f"DIRECT_TOOL_ALLOWLIST={'security_layers' if scenario.name == 'security_layers' else 'secure_community_demo'}",
-                f"SECURITY_DEMO_ROOT={security_root}",
-                f"SECURITY_EVIDENCE_PATH={security_root / 'security_evidence.json'}",
-                "INTEGRATED_ATTACKER_ID=agent_2",
-            ]
-            if scenario.name in {"security_layers", "secure_community_demo"} else []
-        ),
+        f"WATCHDOG_DRIVER={OPENCLAW_LLM.get('watchdog_driver', 'openclaw')}",
         # Ollama doesn't authenticate, but OpenClaw demands a value for any
         # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
         # config resolves to this env var; any non-empty string works.
