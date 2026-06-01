@@ -14,13 +14,13 @@ from typing import Any
 
 from claw_community.service import ClawCommunityService
 from claw_community.state import CommunityStore
+from deploy.demo_security_checks import run_log_integrity_experiment
 from identity.openclaw_identity import OpenClawIdentity
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.community_audit import SignedCommunityAuditLog
 from security.contracts import SecurityAction, ToolRisk
 from security.integration.gateway import GatewayState
 from security.subq2_accountability.sporestack_provider import SporeStackSeedboxProvider
-from security.subq3_integrity.integrity import run_log_integrity_experiment
 
 
 AGENTS = {

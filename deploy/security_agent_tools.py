@@ -6,12 +6,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from deploy.demo_security_checks import run_log_integrity_experiment
 from identity.openclaw_identity import OpenClawIdentity
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.contracts import SecurityAction, ToolRisk
 from security.integration.gateway import GatewayState
-from security.subq3_integrity.integrity import run_log_integrity_experiment
-from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
+from security.subq3_containment.enforcement import run_real_guardrail_probe
 
 BASELINE_TRUST = 50
 DONATION_TRUST_BONUS = 15

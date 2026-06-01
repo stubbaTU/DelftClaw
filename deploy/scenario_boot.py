@@ -256,7 +256,7 @@ def _prepare_shared_state(scenario: Scenario) -> None:
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
     if scenario.name == "secure_community_demo":
         try:
-            from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
+            from security.subq3_containment.enforcement import run_real_guardrail_probe
 
             report = run_real_guardrail_probe(security_root, timeout_s=120)
             real_path = security_root / "real_guardrails.json"

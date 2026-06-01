@@ -61,7 +61,7 @@ fi
 
 c_blue "smoke: real guardrail probe"
 PYTHONPATH="${REPO_ROOT}" "${PYTHON_BIN}" \
-  -m security.subq3_integrity.real_guardrails \
+  -m security.subq3_containment.enforcement \
   --root /var/lib/delftclaw/real_isolation_smoke
 
 c_green "real isolation prerequisites are installed"
