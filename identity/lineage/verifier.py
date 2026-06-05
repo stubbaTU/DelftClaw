@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable, TypedDict
 
 from identity.lineage.anchors import AnchorBackend, get_anchor_backend
+from identity.lineage.cache import VerificationResultCache, coerce_verification_cache, make_verification_cache_key
 from identity.lineage.canonical import certificate_hash
 from identity.lineage.certificates import (
     certificate_allows_capability,
@@ -15,6 +17,7 @@ from identity.lineage.certificates import (
 )
 from identity.lineage.merkle import verify_merkle_proof
 from identity.lineage.models import ChildCertificateV1, LineageProof, VerificationResult
+from identity.lineage.revocation import replay_revocation_feed
 
 
 class TrustedRoot(TypedDict):
@@ -95,6 +98,7 @@ def verify_lineage_proof(
     anchor_backend: AnchorBackend | None = None,
     min_confirmations: int | None = None,
     now: datetime | None = None,
+    cache: VerificationResultCache | str | Path | None = None,
 ) -> VerificationResult:
     """Verify a complete proof without touching runtime or network flows."""
 
@@ -131,36 +135,66 @@ def verify_lineage_proof(
             return _invalid("invalid", proof, ["certificate chain does not reach a trusted root"], now_iso=verified_at)
         cursor = parent
 
-    revoked_ids = {
-        str(event.get("certificate_id"))
-        for event in proof.revocation_events
-        if event.get("certificate_id") is not None
-    }
-    for certificate in all_certificates:
-        if certificate.certificate_id in revoked_ids:
-            return _invalid(
-                "revoked",
-                proof,
-                [f"certificate revoked: {certificate.certificate_id}"],
-                trusted_root_agent_id=trusted_root["agent_id"],
-                now_iso=verified_at,
-            )
-
-    leaf_hash = certificate_hash(proof.leaf_certificate)
-    if proof.merkle_leaf_hash != leaf_hash:
-        return _invalid("invalid", proof, ["Merkle leaf hash does not match leaf certificate"], now_iso=verified_at)
-    if not verify_merkle_proof(
-        leaf_hash=proof.merkle_leaf_hash,
-        proof=proof.merkle_proof,
-        expected_root=proof.merkle_root,
-    ):
-        return _invalid("invalid", proof, ["Merkle proof does not verify"], now_iso=verified_at)
+    revocation_replay = replay_revocation_feed(
+        proof.revocation_events,
+        all_certificates,
+        trusted_roots=trusted_roots,
+    )
 
     minimum_confirmations = (
         min_confirmations
         if min_confirmations is not None
         else int(proof.leaf_certificate.anchor_policy.get("min_confirmations", 0))
     )
+    verification_cache = coerce_verification_cache(cache)
+    cache_key = None
+    if verification_cache is not None:
+        cache_key = make_verification_cache_key(
+            proof,
+            requested_capability=requested_capability,
+            min_confirmations=minimum_confirmations,
+            revocation_feed_version=revocation_replay.feed_version,
+            trusted_roots=trusted_roots,
+        )
+        cached_result = verification_cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
+
+    def _cache_and_return(result: VerificationResult) -> VerificationResult:
+        if verification_cache is not None and cache_key is not None:
+            verification_cache.set(cache_key, result)
+        return result
+
+    if revocation_replay.errors:
+        return _cache_and_return(_invalid(
+            "invalid",
+            proof,
+            revocation_replay.errors,
+            trusted_root_agent_id=trusted_root["agent_id"],
+            now_iso=verified_at,
+        ))
+    for certificate in all_certificates:
+        if certificate.certificate_id in revocation_replay.revoked_certificate_ids:
+            return _cache_and_return(_invalid(
+                "revoked",
+                proof,
+                [f"certificate revoked: {certificate.certificate_id}"],
+                trusted_root_agent_id=trusted_root["agent_id"],
+                now_iso=verified_at,
+            ))
+
+    leaf_hash = certificate_hash(proof.leaf_certificate)
+    if proof.merkle_leaf_hash != leaf_hash:
+        return _cache_and_return(
+            _invalid("invalid", proof, ["Merkle leaf hash does not match leaf certificate"], now_iso=verified_at)
+        )
+    if not verify_merkle_proof(
+        leaf_hash=proof.merkle_leaf_hash,
+        proof=proof.merkle_proof,
+        expected_root=proof.merkle_root,
+    ):
+        return _cache_and_return(_invalid("invalid", proof, ["Merkle proof does not verify"], now_iso=verified_at))
+
     backend = anchor_backend or get_anchor_backend(proof.anchor_record.btc_network)
     anchor_result = backend.verify_anchor(
         proof.anchor_record,
@@ -168,17 +202,19 @@ def verify_lineage_proof(
         minimum_confirmations,
     )
     if not anchor_result.ok:
-        return _invalid(
+        return _cache_and_return(_invalid(
             anchor_result.status,
             proof,
             list(anchor_result.errors),
             trusted_root_agent_id=trusted_root["agent_id"],
             now_iso=verified_at,
-        )
+        ))
     if proof.anchor_id != proof.anchor_record.anchor_id:
-        return _invalid("unanchored", proof, ["proof anchor_id does not match anchor record"], now_iso=verified_at)
+        return _cache_and_return(
+            _invalid("unanchored", proof, ["proof anchor_id does not match anchor record"], now_iso=verified_at)
+        )
 
-    return VerificationResult(
+    return _cache_and_return(VerificationResult(
         ok=True,
         status="valid",
         subject_agent_id=proof.leaf_certificate.child_agent_id,
@@ -188,4 +224,4 @@ def verify_lineage_proof(
         anchor_id=proof.anchor_id,
         confirmations=proof.anchor_record.confirmations,
         capabilities=list(proof.leaf_certificate.capabilities),
-    )
+    ))

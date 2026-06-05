@@ -29,6 +29,7 @@ import yaml
 
 from deploy import stop_predicates
 from deploy.mission import MissionParseError, parse_mission
+from protocol.manifest import LineagePolicy
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -132,6 +133,7 @@ class Scenario:
     agents: dict[str, AgentSpec]
     log_dir: Path
     manifest_path: Path = field(default_factory=Path)
+    lineage: LineagePolicy = field(default_factory=LineagePolicy)
 
     def instance_id(self, agent_name: str) -> str:
         """Systemd instance id: ``<scenario>-<agent>``."""
@@ -225,6 +227,7 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
         (raw.get("observability") or {}).get("log_dir")
         or f"/var/log/delftclaw/scenarios/{name}"
     )
+    lineage = _parse_lineage_policy(raw.get("lineage"))
 
     return Scenario(
         name=name,
@@ -232,6 +235,7 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
         watchdog=watchdog,
         agents=agents,
         log_dir=log_dir,
+        lineage=lineage,
         manifest_path=path,
     )
 
@@ -239,6 +243,88 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+def _parse_lineage_policy(raw: Any) -> LineagePolicy:
+    if raw is None:
+        return LineagePolicy()
+    if not isinstance(raw, dict):
+        raise ScenarioError(f"lineage: must be a mapping; got {type(raw).__name__}")
+
+    return LineagePolicy(
+        enabled=_bool(raw.get("enabled", False), "lineage.enabled"),
+        required=_bool(raw.get("required", False), "lineage.required"),
+        trusted_roots=_trusted_roots(raw.get("trusted_roots", [])),
+        btc_network=str(raw.get("btc_network", "mock") or "mock").strip() or "mock",
+        min_anchor_confirmations=_uint(
+            raw.get("min_anchor_confirmations", 0),
+            "lineage.min_anchor_confirmations",
+            max_value=65535,
+        ),
+        birth_package_path=str(raw.get("birth_package_path", "") or "").strip(),
+        cache_path=str(raw.get("cache_path", "") or "").strip(),
+        cache_dir=str(raw.get("cache_dir", "") or "").strip(),
+        revocation_feed=(
+            str(raw.get("revocation_feed", "lineage/revocations.jsonl") or "").strip()
+            or "lineage/revocations.jsonl"
+        ),
+        accepted_capabilities=_string_tuple(
+            raw.get("accepted_capabilities", []), "lineage.accepted_capabilities"
+        ),
+    )
+
+
+def _bool(value: Any, context: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ScenarioError(f"{context}: must be a boolean (got {value!r})")
+
+
+def _uint(value: Any, context: str, *, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioError(f"{context}: must be an int (got {value!r})") from exc
+    if parsed < 0:
+        raise ScenarioError(f"{context}: must be >= 0 (got {parsed})")
+    if parsed > max_value:
+        raise ScenarioError(f"{context}: must be <= {max_value} (got {parsed})")
+    return parsed
+
+
+def _string_tuple(value: Any, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ScenarioError(f"{context}: must be a list")
+    out: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise ScenarioError(f"{context}: entries must be strings")
+        out.append(entry)
+    return tuple(out)
+
+
+def _trusted_roots(value: Any) -> tuple[dict[str, str], ...]:
+    if not isinstance(value, list):
+        raise ScenarioError("lineage.trusted_roots: must be a list")
+    roots: list[dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ScenarioError("lineage.trusted_roots: entries must be mappings")
+        root: dict[str, str] = {}
+        for k, v in entry.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ScenarioError(
+                    "lineage.trusted_roots: entries must contain string keys and values"
+                )
+            root[k] = v
+        roots.append(root)
+    return tuple(roots)
+
 
 def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
     # Pre-v5.1 keys are a fatal migration error — don't silently ignore them

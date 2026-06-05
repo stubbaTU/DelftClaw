@@ -39,7 +39,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from agent.runtime import AgentConfig, OpenClawAgent
+from agent.runtime import AgentConfig, LineageRuntimeConfig, OpenClawAgent
 from communication.bittorrent import build_default_service
 from deploy import stop_predicates
 from deploy.openclaw_output import OpenClawJsonSummary, parse_openclaw_json_stdout
@@ -644,6 +644,22 @@ async def _run_loop(args: argparse.Namespace) -> int:
             peer_log_dir=Path(os.environ["PEER_LOG_DIR"])
             if os.environ.get("PEER_LOG_DIR") else None,
             peer_log_urls=tuple(os.environ.get("PEER_LOG_URLS", "").split()),
+            lineage=LineageRuntimeConfig(
+                enabled=scenario.lineage.enabled,
+                required=scenario.lineage.required,
+                btc_network=scenario.lineage.btc_network,
+                min_anchor_confirmations=scenario.lineage.min_anchor_confirmations,
+                birth_package_path=Path(scenario.lineage.birth_package_path)
+                if scenario.lineage.birth_package_path else None,
+                cache_path=Path(scenario.lineage.cache_path)
+                if scenario.lineage.cache_path else None,
+                cache_dir=Path(scenario.lineage.cache_dir)
+                if scenario.lineage.cache_dir else None,
+                revocation_feed=Path(scenario.lineage.revocation_feed)
+                if scenario.lineage.enabled and scenario.lineage.revocation_feed else None,
+                trusted_roots=scenario.lineage.trusted_roots,
+                accepted_capabilities=scenario.lineage.accepted_capabilities,
+            ),
         ),
         bt_service=build_default_service(save_dir=save_dir),
     )

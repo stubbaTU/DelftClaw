@@ -14,9 +14,9 @@ function as the overlay compiler — see ``protocol.compiler.canonicalize_md``.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from dataclasses import dataclass
-from typing import Iterable
+from dataclasses import dataclass, field
 
 from protocol.compiler import canonicalize_md
 
@@ -63,6 +63,20 @@ class GenesisPeer:
 
 
 @dataclass(frozen=True)
+class LineagePolicy:
+    enabled: bool = False
+    required: bool = False
+    trusted_roots: tuple[dict[str, str], ...] = ()
+    btc_network: str = "mock"
+    min_anchor_confirmations: int = 0
+    birth_package_path: str = ""
+    cache_path: str = ""
+    cache_dir: str = ""
+    revocation_feed: str = "lineage/revocations.jsonl"
+    accepted_capabilities: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class NetworkManifest:
     identity: dict[str, str]                # name, version, description
     admission: AdmissionPolicy
@@ -70,6 +84,7 @@ class NetworkManifest:
     default_overlays: tuple[str, ...]       # 40-char lowercase hex sha1s
     canonical_md_bytes: bytes
     network_id: bytes                       # sha1(canonical)[:20]
+    lineage: LineagePolicy = field(default_factory=LineagePolicy)
 
     @property
     def network_id_hex(self) -> str:
@@ -307,6 +322,119 @@ def _parse_default_overlays(body: str) -> tuple[str, ...]:
     return tuple(hashes)
 
 
+def _parse_lineage(body: str | None) -> LineagePolicy:
+    if body is None:
+        return LineagePolicy()
+
+    kv = _parse_kv_list(body)
+    btc_network = kv.get("btc_network", LineagePolicy.btc_network).strip() or "mock"
+    revocation_feed = (
+        kv.get("revocation_feed", LineagePolicy.revocation_feed).strip()
+        or LineagePolicy.revocation_feed
+    )
+    return LineagePolicy(
+        enabled=_parse_bool(kv, "enabled", default=False, section="# Lineage"),
+        required=_parse_bool(kv, "required", default=False, section="# Lineage"),
+        trusted_roots=_parse_trusted_roots(kv),
+        btc_network=btc_network,
+        min_anchor_confirmations=_parse_section_uint(
+            kv,
+            "min_anchor_confirmations",
+            default=0,
+            max_value=65535,
+            section="# Lineage",
+        ),
+        birth_package_path=kv.get("birth_package_path", "").strip(),
+        cache_path=kv.get("cache_path", "").strip(),
+        cache_dir=kv.get("cache_dir", "").strip(),
+        revocation_feed=revocation_feed,
+        accepted_capabilities=_parse_string_list(
+            kv, "accepted_capabilities", section="# Lineage"
+        ),
+    )
+
+
+def _parse_bool(
+    kv: dict[str, str], key: str, *, default: bool, section: str,
+) -> bool:
+    raw = kv.get(key)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ManifestParseError(
+        f"{section} {key} must be true or false; got {raw!r}"
+    )
+
+
+def _parse_section_uint(
+    kv: dict[str, str], key: str, *, default: int, max_value: int, section: str,
+) -> int:
+    raw = kv.get(key)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ManifestParseError(f"{section} {key} not an integer: {raw!r}") from exc
+    if value < 0:
+        raise ManifestParseError(f"{section} {key} must be >= 0; got {value}")
+    if value > max_value:
+        raise ManifestParseError(
+            f"{section} {key} must be <= {max_value}; got {value}"
+        )
+    return value
+
+
+def _parse_json_list(kv: dict[str, str], key: str, *, section: str) -> list:
+    raw = kv.get(key)
+    if raw is None:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ManifestParseError(
+            f"{section} {key} must be a JSON list; got {raw!r}"
+        ) from exc
+    if not isinstance(value, list):
+        raise ManifestParseError(
+            f"{section} {key} must be a JSON list; got {type(value).__name__}"
+        )
+    return value
+
+
+def _parse_string_list(
+    kv: dict[str, str], key: str, *, section: str,
+) -> tuple[str, ...]:
+    values = _parse_json_list(kv, key, section=section)
+    out: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise ManifestParseError(f"{section} {key} entries must be strings")
+        out.append(value)
+    return tuple(out)
+
+
+def _parse_trusted_roots(kv: dict[str, str]) -> tuple[dict[str, str], ...]:
+    values = _parse_json_list(kv, "trusted_roots", section="# Lineage")
+    roots: list[dict[str, str]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise ManifestParseError("# Lineage trusted_roots entries must be objects")
+        root: dict[str, str] = {}
+        for k, v in value.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ManifestParseError(
+                    "# Lineage trusted_roots entries must contain string keys and values"
+                )
+            root[k] = v
+        roots.append(root)
+    return tuple(roots)
+
+
 # ---------------------------------------------------------------------------
 # Table reader — same shape conventions as protocol.compiler._parse_field_table
 # ---------------------------------------------------------------------------
@@ -341,6 +469,7 @@ def parse_manifest(text: str) -> NetworkManifest:
     admission = _parse_admission(sections["Admission"])
     genesis_peers = _parse_genesis_peers(sections["Genesis Peers"])
     default_overlays = _parse_default_overlays(sections["Default Overlays"])
+    lineage = _parse_lineage(sections.get("Lineage"))
 
     canonical = canonicalize_md(text)
     network_id = hashlib.sha1(canonical).digest()[:20]
@@ -352,6 +481,7 @@ def parse_manifest(text: str) -> NetworkManifest:
         default_overlays=default_overlays,
         canonical_md_bytes=canonical,
         network_id=network_id,
+        lineage=lineage,
     )
 
 

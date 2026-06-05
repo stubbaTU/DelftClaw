@@ -6,7 +6,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from identity.lineage.models import AnchorRecord, CertificateBatch, ChildCertificateV1, JsonDict, to_json_dict
+from identity.lineage.models import (
+    AnchorRecord,
+    CertificateBatch,
+    ChildCertificateV1,
+    JsonDict,
+    RevocationEventV1,
+    to_json_dict,
+)
 
 
 def write_json(path: str | Path, value: Any) -> None:
@@ -75,7 +82,7 @@ class LineageStore:
     def append_anchor(self, anchor: AnchorRecord) -> None:
         append_jsonl(self.anchors_path, anchor)
 
-    def append_revocation(self, event: JsonDict) -> None:
+    def append_revocation(self, event: RevocationEventV1 | JsonDict) -> None:
         append_jsonl(self.revocations_path, event)
 
     def save_batch(self, batch: CertificateBatch) -> Path:

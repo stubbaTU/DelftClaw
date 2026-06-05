@@ -443,6 +443,16 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
         # on the same VPS don't trample each other's files.
         f"COMMUNITY_LOG_PATH={state / 'community.log'}",
         f"PEER_LOG_DIR={state / 'peer_logs'}",
+        f"LINEAGE_ENABLED={str(scenario.lineage.enabled).lower()}",
+        f"LINEAGE_REQUIRED={str(scenario.lineage.required).lower()}",
+        f"LINEAGE_BTC_NETWORK={scenario.lineage.btc_network}",
+        f"LINEAGE_MIN_ANCHOR_CONFIRMATIONS={scenario.lineage.min_anchor_confirmations}",
+        f"LINEAGE_BIRTH_PACKAGE_PATH={scenario.lineage.birth_package_path}",
+        f"LINEAGE_CACHE_PATH={scenario.lineage.cache_path}",
+        f"LINEAGE_CACHE_DIR={scenario.lineage.cache_dir}",
+        f"LINEAGE_REVOCATION_FEED={scenario.lineage.revocation_feed}",
+        f"LINEAGE_TRUSTED_ROOTS={json.dumps(list(scenario.lineage.trusted_roots), separators=(',', ':'))}",
+        f"LINEAGE_ACCEPTED_CAPABILITIES={json.dumps(list(scenario.lineage.accepted_capabilities), separators=(',', ':'))}",
         *(
             [f"MCP_EXPOSE_TOOLS={','.join(REGTEST_TRANSFER_MCP_TOOLS)}"]
             if scenario.name == "regtest_transfer"
@@ -1151,6 +1161,44 @@ def _default_overlay_hashes(scenario: Scenario, genesis_name: str) -> list[str]:
     return hashes
 
 
+def _lineage_manifest_section(scenario: Scenario) -> str:
+    policy = scenario.lineage
+    if (
+        policy.enabled is False
+        and policy.required is False
+        and policy.trusted_roots == ()
+        and policy.btc_network == "mock"
+        and policy.min_anchor_confirmations == 0
+        and policy.birth_package_path == ""
+        and policy.cache_path == ""
+        and policy.cache_dir == ""
+        and policy.revocation_feed == "lineage/revocations.jsonl"
+        and policy.accepted_capabilities == ()
+    ):
+        return ""
+
+    optional_path_lines = ""
+    if policy.birth_package_path:
+        optional_path_lines += f"- birth_package_path: {policy.birth_package_path}\n"
+    if policy.cache_path:
+        optional_path_lines += f"- cache_path: {policy.cache_path}\n"
+    if policy.cache_dir:
+        optional_path_lines += f"- cache_dir: {policy.cache_dir}\n"
+
+    return (
+        "\n"
+        "# Lineage\n"
+        f"- enabled: {str(policy.enabled).lower()}\n"
+        f"- required: {str(policy.required).lower()}\n"
+        f"- trusted_roots: {json.dumps(list(policy.trusted_roots), separators=(',', ':'))}\n"
+        f"- btc_network: {policy.btc_network}\n"
+        f"- min_anchor_confirmations: {policy.min_anchor_confirmations}\n"
+        f"{optional_path_lines}"
+        f"- revocation_feed: {policy.revocation_feed}\n"
+        f"- accepted_capabilities: {json.dumps(list(policy.accepted_capabilities), separators=(',', ':'))}\n"
+    )
+
+
 def _build_manifest_md(
     *,
     scenario: Scenario,
@@ -1170,6 +1218,7 @@ def _build_manifest_md(
         )
     else:
         overlays_section = "(none — joiners discover overlays via OVERLAY_OFFER)"
+    lineage_section = _lineage_manifest_section(scenario)
     return (
         "# Identity\n"
         f"- name: {scenario.name}\n"
@@ -1191,6 +1240,7 @@ def _build_manifest_md(
         "\n"
         "# Default Overlays\n"
         f"{overlays_section}\n"
+        f"{lineage_section}"
     )
 
 

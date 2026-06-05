@@ -105,6 +105,12 @@ _BUDGET_FREE_TOOLS: frozenset[str] = frozenset({
     # torrent / bittorrent reads
     "torrent_stats",
 
+    # lineage reads / verification (tooling only; no admission enforcement)
+    "lineage_status",
+    "lineage_verify_proof",
+    "lineage_list_revocations",
+    "lineage_export_birth_package",
+
     # regtest / on-chain BTC reads
     "btc_get_balance",
     "btc_list_utxos",

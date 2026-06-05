@@ -1154,4 +1154,18 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         # Never fail agent boot because regtest tooling couldn't be wired.
         pass
 
+    # ---- Lineage wrappers ----------------------------------------------
+    # Thin JSON-native wrappers around identity.lineage primitives. These
+    # are tooling only: they persist local certificates/proofs/revocations
+    # but do not enable runtime admission enforcement.
+    from agent.lineage_tools import build_lineage_tools
+
+    for name, fn, params_schema, description in build_lineage_tools(agent):
+        tools.append(Tool(
+            name=name,
+            description=description,
+            parameters=params_schema,
+            fn=fn,
+        ))
+
     return ToolRegistry(tools)

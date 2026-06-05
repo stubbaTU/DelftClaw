@@ -52,6 +52,38 @@ class ChildCertificateV1:
 
 
 @dataclass(frozen=True)
+class RevocationEventV1:
+    """Signed event that revokes one lineage certificate."""
+
+    certificate_id: str
+    family_id: str
+    revoked_by_agent_id: str
+    revoked_by_pubkey: str
+    reason: str
+    created_at: str
+    event_id: str = ""
+    signature: str = ""
+    version: int = 1
+
+    def to_dict(self) -> JsonDict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: JsonDict) -> "RevocationEventV1":
+        return cls(
+            version=int(data.get("version", 1)),
+            event_id=str(data.get("event_id", "")),
+            certificate_id=str(data["certificate_id"]),
+            family_id=str(data["family_id"]),
+            revoked_by_agent_id=str(data["revoked_by_agent_id"]),
+            revoked_by_pubkey=str(data["revoked_by_pubkey"]),
+            reason=str(data.get("reason", "")),
+            created_at=str(data["created_at"]),
+            signature=str(data.get("signature", "")),
+        )
+
+
+@dataclass(frozen=True)
 class MerkleProofStep:
     side: Literal["left", "right"]
     hash: str
@@ -134,7 +166,7 @@ class LineageProof:
     merkle_root: str
     anchor_id: str
     anchor_record: AnchorRecord
-    revocation_events: list[JsonDict] = field(default_factory=list)
+    revocation_events: list[RevocationEventV1 | JsonDict] = field(default_factory=list)
     version: int = 1
 
     def to_dict(self) -> JsonDict:
@@ -147,11 +179,19 @@ class LineageProof:
             "merkle_root": self.merkle_root,
             "anchor_id": self.anchor_id,
             "anchor_record": self.anchor_record.to_dict(),
-            "revocation_events": list(self.revocation_events),
+            "revocation_events": [to_json_dict(event) for event in self.revocation_events],
         }
 
     @classmethod
     def from_dict(cls, data: JsonDict) -> "LineageProof":
+        revocation_events: list[RevocationEventV1 | JsonDict] = []
+        for item in data.get("revocation_events", []):
+            raw_event = dict(item)
+            try:
+                revocation_events.append(RevocationEventV1.from_dict(raw_event))
+            except (KeyError, TypeError, ValueError):
+                revocation_events.append(raw_event)
+
         return cls(
             version=int(data.get("version", 1)),
             leaf_certificate=ChildCertificateV1.from_dict(dict(data["leaf_certificate"])),
@@ -161,7 +201,7 @@ class LineageProof:
             merkle_root=str(data["merkle_root"]),
             anchor_id=str(data["anchor_id"]),
             anchor_record=AnchorRecord.from_dict(dict(data["anchor_record"])),
-            revocation_events=[dict(item) for item in data.get("revocation_events", [])],
+            revocation_events=revocation_events,
         )
 
 

@@ -70,6 +70,7 @@ from typing import Optional
 
 from agent import (
     AgentConfig,
+    LineageRuntimeConfig,
     OpenAICompatibleToolLLM,
     OpenClawAgent,
     StubToolLoopLLM,
@@ -118,6 +119,65 @@ def _resolve_regtest_rpc_from_env() -> tuple[str | None, str | None, str | None,
         or os.environ.get("OPENCLAW_RPC_PASSWORD")
     )
     return rpc_url, wallet, user, pw
+
+
+def _env_bool(environ: dict[str, str], name: str, default: bool = False) -> bool:
+    raw = (environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be boolean-like, got {raw!r}")
+
+
+def _env_json_list(environ: dict[str, str], name: str) -> list:
+    raw = (environ.get(name) or "").strip()
+    if not raw:
+        return []
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a JSON list")
+    return value
+
+
+def _lineage_config_from_env(environ: dict[str, str]) -> LineageRuntimeConfig:
+    roots_raw = _env_json_list(environ, "LINEAGE_TRUSTED_ROOTS")
+    roots: list[dict[str, str]] = []
+    for entry in roots_raw:
+        if not isinstance(entry, dict):
+            raise ValueError("LINEAGE_TRUSTED_ROOTS entries must be objects")
+        roots.append({str(k): str(v) for k, v in entry.items()})
+
+    capabilities_raw = _env_json_list(environ, "LINEAGE_ACCEPTED_CAPABILITIES")
+    capabilities = tuple(str(item) for item in capabilities_raw)
+
+    def path_or_none(name: str) -> Path | None:
+        value = (environ.get(name) or "").strip()
+        return Path(value) if value else None
+
+    enabled = _env_bool(environ, "LINEAGE_ENABLED", False)
+    required = _env_bool(environ, "LINEAGE_REQUIRED", False)
+    btc_network = (environ.get("LINEAGE_BTC_NETWORK") or "mock").strip() or "mock"
+    min_anchor_confirmations = int(environ.get("LINEAGE_MIN_ANCHOR_CONFIRMATIONS") or "0")
+    revocation_feed = path_or_none("LINEAGE_REVOCATION_FEED")
+
+    config = LineageRuntimeConfig(
+        enabled=enabled,
+        required=required,
+        btc_network=btc_network,
+        min_anchor_confirmations=min_anchor_confirmations,
+        birth_package_path=path_or_none("LINEAGE_BIRTH_PACKAGE_PATH"),
+        cache_path=path_or_none("LINEAGE_CACHE_PATH"),
+        cache_dir=path_or_none("LINEAGE_CACHE_DIR"),
+        revocation_feed=revocation_feed if enabled else None,
+        trusted_roots=tuple(roots),
+        accepted_capabilities=capabilities,
+    )
+    if config == LineageRuntimeConfig():
+        return LineageRuntimeConfig()
+    return config
 
 
 async def _maybe_enable_regtest_wallet(agent: OpenClawAgent) -> None:
@@ -520,6 +580,7 @@ async def _run(args: argparse.Namespace) -> int:
             peer_log_urls = env_urls.split()
     community_log_path = args.community_log_path or _os.environ.get("COMMUNITY_LOG_PATH")
     peer_log_dir = args.peer_log_dir or _os.environ.get("PEER_LOG_DIR")
+    lineage_config = _lineage_config_from_env(dict(_os.environ))
 
     config = AgentConfig(
         port=args.port,
@@ -534,6 +595,7 @@ async def _run(args: argparse.Namespace) -> int:
         peer_log_urls=tuple(peer_log_urls),
         pull_interval_s=args.pull_interval_s,
         pull_batch=args.pull_batch,
+        lineage=lineage_config,
     )
     print(f"[boot] constructing agent (port={args.port}, btc={args.btc_network})", flush=True)
     agent = OpenClawAgent(identity=identity, llm=compiler_llm, config=config)

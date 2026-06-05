@@ -105,6 +105,43 @@ Each entry is `- sha1: <40-char lowercase hex>` followed by optional
 parenthesised free-text description. The parser keeps the hash and
 discards the description.
 
+## Optional `# Lineage`
+
+Manifests may include an optional lineage policy section after the
+required sections. Absence is equivalent to this default-disabled policy:
+
+```
+# Lineage
+- enabled: false
+- required: false
+- trusted_roots: []
+- btc_network: mock
+- min_anchor_confirmations: 0
+- birth_package_path:
+- cache_path:
+- cache_dir:
+- revocation_feed: lineage/revocations.jsonl
+- accepted_capabilities: []
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Allows lineage material to be configured. It does not enforce admission by itself. |
+| `required` | bool | `false` | When lineage is enabled, fail local startup/config loading only if this node's own configured proof is missing or invalid. Does not reject remote peers. |
+| `trusted_roots` | JSON list of objects | `[]` | Optional trusted lineage authorities. |
+| `btc_network` | string | `mock` | Anchor backend network selector. `mock` is the default and only wired MVP mode. |
+| `min_anchor_confirmations` | uint16 | `0` | Minimum anchor confirmations for local proof verification. |
+| `birth_package_path` | string | empty | Optional local path to this node's birth package/proof. Relative paths resolve under the runtime save directory. |
+| `cache_path` | string | empty | Optional JSON verification cache file path. |
+| `cache_dir` | string | empty | Optional directory for `verification_cache.json` when `cache_path` is not set. |
+| `revocation_feed` | string | `lineage/revocations.jsonl` | Optional revocation feed path. |
+| `accepted_capabilities` | JSON list of strings | `[]` | Optional accepted capability policy. |
+
+The parser exposes this section as `NetworkManifest.lineage`. Runtime
+consumption remains opt-in and local-status only: IPv8 admission and
+Bitcoin Core/regtest anchoring do not consume or enforce lineage by
+default.
+
 ## Canonicalization rule
 
 The bytes hashed to derive the `network_id` are produced by the same

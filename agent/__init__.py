@@ -20,11 +20,12 @@ from agent.loop import (
     ToolLoopLLM,
     run_tool_loop,
 )
-from agent.runtime import AgentConfig, OpenClawAgent
+from agent.runtime import AgentConfig, LineageRuntimeConfig, OpenClawAgent
 from agent.tools import Tool, ToolRegistry, build_tools
 
 __all__ = [
     "AgentConfig",
+    "LineageRuntimeConfig",
     "OpenAICompatibleToolLLM",
     "OpenClawAgent",
     "StubToolLoopLLM",

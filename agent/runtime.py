@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,6 +27,30 @@ from protocol import OverlayRegistry
 from protocol.llm import LLMClient
 from protocol.manifest import NetworkManifest, parse_manifest
 from admission.donation_verifier import DonationVerifier
+
+
+JsonDict = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LineageRuntimeConfig:
+    """Opt-in local lineage verification knobs.
+
+    Defaults keep lineage disabled and do not import or exercise verifier
+    code. Path fields are local runtime concerns and are resolved relative
+    to ``AgentConfig.save_dir`` when not absolute.
+    """
+
+    enabled: bool = False
+    required: bool = False
+    btc_network: str = "mock"
+    min_anchor_confirmations: int = 0
+    birth_package_path: Optional[Path] = None
+    cache_path: Optional[Path] = None
+    cache_dir: Optional[Path] = None
+    revocation_feed: Optional[Path] = None
+    trusted_roots: tuple[dict[str, str], ...] = ()
+    accepted_capabilities: tuple[str, ...] = ()
 
 
 @dataclass
@@ -62,6 +86,9 @@ class AgentConfig:
     # redteam pull-sync demo uses, so behaviour is consistent.
     pull_interval_s: float = 5.0
     pull_batch: int = 100
+    # Optional secure deAI lineage status/proof verification. Disabled by
+    # default and never affects remote peer admission.
+    lineage: LineageRuntimeConfig = field(default_factory=LineageRuntimeConfig)
 
 
 def uses_mock_regtest_addresses(network: str) -> bool:
@@ -135,6 +162,8 @@ class OpenClawAgent:
         # head caches landed.
         self._community_state_cache: tuple[Any, Any] | None = None
 
+        self._lineage_status: JsonDict = self._disabled_lineage_status(self.config.lineage)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -142,6 +171,8 @@ class OpenClawAgent:
     async def start(self) -> None:
         if self._ipv8 is not None:
             return
+
+        self._refresh_lineage_status(raise_on_required=True)
 
         # Persist the IPv8 transport key alongside a tempfile so ConfigBuilder
         # can load it. We write the existing AgentIdentity key, not a fresh one,
@@ -281,6 +312,205 @@ class OpenClawAgent:
             pass
 
     # ------------------------------------------------------------------
+    # Local lineage status (tooling only; no peer admission enforcement)
+    # ------------------------------------------------------------------
+
+    @property
+    def lineage_status(self) -> JsonDict:
+        """Last computed local lineage status.
+
+        This is observability for the local node's own proof only. It is
+        never consulted by peer admission or IPv8 handshakes.
+        """
+
+        return dict(self._lineage_status)
+
+    def refresh_lineage_status(self) -> JsonDict:
+        """Recompute and return local lineage status without changing admission."""
+
+        self._refresh_lineage_status(raise_on_required=False)
+        return self.lineage_status
+
+    def _refresh_lineage_status(self, *, raise_on_required: bool) -> None:
+        config = self._effective_lineage_config()
+        status = self._base_lineage_status(config)
+        if not config.enabled:
+            self._lineage_status = status
+            return
+
+        errors: list[str] = []
+        warnings: list[str] = []
+        birth_package_path = self._resolve_lineage_path(config.birth_package_path)
+        cache_path = self._lineage_cache_path(config)
+        revocation_feed_path = self._resolve_lineage_path(config.revocation_feed)
+
+        status["paths"]["birth_package"] = str(birth_package_path) if birth_package_path else ""
+        status["paths"]["cache"] = str(cache_path) if cache_path else ""
+        status["paths"]["revocation_feed"] = str(revocation_feed_path) if revocation_feed_path else ""
+
+        if config.btc_network != "mock":
+            errors.append(
+                f"unsupported_lineage_btc_network:{config.btc_network}: only 'mock' is implemented"
+            )
+
+        package: JsonDict | None = None
+        if birth_package_path is None:
+            errors.append("birth_package_path_not_configured")
+        elif not birth_package_path.is_file():
+            errors.append(f"birth_package_missing:{birth_package_path}")
+        else:
+            try:
+                from identity.lineage.store import read_json
+
+                package = read_json(birth_package_path)
+            except Exception as exc:
+                errors.append(f"birth_package_load_failed:{type(exc).__name__}: {exc}")
+
+        if package is not None and not errors:
+            try:
+                from identity.lineage.models import LineageProof, RevocationEventV1
+                from identity.lineage.store import read_jsonl
+                from identity.lineage.verifier import verify_lineage_proof
+
+                proof = LineageProof.from_dict(dict(package["proof"]))
+                if revocation_feed_path is not None:
+                    if revocation_feed_path.is_file():
+                        revocations = [
+                            RevocationEventV1.from_dict(row)
+                            for row in read_jsonl(revocation_feed_path)
+                        ]
+                        proof = replace(proof, revocation_events=revocations)
+                    else:
+                        warnings.append(f"revocation_feed_missing:{revocation_feed_path}")
+
+                trusted_roots = list(config.trusted_roots)
+                if not trusted_roots:
+                    raw_roots = package.get("trusted_roots", [])
+                    if isinstance(raw_roots, list):
+                        trusted_roots = [dict(root) for root in raw_roots if isinstance(root, dict)]
+
+                if not errors:
+                    result = verify_lineage_proof(
+                        proof,
+                        trusted_roots=trusted_roots,  # type: ignore[arg-type]
+                        min_confirmations=config.min_anchor_confirmations,
+                        cache=cache_path,
+                    )
+                    result_dict = result.to_dict()
+                    status.update({
+                        "available": True,
+                        "ok": bool(result.ok),
+                        "status": result.status,
+                        "subject_agent_id": result.subject_agent_id,
+                        "certificate_id": result.certificate_id,
+                        "verification_result": result_dict,
+                    })
+                    errors.extend(result.errors)
+            except Exception as exc:
+                errors.append(f"lineage_verification_failed:{type(exc).__name__}: {exc}")
+
+        if errors:
+            status["ok"] = False
+            status["errors"] = errors
+            if status["status"] in {"disabled", "not_checked"}:
+                missing_or_unconfigured = any(
+                    error.startswith(("birth_package_path_not_configured", "birth_package_missing"))
+                    for error in errors
+                )
+                status["status"] = "unavailable" if missing_or_unconfigured else "invalid"
+        status["warnings"] = warnings
+        self._lineage_status = status
+
+        if raise_on_required and config.required and not status.get("ok"):
+            detail = "; ".join(errors) if errors else str(status.get("status", "invalid"))
+            raise RuntimeError(f"lineage required but local proof is unavailable or invalid: {detail}")
+
+    def _base_lineage_status(self, config: LineageRuntimeConfig) -> JsonDict:
+        cache_path = self._lineage_cache_path(config)
+        return {
+            "enabled": bool(config.enabled),
+            "required": bool(config.required),
+            "enforced": False,
+            "btc_network": config.btc_network or "mock",
+            "default_btc_network": "mock",
+            "min_anchor_confirmations": int(config.min_anchor_confirmations),
+            "trusted_roots": [dict(root) for root in config.trusted_roots],
+            "accepted_capabilities": list(config.accepted_capabilities),
+            "available": False,
+            "ok": None if not config.enabled else False,
+            "status": "disabled" if not config.enabled else "not_checked",
+            "subject_agent_id": "",
+            "certificate_id": "",
+            "errors": [],
+            "warnings": [],
+            "verification_result": None,
+            "paths": {
+                "birth_package": str(self._resolve_lineage_path(config.birth_package_path) or ""),
+                "cache": str(cache_path or ""),
+                "revocation_feed": str(self._resolve_lineage_path(config.revocation_feed) or ""),
+            },
+        }
+
+    def _disabled_lineage_status(self, config: LineageRuntimeConfig) -> JsonDict:
+        return self._base_lineage_status(config)
+
+    def _effective_lineage_config(self) -> LineageRuntimeConfig:
+        explicit_runtime = self.config.lineage != LineageRuntimeConfig()
+        if explicit_runtime:
+            return self.config.lineage
+        if self._manifest is not None and self._manifest_lineage_is_non_default(self._manifest.lineage):
+            return self._lineage_config_from_policy(self._manifest.lineage)
+        return self.config.lineage
+
+    def _lineage_config_from_policy(self, policy: Any) -> LineageRuntimeConfig:
+        return LineageRuntimeConfig(
+            enabled=bool(getattr(policy, "enabled", False)),
+            required=bool(getattr(policy, "required", False)),
+            btc_network=str(getattr(policy, "btc_network", "mock") or "mock"),
+            min_anchor_confirmations=int(getattr(policy, "min_anchor_confirmations", 0)),
+            birth_package_path=self._path_or_none(getattr(policy, "birth_package_path", "")),
+            cache_path=self._path_or_none(getattr(policy, "cache_path", "")),
+            cache_dir=self._path_or_none(getattr(policy, "cache_dir", "")),
+            revocation_feed=self._path_or_none(getattr(policy, "revocation_feed", "")),
+            trusted_roots=tuple(dict(root) for root in getattr(policy, "trusted_roots", ())),
+            accepted_capabilities=tuple(str(item) for item in getattr(policy, "accepted_capabilities", ())),
+        )
+
+    def _manifest_lineage_is_non_default(self, policy: Any) -> bool:
+        return any((
+            bool(getattr(policy, "enabled", False)),
+            bool(getattr(policy, "required", False)),
+            tuple(getattr(policy, "trusted_roots", ())) != (),
+            str(getattr(policy, "btc_network", "mock") or "mock") != "mock",
+            int(getattr(policy, "min_anchor_confirmations", 0)) != 0,
+            str(getattr(policy, "birth_package_path", "") or "") != "",
+            str(getattr(policy, "cache_path", "") or "") != "",
+            str(getattr(policy, "cache_dir", "") or "") != "",
+            str(getattr(policy, "revocation_feed", "lineage/revocations.jsonl") or "") != "lineage/revocations.jsonl",
+            tuple(getattr(policy, "accepted_capabilities", ())) != (),
+        ))
+
+    def _path_or_none(self, value: Any) -> Optional[Path]:
+        text = str(value or "").strip()
+        return Path(text) if text else None
+
+    def _resolve_lineage_path(self, path: Optional[Path]) -> Optional[Path]:
+        if path is None:
+            return None
+        if path.is_absolute():
+            return path
+        return self.config.save_dir / path
+
+    def _lineage_cache_path(self, config: LineageRuntimeConfig) -> Optional[Path]:
+        cache_path = self._resolve_lineage_path(config.cache_path)
+        if cache_path is not None:
+            return cache_path
+        cache_dir = self._resolve_lineage_path(config.cache_dir)
+        if cache_dir is None:
+            return None
+        return cache_dir / "verification_cache.json"
+
+    # ------------------------------------------------------------------
     # Accessors used by the tool layer + tests
     # ------------------------------------------------------------------
 
@@ -392,6 +622,8 @@ class OpenClawAgent:
 
         self._manifest = manifest
         self._manifest_md = md_text
+
+        self._refresh_lineage_status(raise_on_required=True)
 
         if self_is_genesis and self._seedbox is not None:
             self._seedbox.publish_manifest(md_text)

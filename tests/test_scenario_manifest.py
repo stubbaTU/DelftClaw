@@ -150,6 +150,43 @@ def test_initial_balance_sats_rejects_non_int(tmp_path: Path):
         parse_scenario(path)
 
 
+def test_lineage_config_defaults_to_disabled(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.lineage.enabled is False
+    assert s.lineage.required is False
+    assert s.lineage.btc_network == "mock"
+    assert s.lineage.min_anchor_confirmations == 0
+    assert s.lineage.trusted_roots == ()
+    assert s.lineage.accepted_capabilities == ()
+
+
+def test_lineage_config_parses_when_enabled(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["lineage"] = {
+        "enabled": True,
+        "trusted_roots": [
+            {"agent_id": "root-agent", "authority_pubkey": "aa"},
+        ],
+        "accepted_capabilities": ["search"],
+        "birth_package_path": "lineage/birth_package.json",
+        "cache_dir": "lineage/cache",
+    }
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    assert s.lineage.enabled is True
+    assert s.lineage.required is False
+    assert s.lineage.btc_network == "mock"
+    assert s.lineage.min_anchor_confirmations == 0
+    assert s.lineage.trusted_roots == (
+        {"agent_id": "root-agent", "authority_pubkey": "aa"},
+    )
+    assert s.lineage.accepted_capabilities == ("search",)
+    assert s.lineage.birth_package_path == "lineage/birth_package.json"
+    assert s.lineage.cache_dir == "lineage/cache"
+
+
 # ---------------------------------------------------------------------------
 # Rejection cases
 # ---------------------------------------------------------------------------
@@ -336,6 +373,7 @@ def test_build_manifest_md_round_trips_through_parser(tmp_path: Path):
         default_overlay_hashes=["a3455e9cec3b78bc281f1c495b0a08baa733833a"],
     )
     parsed = parse_manifest(md)
+    assert "# Lineage" not in md
     assert parsed.identity["name"] == "smoke"
     assert parsed.admission.gatekeeper_address.startswith("tb1q")
     assert parsed.admission.min_sats == 10000
@@ -362,7 +400,43 @@ def test_build_manifest_md_with_no_overlays_still_parses(tmp_path: Path):
         default_overlay_hashes=[],
     )
     parsed = parse_manifest(md)
+    assert "# Lineage" not in md
     assert parsed.default_overlays == ()
+
+
+def test_build_manifest_md_includes_non_default_lineage_config(tmp_path: Path):
+    manifest = _copy(VALID_BASE)
+    manifest["lineage"] = {
+        "enabled": True,
+        "required": False,
+        "trusted_roots": [
+            {"agent_id": "root-agent", "authority_pubkey": "aa"},
+        ],
+        "btc_network": "mock",
+        "min_anchor_confirmations": 2,
+        "revocation_feed": "lineage/revocations.jsonl",
+        "accepted_capabilities": ["search"],
+    }
+    path = _write_scenario(tmp_path, manifest)
+    s = parse_scenario(path)
+    md = _build_manifest_md(
+        scenario=s,
+        genesis_name="alice",
+        genesis_coords={
+            "host": "127.0.0.1",
+            "port": 8190,
+            "pubkey_hex": "cc" * 37,
+            "wallet_address": "tb1qexamplewalletxxxxxxxxxxxxxxxxxxxxxx",
+        },
+        default_overlay_hashes=[],
+    )
+    parsed = parse_manifest(md)
+    assert "# Lineage" in md
+    assert parsed.lineage.enabled is True
+    assert parsed.lineage.required is False
+    assert parsed.lineage.btc_network == "mock"
+    assert parsed.lineage.min_anchor_confirmations == 2
+    assert parsed.lineage.accepted_capabilities == ("search",)
 
 
 # ---------------------------------------------------------------------------

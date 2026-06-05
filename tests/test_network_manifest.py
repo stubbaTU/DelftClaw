@@ -30,6 +30,7 @@ from communication.community import (
 from protocol.manifest import (
     AdmissionPolicy,
     GenesisPeer,
+    LineagePolicy,
     ManifestParseError,
     NetworkManifest,
     network_id_from_manifest,
@@ -91,6 +92,14 @@ def test_parse_good_manifest_extracts_every_field():
     assert manifest.default_overlays == (
         "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     )
+    assert isinstance(manifest.lineage, LineagePolicy)
+    assert manifest.lineage.enabled is False
+    assert manifest.lineage.required is False
+    assert manifest.lineage.trusted_roots == ()
+    assert manifest.lineage.btc_network == "mock"
+    assert manifest.lineage.min_anchor_confirmations == 0
+    assert manifest.lineage.revocation_feed == "lineage/revocations.jsonl"
+    assert manifest.lineage.accepted_capabilities == ()
     assert len(manifest.network_id) == 20
 
 
@@ -113,6 +122,45 @@ def test_parse_bundled_example_manifest():
     assert manifest.default_overlays == (
         "a3455e9cec3b78bc281f1c495b0a08baa733833a",
     )
+
+
+def test_manifest_without_lineage_section_uses_defaults():
+    manifest = parse_manifest(GOOD_MANIFEST)
+    assert manifest.lineage == LineagePolicy()
+    assert manifest.lineage.required is False
+    assert manifest.lineage.btc_network == "mock"
+    assert manifest.lineage.min_anchor_confirmations == 0
+
+
+def test_manifest_with_lineage_enabled_parses():
+    text = GOOD_MANIFEST + """\
+
+# Lineage
+
+- enabled: true
+- required: false
+- trusted_roots: [{"agent_id":"root-agent","authority_pubkey":"aa"}]
+- btc_network: mock
+- min_anchor_confirmations: 3
+- birth_package_path: lineage/birth_package.json
+- cache_path: lineage/cache.json
+- cache_dir: lineage/cache
+- revocation_feed: lineage/custom_revocations.jsonl
+- accepted_capabilities: ["search","seed"]
+"""
+    manifest = parse_manifest(text)
+    assert manifest.lineage.enabled is True
+    assert manifest.lineage.required is False
+    assert manifest.lineage.trusted_roots == (
+        {"agent_id": "root-agent", "authority_pubkey": "aa"},
+    )
+    assert manifest.lineage.btc_network == "mock"
+    assert manifest.lineage.min_anchor_confirmations == 3
+    assert manifest.lineage.birth_package_path == "lineage/birth_package.json"
+    assert manifest.lineage.cache_path == "lineage/cache.json"
+    assert manifest.lineage.cache_dir == "lineage/cache"
+    assert manifest.lineage.revocation_feed == "lineage/custom_revocations.jsonl"
+    assert manifest.lineage.accepted_capabilities == ("search", "seed")
 
 
 # ---------------------------------------------------------------------------
