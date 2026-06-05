@@ -20,7 +20,7 @@ from ipv8.peer import Peer
 from ipv8_service import IPv8
 
 from communication.bittorrent import BitTorrentService, build_default_service
-from communication.community import SeedboxCommunity
+from communication.community import CommunityLineageConfig, SeedboxCommunity
 from identity.agent_identity import AgentIdentity
 from identity.wallet import Wallet
 from protocol import OverlayRegistry
@@ -162,6 +162,7 @@ class OpenClawAgent:
         # head caches landed.
         self._community_state_cache: tuple[Any, Any] | None = None
 
+        self._lineage_peer_status: dict[str, JsonDict] = {}
         self._lineage_status: JsonDict = self._disabled_lineage_status(self.config.lineage)
 
     # ------------------------------------------------------------------
@@ -217,6 +218,9 @@ class OpenClawAgent:
             verifier=verifier,
             wallet_address=wallet_address,
             community_join_callback=self._handle_community_join,
+            lineage_config=self._seedbox_lineage_config(),
+            lineage_proof_provider=self._local_lineage_proof_for_handshake,
+            lineage_status_callback=self._record_peer_lineage_status,
         )
         # Persist LLM-generated overlay sources under the agent's save
         # dir so a watchdog restart doesn't re-pay the compiler-LLM
@@ -427,7 +431,7 @@ class OpenClawAgent:
 
     def _base_lineage_status(self, config: LineageRuntimeConfig) -> JsonDict:
         cache_path = self._lineage_cache_path(config)
-        return {
+        status = {
             "enabled": bool(config.enabled),
             "required": bool(config.required),
             "enforced": False,
@@ -450,6 +454,9 @@ class OpenClawAgent:
                 "revocation_feed": str(self._resolve_lineage_path(config.revocation_feed) or ""),
             },
         }
+        if config.enabled:
+            status["peer_status"] = dict(self._lineage_peer_status)
+        return status
 
     def _disabled_lineage_status(self, config: LineageRuntimeConfig) -> JsonDict:
         return self._base_lineage_status(config)
@@ -509,6 +516,44 @@ class OpenClawAgent:
         if cache_dir is None:
             return None
         return cache_dir / "verification_cache.json"
+
+    def _seedbox_lineage_config(self) -> CommunityLineageConfig:
+        config = self._effective_lineage_config()
+        if not config.enabled:
+            return CommunityLineageConfig()
+        return CommunityLineageConfig(
+            enabled=True,
+            required=bool(config.required),
+            trusted_roots=tuple(dict(root) for root in config.trusted_roots),
+            min_anchor_confirmations=int(config.min_anchor_confirmations),
+            accepted_capabilities=tuple(config.accepted_capabilities),
+            cache_path=self._lineage_cache_path(config),
+        )
+
+    def _local_lineage_proof_for_handshake(self) -> JsonDict | None:
+        config = self._effective_lineage_config()
+        if not config.enabled:
+            return None
+        birth_package_path = self._resolve_lineage_path(config.birth_package_path)
+        if birth_package_path is None or not birth_package_path.is_file():
+            return None
+        try:
+            from identity.lineage.store import read_json
+
+            package = read_json(birth_package_path)
+            proof = package.get("proof")
+            return dict(proof) if isinstance(proof, dict) else None
+        except Exception:
+            return None
+
+    def _record_peer_lineage_status(self, peer: Peer, status: JsonDict) -> None:
+        self._lineage_peer_status[peer.mid.hex()] = dict(status)
+        if self._lineage_status.get("enabled"):
+            self._lineage_status["peer_status"] = dict(self._lineage_peer_status)
+
+    @property
+    def lineage_peer_status(self) -> JsonDict:
+        return dict(self._lineage_peer_status)
 
     # ------------------------------------------------------------------
     # Accessors used by the tool layer + tests
@@ -624,6 +669,8 @@ class OpenClawAgent:
         self._manifest_md = md_text
 
         self._refresh_lineage_status(raise_on_required=True)
+        if self._seedbox is not None:
+            self._seedbox.configure(lineage_config=self._seedbox_lineage_config())
 
         if self_is_genesis and self._seedbox is not None:
             self._seedbox.publish_manifest(md_text)

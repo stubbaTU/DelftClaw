@@ -40,8 +40,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 import msgpack
@@ -89,9 +93,64 @@ class PeerMeta:
     known_overlays: tuple[bytes, ...]   # each entry is a 20-byte overlay/manifest id
 
 
+@dataclass(frozen=True)
+class CommunityLineageConfig:
+    """Opt-in peer-lineage admission policy for SeedboxCommunity."""
+
+    enabled: bool = False
+    required: bool = False
+    trusted_roots: tuple[dict[str, str], ...] = ()
+    min_anchor_confirmations: int = 0
+    accepted_capabilities: tuple[str, ...] = ()
+    cache_path: Optional[Path] = None
+    challenge_timeout_s: float = 10.0
+
+
+@dataclass
+class _PendingLineageChallenge:
+    future: asyncio.Future[dict]
+    expires_at: float
+    on_decision: Optional[Callable[[bool, dict], None]] = None
+
+
 # Cap on a single OVERLAY_DELIVERY payload — protects against a peer
 # trying to flood us with arbitrarily large markdown blobs.
 MAX_OVERLAY_BYTES = 64 * 1024
+MAX_LINEAGE_PROOF_BYTES = 256 * 1024
+
+LINEAGE_CHALLENGE_SIGNATURE_DOMAIN = b"DEAI_IPV8_LINEAGE_CHALLENGE_V1\x00"
+LINEAGE_PROOF_SIGNATURE_DOMAIN = b"DEAI_IPV8_LINEAGE_PROOF_V1\x00"
+
+
+def lineage_challenge_signing_payload(nonce: bytes) -> bytes:
+    return LINEAGE_CHALLENGE_SIGNATURE_DOMAIN + bytes(nonce)
+
+
+def lineage_proof_signing_payload(nonce: bytes, proof_json: bytes) -> bytes:
+    return LINEAGE_PROOF_SIGNATURE_DOMAIN + bytes(nonce) + bytes(proof_json)
+
+
+def _verify_peer_signature(peer: Peer, payload: bytes, signature: bytes) -> bool:
+    try:
+        return bool(peer.public_key.verify(bytes(signature), bytes(payload)))
+    except Exception:
+        return False
+
+
+def _peer_operational_pubkey_hexes(peer: Peer) -> set[str]:
+    """Return raw and serialized public-key hex forms accepted in lineage certs."""
+
+    values: set[str] = set()
+    try:
+        public_bin = peer.public_key.key_to_bin()
+        values.add(public_bin.hex())
+        if public_bin.startswith(b"LibNaCLPK:") and len(public_bin) >= 74:
+            values.add(public_bin[42:74].hex())
+        elif len(public_bin) == 32:
+            values.add(public_bin.hex())
+    except Exception:
+        pass
+    return values
 
 
 def _canonicalize(text: str) -> bytes:
@@ -213,11 +272,31 @@ class CommunityJoinResponsePayload(VariablePayload):
     names = ["accepted", "reason"]
 
 
+@vp_compile
+class LineageChallengePayload(VariablePayload):
+    """Signed lineage challenge. The 32-byte nonce is one-use and fresh."""
+
+    msg_id = 12
+    format_list = ["32s", "varlenH"]
+    names = ["nonce", "signature"]
+
+
+@vp_compile
+class LineageProofPayload(VariablePayload):
+    """Signed response carrying a JSON-serialized LineageProof."""
+
+    msg_id = 13
+    format_list = ["32s", "varlenH", "varlenH"]
+    names = ["nonce", "proof_json", "signature"]
+
+
 # Optional callback signatures: invoked when this node receives an OFFER
 # for a hash it doesn't already know about.
 OverlayOfferCallback = Callable[[Peer, bytes], None]
 ManifestOfferCallback = Callable[[Peer, bytes], None]
 PeerIntroCallback = Callable[[Peer, PeerMeta], None]
+LineageProofProvider = Callable[[], Optional[dict]]
+LineageStatusCallback = Callable[[Peer, dict], None]
 
 # Phase 5: callback signature for the community-log admission path.
 # Receives the JSON-decoded signed entry the joiner shipped; returns
@@ -260,6 +339,13 @@ class SeedboxCommunity(Community, PeerObserver):
         self._pending_community_joins: dict[bytes, asyncio.Future[tuple[bool, str]]] = {}
         self._community_join_callback: Optional[CommunityJoinCallback] = None
 
+        self._lineage_config = CommunityLineageConfig()
+        self._lineage_proof_provider: Optional[LineageProofProvider] = None
+        self._lineage_status_callback: Optional[LineageStatusCallback] = None
+        self._pending_lineage_challenges: dict[tuple[bytes, bytes], _PendingLineageChallenge] = {}
+        self._seen_inbound_lineage_challenges: set[tuple[bytes, bytes]] = set()
+        self._lineage_peer_status: dict[bytes, dict] = {}
+
         self.add_message_handler(JoinRequestPayload, self.on_join_request)
         self.add_message_handler(JoinResponsePayload, self.on_join_response)
         self.add_message_handler(OverlayOfferPayload, self.on_overlay_offer)
@@ -271,6 +357,8 @@ class SeedboxCommunity(Community, PeerObserver):
         self.add_message_handler(PeerIntroPayload, self.on_peer_intro)
         self.add_message_handler(CommunityJoinRequestPayload, self.on_community_join_request)
         self.add_message_handler(CommunityJoinResponsePayload, self.on_community_join_response)
+        self.add_message_handler(LineageChallengePayload, self.on_lineage_challenge)
+        self.add_message_handler(LineageProofPayload, self.on_lineage_proof)
 
     # ------------------------------------------------------------------
     # Configuration / wiring
@@ -285,6 +373,9 @@ class SeedboxCommunity(Community, PeerObserver):
         wallet_address: Optional[str] = None,
         peer_intro_callback: Optional[PeerIntroCallback] = None,
         community_join_callback: Optional[CommunityJoinCallback] = None,
+        lineage_config: Optional[CommunityLineageConfig] = None,
+        lineage_proof_provider: Optional[LineageProofProvider] = None,
+        lineage_status_callback: Optional[LineageStatusCallback] = None,
     ) -> None:
         """Wire optional collaborators after construction."""
         if verifier is not None:
@@ -299,6 +390,12 @@ class SeedboxCommunity(Community, PeerObserver):
             self._peer_intro_callback = peer_intro_callback
         if community_join_callback is not None:
             self._community_join_callback = community_join_callback
+        if lineage_config is not None:
+            self._lineage_config = lineage_config
+        if lineage_proof_provider is not None:
+            self._lineage_proof_provider = lineage_proof_provider
+        if lineage_status_callback is not None:
+            self._lineage_status_callback = lineage_status_callback
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
@@ -308,6 +405,307 @@ class SeedboxCommunity(Community, PeerObserver):
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
+
+    # ------------------------------------------------------------------
+    # LINEAGE challenge / response
+    # ------------------------------------------------------------------
+
+    def _sign_lineage_payload(self, payload: bytes) -> bytes:
+        key = getattr(self.my_peer, "key", None)
+        if key is not None and hasattr(key, "signature"):
+            return key.signature(payload)
+        raise RuntimeError("SeedboxCommunity peer key does not support signatures")
+
+    def _lineage_enabled(self) -> bool:
+        return bool(self._lineage_config.enabled)
+
+    def _lineage_required(self) -> bool:
+        return bool(self._lineage_config.enabled and self._lineage_config.required)
+
+    def _record_lineage_status(self, peer: Peer, status: dict) -> None:
+        stored = dict(status)
+        stored.setdefault("peer_mid", peer.mid.hex())
+        self._lineage_peer_status[peer.mid] = stored
+        cb = self._lineage_status_callback
+        if cb is not None:
+            cb(peer, dict(stored))
+
+    def _lineage_status(
+        self,
+        *,
+        ok: bool,
+        status: str,
+        nonce: bytes | None = None,
+        errors: list[str] | None = None,
+        result: dict | None = None,
+    ) -> dict:
+        out = dict(result or {})
+        out.update({
+            "ok": bool(ok),
+            "status": status,
+            "nonce": nonce.hex() if nonce else "",
+            "errors": list(errors or out.get("errors", [])),
+        })
+        return out
+
+    def _challenge_peer_for_lineage(
+        self,
+        peer: Peer,
+        *,
+        on_decision: Optional[Callable[[bool, dict], None]] = None,
+    ) -> asyncio.Future[dict]:
+        loop = asyncio.get_event_loop()
+        nonce = os.urandom(32)
+        future: asyncio.Future[dict] = loop.create_future()
+        expires_at = time.monotonic() + max(0.1, float(self._lineage_config.challenge_timeout_s))
+        self._pending_lineage_challenges[(peer.mid, nonce)] = _PendingLineageChallenge(
+            future=future,
+            expires_at=expires_at,
+            on_decision=on_decision,
+        )
+        signature = self._sign_lineage_payload(lineage_challenge_signing_payload(nonce))
+        _log_wire("send", "LineageChallenge", peer, nonce=nonce.hex()[:16])
+        self.ez_send(peer, LineageChallengePayload(nonce, signature))
+        loop.create_task(self._lineage_timeout(peer, nonce))
+        return future
+
+    async def _lineage_timeout(self, peer: Peer, nonce: bytes) -> None:
+        await asyncio.sleep(max(0.1, float(self._lineage_config.challenge_timeout_s)))
+        pending = self._pending_lineage_challenges.pop((peer.mid, nonce), None)
+        if pending is None:
+            return
+        result = self._lineage_status(
+            ok=False,
+            status="missing",
+            nonce=nonce,
+            errors=["lineage proof was not received before challenge timeout"],
+        )
+        self._record_lineage_status(peer, result)
+        if not pending.future.done():
+            pending.future.set_result(result)
+        if pending.on_decision is not None:
+            pending.on_decision(False, result)
+
+    def request_lineage(self, peer: Peer) -> asyncio.Future[dict]:
+        """Send a signed lineage challenge and resolve with peer proof status."""
+
+        if not self._lineage_enabled():
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future[dict] = loop.create_future()
+            future.set_result(self._lineage_status(ok=True, status="disabled"))
+            return future
+        return self._challenge_peer_for_lineage(peer)
+
+    def _admit_or_challenge_for_lineage(
+        self,
+        peer: Peer,
+        *,
+        on_accept: Callable[[], None],
+        on_reject: Callable[[dict], None],
+    ) -> None:
+        if not self._lineage_enabled():
+            on_accept()
+            return
+        if not self._lineage_required():
+            on_accept()
+            self._challenge_peer_for_lineage(peer)
+            return
+        current = self._lineage_peer_status.get(peer.mid)
+        if current is not None and current.get("ok") is True:
+            on_accept()
+            return
+
+        def _finish(ok: bool, result: dict) -> None:
+            if ok:
+                on_accept()
+            else:
+                on_reject(result)
+
+        self._challenge_peer_for_lineage(peer, on_decision=_finish)
+
+    def _verify_received_lineage_proof(
+        self,
+        peer: Peer,
+        nonce: bytes,
+        proof_json: bytes,
+    ) -> dict:
+        if not proof_json:
+            return self._lineage_status(
+                ok=False,
+                status="missing",
+                nonce=nonce,
+                errors=["lineage proof missing"],
+            )
+        if len(proof_json) > MAX_LINEAGE_PROOF_BYTES:
+            return self._lineage_status(
+                ok=False,
+                status="invalid",
+                nonce=nonce,
+                errors=["lineage proof exceeds maximum size"],
+            )
+        try:
+            raw = json.loads(proof_json.decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("proof JSON must be an object")
+            from identity.lineage.models import LineageProof
+            from identity.lineage.verifier import verify_lineage_proof
+
+            proof = LineageProof.from_dict(raw)
+        except Exception as exc:
+            return self._lineage_status(
+                ok=False,
+                status="invalid",
+                nonce=nonce,
+                errors=[f"lineage proof decode failed:{type(exc).__name__}: {exc}"],
+            )
+
+        operational_pubkey = proof.leaf_certificate.child_operational_pubkey.strip().lower()
+        peer_pubkeys = _peer_operational_pubkey_hexes(peer)
+        if operational_pubkey and operational_pubkey not in peer_pubkeys:
+            return self._lineage_status(
+                ok=False,
+                status="invalid",
+                nonce=nonce,
+                errors=["lineage proof operational pubkey does not match IPv8 peer"],
+            )
+
+        capabilities: tuple[str | None, ...]
+        if self._lineage_config.accepted_capabilities:
+            capabilities = tuple(self._lineage_config.accepted_capabilities)
+        else:
+            capabilities = (None,)
+
+        last_result = None
+        for capability in capabilities:
+            result = verify_lineage_proof(
+                proof,
+                trusted_roots=[dict(root) for root in self._lineage_config.trusted_roots],
+                requested_capability=capability,
+                min_confirmations=int(self._lineage_config.min_anchor_confirmations),
+                cache=self._lineage_config.cache_path,
+            )
+            result_dict = result.to_dict()
+            result_dict["requested_capability"] = capability or ""
+            if result.ok:
+                return self._lineage_status(
+                    ok=True,
+                    status=result.status,
+                    nonce=nonce,
+                    result=result_dict,
+                )
+            last_result = result_dict
+
+        errors = list((last_result or {}).get("errors", []))
+        if self._lineage_config.accepted_capabilities:
+            errors.append("lineage proof does not satisfy accepted capabilities")
+        return self._lineage_status(
+            ok=False,
+            status=str((last_result or {}).get("status", "invalid")),
+            nonce=nonce,
+            errors=errors,
+            result=last_result,
+        )
+
+    @lazy_wrapper(LineageChallengePayload)
+    def on_lineage_challenge(self, peer: Peer, payload: LineageChallengePayload) -> None:
+        nonce = bytes(payload.nonce)
+        _log_wire("recv", "LineageChallenge", peer, nonce=nonce.hex()[:16])
+        if not _verify_peer_signature(
+            peer,
+            lineage_challenge_signing_payload(nonce),
+            payload.signature,
+        ):
+            self._record_lineage_status(peer, self._lineage_status(
+                ok=False,
+                status="invalid",
+                nonce=nonce,
+                errors=["lineage challenge signature is invalid"],
+            ))
+            return
+        seen_key = (peer.mid, nonce)
+        if seen_key in self._seen_inbound_lineage_challenges:
+            self._record_lineage_status(peer, self._lineage_status(
+                ok=False,
+                status="replay",
+                nonce=nonce,
+                errors=["lineage challenge nonce was replayed"],
+            ))
+            return
+        self._seen_inbound_lineage_challenges.add(seen_key)
+        if len(self._seen_inbound_lineage_challenges) > 2048:
+            self._seen_inbound_lineage_challenges.pop()
+
+        proof_json = b""
+        provider = self._lineage_proof_provider
+        if provider is not None:
+            try:
+                proof = provider()
+                if proof is not None:
+                    proof_json = json.dumps(
+                        proof,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+            except Exception:
+                proof_json = b""
+        signature = self._sign_lineage_payload(
+            lineage_proof_signing_payload(nonce, proof_json)
+        )
+        _log_wire(
+            "send",
+            "LineageProof",
+            peer,
+            nonce=nonce.hex()[:16],
+            proof_bytes=len(proof_json),
+        )
+        self.ez_send(peer, LineageProofPayload(nonce, proof_json, signature))
+
+    @lazy_wrapper(LineageProofPayload)
+    def on_lineage_proof(self, peer: Peer, payload: LineageProofPayload) -> None:
+        nonce = bytes(payload.nonce)
+        proof_json = bytes(payload.proof_json)
+        _log_wire(
+            "recv",
+            "LineageProof",
+            peer,
+            nonce=nonce.hex()[:16],
+            proof_bytes=len(proof_json),
+        )
+        pending = self._pending_lineage_challenges.pop((peer.mid, nonce), None)
+        if pending is None:
+            self._record_lineage_status(peer, self._lineage_status(
+                ok=False,
+                status="replay",
+                nonce=nonce,
+                errors=["lineage proof nonce is stale, replayed, or unsolicited"],
+            ))
+            return
+        if time.monotonic() > pending.expires_at:
+            result = self._lineage_status(
+                ok=False,
+                status="replay",
+                nonce=nonce,
+                errors=["lineage proof nonce expired"],
+            )
+        elif not _verify_peer_signature(
+            peer,
+            lineage_proof_signing_payload(nonce, proof_json),
+            payload.signature,
+        ):
+            result = self._lineage_status(
+                ok=False,
+                status="invalid",
+                nonce=nonce,
+                errors=["lineage proof signature is invalid"],
+            )
+        else:
+            result = self._verify_received_lineage_proof(peer, nonce, proof_json)
+
+        self._record_lineage_status(peer, result)
+        if not pending.future.done():
+            pending.future.set_result(result)
+        if pending.on_decision is not None:
+            pending.on_decision(bool(result.get("ok")), result)
 
     # ------------------------------------------------------------------
     # JOIN flow
@@ -330,12 +728,28 @@ class SeedboxCommunity(Community, PeerObserver):
             self.ez_send(peer, JoinResponsePayload(False))
             return
         result = self._verifier.verify(payload.donation_txid.hex())
-        if result.accepted:
+        if not result.accepted:
+            _log_wire("send", "JoinResponse", peer, accepted=False)
+            self.ez_send(peer, JoinResponsePayload(False))
+            return
+
+        def _accept() -> None:
             self.network.add_verified_peer(peer)
-        _log_wire("send", "JoinResponse", peer, accepted=result.accepted)
-        self.ez_send(peer, JoinResponsePayload(result.accepted))
-        if result.accepted:
+            _log_wire("send", "JoinResponse", peer, accepted=True)
+            self.ez_send(peer, JoinResponsePayload(True))
             self._send_peer_intro(peer)
+
+        def _reject(lineage_result: dict) -> None:
+            _log_wire(
+                "send",
+                "JoinResponse",
+                peer,
+                accepted=False,
+                lineage_status=lineage_result.get("status", "invalid"),
+            )
+            self.ez_send(peer, JoinResponsePayload(False))
+
+        self._admit_or_challenge_for_lineage(peer, on_accept=_accept, on_reject=_reject)
 
     @lazy_wrapper(JoinResponsePayload)
     def on_join_response(self, peer: Peer, payload: JoinResponsePayload) -> None:
@@ -404,18 +818,38 @@ class SeedboxCommunity(Community, PeerObserver):
             self.ez_send(peer, CommunityJoinResponsePayload(False, b"entry_not_object"))
             return
         accepted, reason = self._community_join_callback(peer, entry)
-        if accepted:
+        if not accepted:
+            _log_wire(
+                "send", "CommunityJoinResponse", peer,
+                accepted=False, reason=(reason or "")[:60],
+            )
+            self.ez_send(
+                peer,
+                CommunityJoinResponsePayload(False, (reason or "").encode("utf-8")),
+            )
+            return
+
+        def _accept() -> None:
             self.network.add_verified_peer(peer)
-        _log_wire(
-            "send", "CommunityJoinResponse", peer,
-            accepted=bool(accepted), reason=(reason or "")[:60],
-        )
-        self.ez_send(
-            peer,
-            CommunityJoinResponsePayload(bool(accepted), (reason or "").encode("utf-8")),
-        )
-        if accepted:
+            _log_wire(
+                "send", "CommunityJoinResponse", peer,
+                accepted=True, reason="",
+            )
+            self.ez_send(peer, CommunityJoinResponsePayload(True, b""))
             self._send_peer_intro(peer)
+
+        def _reject(lineage_result: dict) -> None:
+            lineage_reason = f"lineage_{lineage_result.get('status', 'invalid')}"
+            _log_wire(
+                "send", "CommunityJoinResponse", peer,
+                accepted=False, reason=lineage_reason,
+            )
+            self.ez_send(
+                peer,
+                CommunityJoinResponsePayload(False, lineage_reason.encode("utf-8")),
+            )
+
+        self._admit_or_challenge_for_lineage(peer, on_accept=_accept, on_reject=_reject)
 
     @lazy_wrapper(CommunityJoinResponsePayload)
     def on_community_join_response(
@@ -626,12 +1060,19 @@ class SeedboxCommunity(Community, PeerObserver):
             if isinstance(h, (bytes, bytearray)) and len(h) == 20:
                 overlays.append(bytes(h))
         _log_wire("recv", "PeerIntro", peer, wallet=addr[:16], overlays=len(overlays))
-        self.network.add_verified_peer(peer)
         meta = PeerMeta(wallet_address=addr, known_overlays=tuple(overlays))
-        self._peer_meta[peer.mid] = meta
-        cb = self._peer_intro_callback
-        if cb is not None:
-            cb(peer, meta)
+
+        def _accept() -> None:
+            self.network.add_verified_peer(peer)
+            self._peer_meta[peer.mid] = meta
+            cb = self._peer_intro_callback
+            if cb is not None:
+                cb(peer, meta)
+
+        def _reject(_lineage_result: dict) -> None:
+            return
+
+        self._admit_or_challenge_for_lineage(peer, on_accept=_accept, on_reject=_reject)
 
     # ------------------------------------------------------------------
     # Read-only state accessors (handy for tests / debugging)
@@ -657,6 +1098,11 @@ class SeedboxCommunity(Community, PeerObserver):
     def peer_meta(self) -> dict[bytes, PeerMeta]:
         """``peer.mid`` -> ``PeerMeta`` for every peer that has introduced itself."""
         return dict(self._peer_meta)
+
+    @property
+    def lineage_peer_status(self) -> dict[bytes, dict]:
+        """``peer.mid`` -> latest lineage challenge/verification status."""
+        return {mid: dict(status) for mid, status in self._lineage_peer_status.items()}
 
     @property
     def wallet_address(self) -> Optional[str]:
