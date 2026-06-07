@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -174,6 +175,10 @@ def run_preflight(
         "git_revision": _capture_command(["git", "rev-parse", "HEAD"], cwd=repo_root),
         "git_status": _capture_command(["git", "status", "--short"], cwd=repo_root),
         "python_version": platform.python_version(),
+        "mcp_stack": {
+            package: importlib.metadata.version(package)
+            for package in ("fastmcp", "mcp", "uvicorn")
+        },
         "node_version": _capture_command(["node", "--version"]),
         "openclaw": openclaw_preflight(),
         "openclaw_agents": _capture_command(["openclaw", "agents", "list", "--json"]),
