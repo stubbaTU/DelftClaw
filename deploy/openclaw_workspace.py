@@ -191,7 +191,7 @@ def provision_openclaw_workspace(spec: OpenClawWorkspaceSpec) -> None:
         timeout_s=30,
     )
     run_openclaw_cli(
-        ["mcp", "probe", spec.mcp_name, "--json"],
+        ["mcp", "probe", spec.mcp_name],
         env=env,
         timeout_s=30,
         capture=True,

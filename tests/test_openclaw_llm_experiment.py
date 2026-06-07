@@ -283,7 +283,7 @@ def test_provisioning_uses_env_reference_and_non_reserved_agent(
     assert mcp_config["toolFilter"]["include"] == list(
         openclaw_workspace.EXPERIMENT_TOOLS
     )
-    assert any(command[:2] == ["mcp", "probe"] for command in commands)
+    assert ["mcp", "probe", spec.mcp_name] in commands
     assert all("sk-or-" not in json.dumps(value) for _, value in configured)
 
     reserved = OpenClawWorkspaceSpec(
