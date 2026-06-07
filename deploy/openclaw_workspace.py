@@ -273,6 +273,7 @@ def openclaw_preflight() -> dict[str, Any]:
     version = capture(["--version"])
     agent_help = capture(["agent", "--help"])
     agents_help = capture(["agents", "add", "--help"])
+    mcp_probe_help = capture(["mcp", "probe", "--help"])
     required_agent_flags = ("--local", "--agent", "--message", "--json", "--timeout")
     required_add_flags = ("--workspace", "--agent-dir", "--model", "--non-interactive")
     missing = [
@@ -281,6 +282,8 @@ def openclaw_preflight() -> dict[str, Any]:
     missing.extend(
         flag for flag in required_add_flags if flag not in (agents_help.stdout + agents_help.stderr)
     )
+    if mcp_probe_help.returncode != 0:
+        missing.append("mcp probe")
     if version.returncode != 0 or missing:
         raise RuntimeError(
             "incompatible OpenClaw CLI"

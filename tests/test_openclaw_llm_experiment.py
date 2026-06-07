@@ -317,6 +317,30 @@ def test_openclaw_preflight_accepts_stub_executable(
     assert result["required_flags_present"] is True
 
 
+def test_openclaw_preflight_rejects_cli_without_mcp_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_capture(args, **kwargs):
+        if args[:3] == ["mcp", "probe", "--help"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="unknown command")
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                "openclaw 2099.1.0\n"
+                "--local --agent --message --json --timeout "
+                "--workspace --agent-dir --model --non-interactive"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(openclaw_workspace, "run_openclaw_cli", fake_capture)
+    monkeypatch.setattr(openclaw_workspace.shutil, "which", lambda _: "/usr/bin/openclaw")
+
+    with pytest.raises(RuntimeError, match="mcp probe"):
+        openclaw_workspace.openclaw_preflight()
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_OPENCLAW_VPS_ACCEPTANCE") != "1",
     reason="set RUN_OPENCLAW_VPS_ACCEPTANCE=1 on the configured Linux VPS",

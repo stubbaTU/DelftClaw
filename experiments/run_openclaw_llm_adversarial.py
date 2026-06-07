@@ -64,6 +64,22 @@ def redact_text(text: str, *, secrets: tuple[str, ...] = ()) -> str:
     return SECRET_PATTERN.sub("[REDACTED]", redacted)
 
 
+def _subprocess_error_detail(
+    exc: subprocess.CalledProcessError,
+    *,
+    secrets: tuple[str, ...] = (),
+    limit: int = 1200,
+) -> str:
+    stdout = " ".join(str(exc.stdout or "").strip().split())
+    stderr = " ".join(str(exc.stderr or "").strip().split())
+    detail = stderr or stdout or "no stdout/stderr"
+    detail = redact_text(detail, secrets=secrets)
+    return (
+        f"openclaw_command_failed:exit={exc.returncode} "
+        f"command={exc.cmd!r} detail={detail[:limit]}"
+    )
+
+
 def assert_no_secrets(root: Path, *, secrets: tuple[str, ...] = ()) -> None:
     secret_bytes = [secret.encode("utf-8") for secret in secrets if secret]
     for path in root.rglob("*"):
@@ -348,6 +364,10 @@ async def _run_trial(
         runner_error = f"openclaw_timeout:{exc.timeout}"
         stdout = redact_text(str(exc.stdout or ""), secrets=secrets)
         stderr = redact_text(str(exc.stderr or ""), secrets=secrets)
+    except subprocess.CalledProcessError as exc:
+        stdout = redact_text(str(exc.stdout or ""), secrets=secrets)
+        stderr = redact_text(str(exc.stderr or ""), secrets=secrets)
+        runner_error = _subprocess_error_detail(exc, secrets=secrets)
     except Exception as exc:
         runner_error = f"{type(exc).__name__}: {exc}"
     finally:
