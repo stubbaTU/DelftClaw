@@ -283,7 +283,7 @@ def test_provisioning_uses_env_reference_and_non_reserved_agent(
     assert mcp_config["toolFilter"]["include"] == list(
         openclaw_workspace.EXPERIMENT_TOOLS
     )
-    assert ["mcp", "probe", spec.mcp_name] in commands
+    assert ["mcp", "show", spec.mcp_name] in commands
     assert all("sk-or-" not in json.dumps(value) for _, value in configured)
 
     reserved = OpenClawWorkspaceSpec(
@@ -317,11 +317,11 @@ def test_openclaw_preflight_accepts_stub_executable(
     assert result["required_flags_present"] is True
 
 
-def test_openclaw_preflight_rejects_cli_without_mcp_probe(
+def test_openclaw_preflight_rejects_cli_without_mcp_show(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_capture(args, **kwargs):
-        if args[:3] == ["mcp", "probe", "--help"]:
+        if args[:3] == ["mcp", "show", "--help"]:
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="unknown command")
         return subprocess.CompletedProcess(
             args,
@@ -337,7 +337,7 @@ def test_openclaw_preflight_rejects_cli_without_mcp_probe(
     monkeypatch.setattr(openclaw_workspace, "run_openclaw_cli", fake_capture)
     monkeypatch.setattr(openclaw_workspace.shutil, "which", lambda _: "/usr/bin/openclaw")
 
-    with pytest.raises(RuntimeError, match="mcp probe"):
+    with pytest.raises(RuntimeError, match="mcp show"):
         openclaw_workspace.openclaw_preflight()
 
 
