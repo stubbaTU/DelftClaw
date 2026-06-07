@@ -19,6 +19,7 @@ from time import perf_counter_ns
 from typing import Any
 
 from fastmcp import Client
+import uvicorn
 
 from deploy.openclaw_output import parse_openclaw_json_stdout
 from deploy.openclaw_workspace import (
@@ -210,6 +211,47 @@ async def _await_mcp(url: str, *, timeout_s: float = 15.0) -> None:
     raise RuntimeError(f"experiment MCP server did not become ready: {last_error}")
 
 
+def _start_mcp_http_server(
+    mcp,
+    *,
+    host: str,
+    port: int,
+) -> tuple[uvicorn.Server, asyncio.Task[None]]:
+    """Start FastMCP with a retained Uvicorn handle for graceful shutdown."""
+
+    app = mcp.http_app(transport="streamable-http")
+    server = uvicorn.Server(uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        lifespan="on",
+        log_level="warning",
+        timeout_graceful_shutdown=2,
+        ws="websockets-sansio",
+    ))
+
+    async def serve() -> None:
+        async with mcp._lifespan_manager():  # FastMCP's run_http_async contract.
+            await server.serve()
+
+    return server, asyncio.create_task(serve())
+
+
+async def _stop_mcp_http_server(
+    server: uvicorn.Server,
+    task: asyncio.Task[None],
+) -> None:
+    server.should_exit = True
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=5)
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 def _read_ledger(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -290,8 +332,10 @@ async def _run_trial(
     stderr = ""
     runner_error = ""
     started_ns = perf_counter_ns()
-    server_task = asyncio.create_task(
-        mcp.run_async(transport="streamable-http", host="127.0.0.1", port=port)
+    mcp_server, server_task = _start_mcp_http_server(
+        mcp,
+        host="127.0.0.1",
+        port=port,
     )
     try:
         await _await_mcp(mcp_url)
@@ -308,11 +352,8 @@ async def _run_trial(
         runner_error = f"{type(exc).__name__}: {exc}"
     finally:
         await controller.stop()
-        server_task.cancel()
         try:
-            await server_task
-        except asyncio.CancelledError:
-            pass
+            await _stop_mcp_http_server(mcp_server, server_task)
         except Exception as exc:
             if not runner_error:
                 runner_error = f"mcp_server_error:{type(exc).__name__}: {exc}"
@@ -552,10 +593,21 @@ def run(args: argparse.Namespace) -> Path:
         OPENCLAW_LLM_ADVERSARIAL_SUMMARY_SCHEMA,
     )
     if not config["allow_exploratory_failures"]:
-        failed = [str(row["trial_id"]) for row in rows if row["ok"] is False]
+        failed = [row for row in rows if row["ok"] is False]
         if failed:
+            details = []
+            for row in failed[:5]:
+                details.append(
+                    f"{row['trial_id']} "
+                    f"result={row['result']} "
+                    f"exit={row['openclaw_exit_code']} "
+                    f"tools={row['tool_calls_count']} "
+                    f"semantic={row['openclaw_semantic_error'] or '<none>'} "
+                    f"error={row['error_message'] or '<none>'}"
+                )
             raise RuntimeError(
-                "OpenClaw LLM adversarial trial failures: " + "; ".join(failed[:5])
+                f"OpenClaw LLM adversarial trial failures in {run_dir}: "
+                + "; ".join(details)
             )
     return run_dir
 

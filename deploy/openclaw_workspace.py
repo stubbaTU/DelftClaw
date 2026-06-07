@@ -17,6 +17,8 @@ EXPERIMENT_TOOLS = (
     "lineage_experiment_peer_status",
 )
 
+OPENCLAW_MCP_TOOL_BUNDLE = ("bundle-mcp",)
+
 DENIED_BUILTIN_TOOLS = (
     "exec",
     "process",
@@ -45,8 +47,9 @@ class OpenClawWorkspaceSpec:
     temperature: float = 0.0
     seed: int = 1337
     max_tokens: int = 1024
-    tool_allow: tuple[str, ...] = EXPERIMENT_TOOLS
+    tool_allow: tuple[str, ...] = OPENCLAW_MCP_TOOL_BUNDLE
     tool_deny: tuple[str, ...] = DENIED_BUILTIN_TOOLS
+    mcp_tool_include: tuple[str, ...] = EXPERIMENT_TOOLS
 
     @property
     def model_ref(self) -> str:
@@ -170,17 +173,28 @@ def provision_openclaw_workspace(spec: OpenClawWorkspaceSpec) -> None:
         {"primary": spec.model_ref, "fallbacks": []},
         env=env,
     )
+    set_openclaw_config("tools.profile", "coding", env=env)
     set_openclaw_config("tools.allow", list(spec.tool_allow), env=env)
     set_openclaw_config("tools.deny", list(spec.tool_deny), env=env)
 
     mcp_value = json.dumps({
         "url": spec.mcp_url,
         "transport": "streamable-http",
+        "enabled": True,
+        "toolFilter": {
+            "include": list(spec.mcp_tool_include),
+        },
     })
     run_openclaw_cli(
         ["mcp", "set", spec.mcp_name, mcp_value],
         env=env,
         timeout_s=30,
+    )
+    run_openclaw_cli(
+        ["mcp", "probe", spec.mcp_name, "--json"],
+        env=env,
+        timeout_s=30,
+        capture=True,
     )
     listed = run_openclaw_cli(
         ["agents", "list", "--json"],

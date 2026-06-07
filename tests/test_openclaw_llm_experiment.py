@@ -273,8 +273,17 @@ def test_provisioning_uses_env_reference_and_non_reserved_agent(
 
     provider = dict(configured)["models.providers.openrouter"]
     assert provider["apiKey"] == "OPENROUTER_API_KEY"
+    configured_map = dict(configured)
+    assert configured_map["tools.profile"] == "coding"
+    assert configured_map["tools.allow"] == ["bundle-mcp"]
     assert spec.model_ref == "openrouter/openrouter/owl-alpha"
     assert any(command[:2] == ["agents", "add"] for command in commands)
+    mcp_set = next(command for command in commands if command[:2] == ["mcp", "set"])
+    mcp_config = json.loads(mcp_set[3])
+    assert mcp_config["toolFilter"]["include"] == list(
+        openclaw_workspace.EXPERIMENT_TOOLS
+    )
+    assert any(command[:2] == ["mcp", "probe"] for command in commands)
     assert all("sk-or-" not in json.dumps(value) for _, value in configured)
 
     reserved = OpenClawWorkspaceSpec(
