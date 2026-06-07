@@ -1,15 +1,17 @@
-# Mock-Anchored Lineage Results
+# Lineage Experiment Results
 
 This directory contains the configuration and generated artifacts for the
-mock-anchored lineage experiment pipeline. One orchestration command runs the
-functional, adversarial, storage, performance, admission, table, figure, and
-summary stages into one timestamped run directory.
+lineage experiment pipeline. One orchestration command runs verifier-level,
+admission-level, real-agent, storage, performance, table, figure, and summary
+stages into one timestamped run directory.
 
 ## Claim Boundary
 
-This is a mock-anchored proof-of-descendancy evaluation. It does not evaluate
-Bitcoin regtest OP_RETURN anchoring. It does not measure Bitcoin RPC, mining,
-mempool, transaction broadcast, or block-header latency.
+The verifier and real-agent admission experiments currently use mock anchor
+records. The real-agent stage runs actual `agent.runtime.OpenClawAgent`
+instances and the signed IPv8 lineage challenge/proof path, but it does not
+evaluate Bitcoin regtest OP_RETURN anchoring, Bitcoin RPC, mining, mempool,
+transaction broadcast, or block-header latency.
 
 ## Directory Layout
 
@@ -73,6 +75,25 @@ Other stage failures always stop the pipeline with a non-zero exit code.
   cached verification.
 - `admission_modes.csv`: IPv8 admission outcomes for disabled, optional, and
   required modes with valid, invalid, missing, and replayed proofs.
+- `real_agent_adversarial.csv`: actual `OpenClawAgent` join outcomes and
+  recorded lineage statuses for the configured adversarial matrix.
+
+The hosted-model experiment is deliberately excluded from `run_all`:
+
+- `openclaw_llm_adversarial.csv`: real OpenClaw/OpenRouter tool selection and
+  real IPv8 lineage admission outcomes, reported as separate dimensions.
+- `openclaw_llm_adversarial_summary.csv`: LLM task success over all attempts
+  and protocol correctness over attempted joins only.
+
+Run its first milestone explicitly on the VPS:
+
+```bash
+python -m experiments.run_openclaw_llm_adversarial \
+  --config results/config/smoke.json --out results/runs --milestone
+```
+
+See `docs/openclaw_llm_adversarial_experiment.md` for preflight, smoke, full
+matrix, evidence, and data-retention details.
 
 Every CSV records the run id, seed, timestamp, Git commit, Python version, and
 platform. Schemas are exact and validated before summary generation.
@@ -81,7 +102,9 @@ platform. Schemas are exact and validated before summary generation.
 
 The `tables/` directory contains one summary CSV per raw experiment plus
 `summary.csv`, which combines publication-oriented metrics and descriptive
-statistics. These files are regenerated from raw CSVs.
+statistics. `real_agent_adversarial_summary.csv` groups join, rejection, false
+accept, and duration results by mode and attack. These files are regenerated
+from raw CSVs.
 
 The `figures/` directory contains:
 
@@ -103,6 +126,10 @@ claims. Do not cite manually edited tables. Preserve `config.json` and
 ## Limitations
 
 - Anchoring is mocked; no Bitcoin Core or OP_RETURN integration is evaluated.
+- Real-agent results cover controlled local OpenClaw/IPv8 admission, not a
+  production or hostile-network deployment.
+- Replay detection records a stale payload but does not retroactively evict an
+  already admitted peer.
 - OS randomness may affect cryptographic keys even when experiment labels,
   ordering, and mutations use a fixed seed.
 - IPv8 admission experiments may be timing-sensitive.

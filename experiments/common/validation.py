@@ -129,12 +129,103 @@ ADMISSION_MODES_SCHEMA = [
     "error_message",
 ]
 
+REAL_AGENT_ADVERSARIAL_SCHEMA = [
+    *COMMON_PREFIX,
+    "attack_case",
+    "agent_role",
+    "runtime_class",
+    "admission_path",
+    "lineage_mode",
+    "lineage_enabled",
+    "lineage_required",
+    "proof_supplied",
+    "mutation_target",
+    "mutation_strategy",
+    "expected_accept",
+    "join_accepted",
+    "lineage_status",
+    "lineage_ok",
+    "rejected",
+    "false_accept",
+    "duration_ms",
+    "lineage_error_count",
+    "first_lineage_error",
+    "anchor_backend",
+    "btc_network",
+    "ok",
+    "result",
+    "error_message",
+]
+
+OPENCLAW_LLM_ADVERSARIAL_SCHEMA = [
+    *COMMON_PREFIX,
+    "attack_case",
+    "selected_attack_case",
+    "lineage_mode",
+    "provider",
+    "model",
+    "model_ref",
+    "openclaw_version",
+    "openclaw_agent_id",
+    "prompt_hash",
+    "trial_attempt",
+    "temperature",
+    "model_seed",
+    "max_tokens",
+    "tool_loop_started",
+    "tool_calls_count",
+    "prepare_called",
+    "expected_tool_called",
+    "join_attempted",
+    "status_called",
+    "proof_supplied",
+    "expected_accept",
+    "join_accepted",
+    "lineage_status",
+    "rejected",
+    "false_accept",
+    "llm_task_success",
+    "protocol_expectation_met",
+    "duration_ms",
+    "openclaw_exit_code",
+    "openclaw_semantic_error",
+    "lineage_error_count",
+    "first_lineage_error",
+    "stdout_artifact",
+    "stdout_sha256",
+    "stderr_artifact",
+    "stderr_sha256",
+    "tool_ledger_artifact",
+    "tool_ledger_sha256",
+    "protocol_artifact",
+    "protocol_sha256",
+    "artifact_manifest",
+    "artifact_manifest_sha256",
+    "ok",
+    "result",
+    "error_message",
+]
+
+OPENCLAW_LLM_ADVERSARIAL_SUMMARY_SCHEMA = [
+    "lineage_mode",
+    "attack_case",
+    "trials",
+    "llm_task_successes",
+    "llm_task_success_rate",
+    "join_attempts",
+    "protocol_expectation_met_count",
+    "protocol_correct_rate",
+    "false_accepts",
+]
+
 SCHEMAS = {
     "functional_correctness.csv": FUNCTIONAL_CORRECTNESS_SCHEMA,
     "adversarial_rejection.csv": ADVERSARIAL_REJECTION_SCHEMA,
     "storage_scaling.csv": STORAGE_SCALING_SCHEMA,
     "performance_latency.csv": PERFORMANCE_LATENCY_SCHEMA,
     "admission_modes.csv": ADMISSION_MODES_SCHEMA,
+    "real_agent_adversarial.csv": REAL_AGENT_ADVERSARIAL_SCHEMA,
+    "openclaw_llm_adversarial.csv": OPENCLAW_LLM_ADVERSARIAL_SCHEMA,
 }
 
 REQUIRED_RAW_CSVS = [
@@ -143,6 +234,7 @@ REQUIRED_RAW_CSVS = [
     "admission_modes.csv",
     "performance_latency.csv",
     "storage_scaling.csv",
+    "real_agent_adversarial.csv",
 ]
 
 REQUIRED_SUMMARY_TABLES = [
@@ -151,6 +243,7 @@ REQUIRED_SUMMARY_TABLES = [
     "admission_modes_summary.csv",
     "performance_latency_summary.csv",
     "storage_scaling_summary.csv",
+    "real_agent_adversarial_summary.csv",
     "summary.csv",
 ]
 
@@ -215,6 +308,20 @@ def validate_non_empty_csv(path: str | Path) -> None:
             next(reader)
         except StopIteration as exc:
             raise ValueError(f"CSV is empty: {csv_path}") from exc
+
+
+def validate_real_agent_matrix_present(
+    path: str | Path,
+    modes: Iterable[str],
+    attack_cases: Iterable[str],
+) -> None:
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    present = {(row["lineage_mode"], row["attack_case"]) for row in rows}
+    expected = {(str(mode), str(case)) for mode in modes for case in attack_cases}
+    missing = sorted(expected - present)
+    if missing:
+        raise ValueError(f"real-agent adversarial matrix is incomplete: {missing}")
 
 
 def validate_required_raw_csvs(raw_dir: str | Path) -> dict[str, bool]:

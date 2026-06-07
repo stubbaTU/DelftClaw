@@ -46,6 +46,7 @@ from typing import Iterable
 from fastmcp import Client
 
 from deploy.openclaw_output import parse_openclaw_json_stdout
+from deploy.openclaw_workspace import run_openclaw_cli, set_openclaw_config
 from deploy.scenario import AgentSpec, Scenario, parse_scenario, REPO_ROOT
 
 
@@ -668,21 +669,21 @@ def _openclaw_run(
     successful while leaving stopped sudo children behind. Fail fast here so
     the operator sees an actionable error before watchdog turn 1.
     """
-    return subprocess.run(
-        [*sudo_env, "openclaw", *args],
+    return run_openclaw_cli(
+        args,
+        command_prefix=sudo_env,
+        timeout_s=timeout_s,
+        capture=capture,
         check=check,
-        capture_output=capture,
-        text=True,
-        timeout=timeout_s,
     )
 
 
 def _openclaw_config_set(sudo_env: list[str], path: str, value: object) -> None:
     """Set one OpenClaw config path using the stable JSON value interface."""
-    _openclaw_run(
-        sudo_env,
-        ["config", "set", path, json.dumps(value), "--json"],
-        timeout_s=30,
+    set_openclaw_config(
+        path,
+        value,
+        command_prefix=sudo_env,
     )
 
 

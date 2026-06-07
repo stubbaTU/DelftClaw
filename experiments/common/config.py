@@ -28,6 +28,31 @@ DEFAULT_ADMISSION_TRIALS_PER_CASE = 10
 SMOKE_ADMISSION_TRIALS_PER_CASE = 1
 DEFAULT_ADMISSION_CHALLENGE_TIMEOUT_S = 0.5
 DEFAULT_ADMISSION_JOIN_TIMEOUT_S = 2.0
+DEFAULT_REAL_AGENT_TRIALS_PER_CASE = 3
+SMOKE_REAL_AGENT_TRIALS_PER_CASE = 1
+DEFAULT_REAL_AGENT_CHALLENGE_TIMEOUT_S = 0.5
+DEFAULT_REAL_AGENT_JOIN_TIMEOUT_S = 2.0
+DEFAULT_OPENCLAW_LLM_TRIALS_PER_CASE = 3
+SMOKE_OPENCLAW_LLM_TRIALS_PER_CASE = 1
+DEFAULT_OPENCLAW_LLM_CHALLENGE_TIMEOUT_S = 0.5
+DEFAULT_OPENCLAW_LLM_JOIN_TIMEOUT_S = 10.0
+DEFAULT_OPENCLAW_LLM_TIMEOUT_S = 210
+DEFAULT_REAL_AGENT_ATTACK_CASES = [
+    "valid_agent_baseline",
+    "tampered_child_certificate",
+    "tampered_parent_signature",
+    "wrong_trusted_root",
+    "broken_merkle_proof",
+    "wrong_anchor_record",
+    "expired_certificate",
+    "missing_required_capability",
+    "revoked_child_certificate",
+    "unauthorized_revocation_signer",
+    "missing_lineage_proof",
+    "cloned_agent_identity",
+    "replayed_nonce_or_stale_proof",
+    "malformed_lineage_proof_payload",
+]
 DEFAULT_ADVERSARIAL_ATTACK_CASES = [
     "tampered_child_agent_id",
     "tampered_child_operational_pubkey",
@@ -96,6 +121,35 @@ def resolve_config(
     config.setdefault("smoke_admission_trials_per_case", SMOKE_ADMISSION_TRIALS_PER_CASE)
     config.setdefault("admission_challenge_timeout_s", DEFAULT_ADMISSION_CHALLENGE_TIMEOUT_S)
     config.setdefault("admission_join_timeout_s", DEFAULT_ADMISSION_JOIN_TIMEOUT_S)
+    config.setdefault("real_agent_lineage_modes", list(DEFAULT_ADMISSION_MODES))
+    config.setdefault("real_agent_attack_cases", list(DEFAULT_REAL_AGENT_ATTACK_CASES))
+    config.setdefault("real_agent_trials_per_case", DEFAULT_REAL_AGENT_TRIALS_PER_CASE)
+    config.setdefault("smoke_real_agent_trials_per_case", SMOKE_REAL_AGENT_TRIALS_PER_CASE)
+    config.setdefault("real_agent_challenge_timeout_s", DEFAULT_REAL_AGENT_CHALLENGE_TIMEOUT_S)
+    config.setdefault("real_agent_join_timeout_s", DEFAULT_REAL_AGENT_JOIN_TIMEOUT_S)
+    config.setdefault("openclaw_llm_lineage_modes", list(DEFAULT_ADMISSION_MODES))
+    config.setdefault("openclaw_llm_attack_cases", list(DEFAULT_REAL_AGENT_ATTACK_CASES))
+    config.setdefault("openclaw_llm_trials_per_case", DEFAULT_OPENCLAW_LLM_TRIALS_PER_CASE)
+    config.setdefault(
+        "smoke_openclaw_llm_trials_per_case",
+        SMOKE_OPENCLAW_LLM_TRIALS_PER_CASE,
+    )
+    config.setdefault(
+        "openclaw_llm_challenge_timeout_s",
+        DEFAULT_OPENCLAW_LLM_CHALLENGE_TIMEOUT_S,
+    )
+    config.setdefault(
+        "openclaw_llm_join_timeout_s",
+        DEFAULT_OPENCLAW_LLM_JOIN_TIMEOUT_S,
+    )
+    config.setdefault("openclaw_llm_provider", "openrouter")
+    config.setdefault("openclaw_llm_model", "openrouter/owl-alpha")
+    config.setdefault("openclaw_llm_base_url", "https://openrouter.ai/api/v1")
+    config.setdefault("openclaw_llm_api", "openai-completions")
+    config.setdefault("openclaw_llm_api_key_env", "OPENROUTER_API_KEY")
+    config.setdefault("openclaw_llm_temperature", 0.0)
+    config.setdefault("openclaw_llm_max_tokens", 1024)
+    config.setdefault("openclaw_llm_timeout_s", DEFAULT_OPENCLAW_LLM_TIMEOUT_S)
     config.setdefault("allow_exploratory_failures", False)
 
     if seed_override is not None:
@@ -117,6 +171,15 @@ def resolve_config(
         )
         config["admission_trials_per_case"] = int(
             config.get("smoke_admission_trials_per_case", SMOKE_ADMISSION_TRIALS_PER_CASE)
+        )
+        config["real_agent_trials_per_case"] = int(
+            config.get("smoke_real_agent_trials_per_case", SMOKE_REAL_AGENT_TRIALS_PER_CASE)
+        )
+        config["openclaw_llm_trials_per_case"] = int(
+            config.get(
+                "smoke_openclaw_llm_trials_per_case",
+                SMOKE_OPENCLAW_LLM_TRIALS_PER_CASE,
+            )
         )
 
     config["seed"] = int(config["seed"])
@@ -141,6 +204,38 @@ def resolve_config(
     config["smoke_admission_trials_per_case"] = int(config["smoke_admission_trials_per_case"])
     config["admission_challenge_timeout_s"] = float(config["admission_challenge_timeout_s"])
     config["admission_join_timeout_s"] = float(config["admission_join_timeout_s"])
+    config["real_agent_lineage_modes"] = [str(mode) for mode in config["real_agent_lineage_modes"]]
+    config["real_agent_attack_cases"] = [str(case) for case in config["real_agent_attack_cases"]]
+    config["real_agent_trials_per_case"] = int(config["real_agent_trials_per_case"])
+    config["smoke_real_agent_trials_per_case"] = int(config["smoke_real_agent_trials_per_case"])
+    config["real_agent_challenge_timeout_s"] = float(config["real_agent_challenge_timeout_s"])
+    config["real_agent_join_timeout_s"] = float(config["real_agent_join_timeout_s"])
+    config["openclaw_llm_lineage_modes"] = [
+        str(mode) for mode in config["openclaw_llm_lineage_modes"]
+    ]
+    config["openclaw_llm_attack_cases"] = [
+        str(case) for case in config["openclaw_llm_attack_cases"]
+    ]
+    config["openclaw_llm_trials_per_case"] = int(
+        config["openclaw_llm_trials_per_case"]
+    )
+    config["smoke_openclaw_llm_trials_per_case"] = int(
+        config["smoke_openclaw_llm_trials_per_case"]
+    )
+    config["openclaw_llm_challenge_timeout_s"] = float(
+        config["openclaw_llm_challenge_timeout_s"]
+    )
+    config["openclaw_llm_join_timeout_s"] = float(
+        config["openclaw_llm_join_timeout_s"]
+    )
+    config["openclaw_llm_provider"] = str(config["openclaw_llm_provider"])
+    config["openclaw_llm_model"] = str(config["openclaw_llm_model"])
+    config["openclaw_llm_base_url"] = str(config["openclaw_llm_base_url"])
+    config["openclaw_llm_api"] = str(config["openclaw_llm_api"])
+    config["openclaw_llm_api_key_env"] = str(config["openclaw_llm_api_key_env"])
+    config["openclaw_llm_temperature"] = float(config["openclaw_llm_temperature"])
+    config["openclaw_llm_max_tokens"] = int(config["openclaw_llm_max_tokens"])
+    config["openclaw_llm_timeout_s"] = int(config["openclaw_llm_timeout_s"])
     config["allow_exploratory_failures"] = bool(config["allow_exploratory_failures"])
 
     if config["btc_network"] != "mock" or config["anchor_backend"] != "mock":
@@ -163,6 +258,26 @@ def resolve_config(
     unknown_peer_cases = set(config["admission_peer_cases"]) - set(DEFAULT_ADMISSION_PEER_CASES)
     if unknown_peer_cases:
         raise ValueError(f"unknown admission peer cases: {sorted(unknown_peer_cases)}")
+    unknown_real_agent_modes = set(config["real_agent_lineage_modes"]) - set(DEFAULT_ADMISSION_MODES)
+    if unknown_real_agent_modes:
+        raise ValueError(f"unknown real-agent lineage modes: {sorted(unknown_real_agent_modes)}")
+    unknown_real_agent_cases = set(config["real_agent_attack_cases"]) - set(DEFAULT_REAL_AGENT_ATTACK_CASES)
+    if unknown_real_agent_cases:
+        raise ValueError(f"unknown real-agent attack cases: {sorted(unknown_real_agent_cases)}")
+    unknown_openclaw_llm_modes = (
+        set(config["openclaw_llm_lineage_modes"]) - set(DEFAULT_ADMISSION_MODES)
+    )
+    if unknown_openclaw_llm_modes:
+        raise ValueError(
+            f"unknown OpenClaw LLM lineage modes: {sorted(unknown_openclaw_llm_modes)}"
+        )
+    unknown_openclaw_llm_cases = (
+        set(config["openclaw_llm_attack_cases"]) - set(DEFAULT_REAL_AGENT_ATTACK_CASES)
+    )
+    if unknown_openclaw_llm_cases:
+        raise ValueError(
+            f"unknown OpenClaw LLM attack cases: {sorted(unknown_openclaw_llm_cases)}"
+        )
     if any(depth < 1 for depth in config["depths"]):
         raise ValueError("lineage depths must be positive")
     if any(depth < 1 for depth in config["performance_depths"]):
@@ -185,4 +300,26 @@ def resolve_config(
         raise ValueError("admission_challenge_timeout_s must be positive")
     if config["admission_join_timeout_s"] <= 0:
         raise ValueError("admission_join_timeout_s must be positive")
+    if config["real_agent_trials_per_case"] < 1:
+        raise ValueError("real_agent_trials_per_case must be positive")
+    if config["real_agent_challenge_timeout_s"] <= 0:
+        raise ValueError("real_agent_challenge_timeout_s must be positive")
+    if config["real_agent_join_timeout_s"] <= 0:
+        raise ValueError("real_agent_join_timeout_s must be positive")
+    if config["openclaw_llm_trials_per_case"] < 1:
+        raise ValueError("openclaw_llm_trials_per_case must be positive")
+    if config["openclaw_llm_challenge_timeout_s"] <= 0:
+        raise ValueError("openclaw_llm_challenge_timeout_s must be positive")
+    if config["openclaw_llm_join_timeout_s"] <= 0:
+        raise ValueError("openclaw_llm_join_timeout_s must be positive")
+    if config["openclaw_llm_timeout_s"] < 30:
+        raise ValueError("openclaw_llm_timeout_s must be at least 30 seconds")
+    if config["openclaw_llm_max_tokens"] < 1:
+        raise ValueError("openclaw_llm_max_tokens must be positive")
+    if not config["openclaw_llm_api_key_env"]:
+        raise ValueError("openclaw_llm_api_key_env must not be empty")
+    if not config["openclaw_llm_provider"]:
+        raise ValueError("openclaw_llm_provider must not be empty")
+    if not config["openclaw_llm_model"]:
+        raise ValueError("openclaw_llm_model must not be empty")
     return config

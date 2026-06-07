@@ -13,6 +13,7 @@ from experiments import (
     run_adversarial_rejection,
     run_functional_correctness,
     run_performance_latency,
+    run_real_agent_adversarial,
     run_storage_scaling,
 )
 from experiments.common.config import add_common_args, resolve_config
@@ -24,6 +25,7 @@ from experiments.common.validation import (
     ADVERSARIAL_REJECTION_SCHEMA,
     FUNCTIONAL_CORRECTNESS_SCHEMA,
     PERFORMANCE_LATENCY_SCHEMA,
+    REAL_AGENT_ADVERSARIAL_SCHEMA,
     REQUIRED_FIGURES,
     REQUIRED_SUMMARY_TABLES,
     STORAGE_SCALING_SCHEMA,
@@ -34,6 +36,7 @@ from experiments.common.validation import (
     validate_final_artifacts,
     validate_non_empty_csv,
     validate_required_operations_present,
+    validate_real_agent_matrix_present,
 )
 
 
@@ -135,6 +138,26 @@ def _run_admission(run_dir: Path, config: dict, environment: dict) -> Path:
         ]
         if failed:
             raise RuntimeError("admission mode trial failures: " + "; ".join(failed[:5]))
+    return path
+
+
+def _run_real_agent_adversarial(run_dir: Path, config: dict, environment: dict) -> Path:
+    path = run_dir / "raw" / "real_agent_adversarial.csv"
+    rows = run_real_agent_adversarial.build_rows(
+        config=config,
+        environment=environment,
+        run_id=run_dir.name,
+    )
+    _write_validated_csv(path, rows, REAL_AGENT_ADVERSARIAL_SCHEMA)
+    validate_real_agent_matrix_present(
+        path,
+        config["real_agent_lineage_modes"],
+        config["real_agent_attack_cases"],
+    )
+    if not config["allow_exploratory_failures"]:
+        failed = [str(row["trial_id"]) for row in rows if row["ok"] is False]
+        if failed:
+            raise RuntimeError("real-agent adversarial trial failures: " + "; ".join(failed[:5]))
     return path
 
 
@@ -260,6 +283,11 @@ def run(args: argparse.Namespace) -> Path:
     _record_stage(stages, "adversarial_rejection", lambda: _run_adversarial(run_dir, config, environment))
     _record_stage(stages, "storage_scaling", lambda: _run_storage(run_dir, config, environment))
     _record_stage(stages, "performance_latency", lambda: _run_performance(run_dir, config, environment))
+    _record_stage(
+        stages,
+        "real_agent_adversarial",
+        lambda: _run_real_agent_adversarial(run_dir, config, environment),
+    )
 
     if args.skip_admission:
         output = _write_unsupported_admission(

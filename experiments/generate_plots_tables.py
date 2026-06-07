@@ -35,6 +35,7 @@ from experiments.common.validation import (
     validate_non_empty_csv,
     validate_required_operations_present,
     validate_required_raw_csvs,
+    validate_real_agent_matrix_present,
     validate_summary_matches_raw,
 )
 
@@ -82,6 +83,23 @@ ADMISSION_SUMMARY_SCHEMA = [
     "duration_ms_p50",
     "duration_ms_p95",
     "duration_ms_p99",
+    "duration_ms_max",
+]
+
+REAL_AGENT_ADVERSARIAL_SUMMARY_SCHEMA = [
+    "lineage_mode",
+    "attack_case",
+    "trial_count",
+    "success_count",
+    "failure_count",
+    "join_accepted_count",
+    "rejected_count",
+    "false_accept_count",
+    "join_accept_rate",
+    "rejection_rate",
+    "duration_ms_mean",
+    "duration_ms_p50",
+    "duration_ms_p95",
     "duration_ms_max",
 ]
 
@@ -353,6 +371,78 @@ def _write_admission_summary(
     return rates
 
 
+def _write_real_agent_adversarial_summary(
+    rows: list[dict[str, str]],
+    path: Path,
+    summary_rows: list[dict[str, object]],
+    meta: dict[str, str],
+) -> dict[str, float]:
+    output: list[dict[str, object]] = []
+    rates: dict[str, float] = {}
+    for (mode, attack_case), group in sorted(grouped_rows(rows, ["lineage_mode", "attack_case"]).items()):
+        trial_count = len(group)
+        join_count = boolean_count(group, "join_accepted", True)
+        rejected_count = boolean_count(group, "rejected", True)
+        false_accept_count = boolean_count(group, "false_accept", True)
+        join_rate = join_count / trial_count if trial_count else 0.0
+        rejection_rate = rejected_count / trial_count if trial_count else 0.0
+        durations = numeric_values(group, "duration_ms")
+        duration_stats = stats_or_empty(durations)
+        group_value = f"{mode}/{attack_case}"
+        rates[group_value] = rejection_rate
+        output.append({
+            "lineage_mode": mode,
+            "attack_case": attack_case,
+            "trial_count": trial_count,
+            "success_count": boolean_count(group, "ok", True),
+            "failure_count": boolean_count(group, "ok", False),
+            "join_accepted_count": join_count,
+            "rejected_count": rejected_count,
+            "false_accept_count": false_accept_count,
+            "join_accept_rate": join_rate,
+            "rejection_rate": rejection_rate,
+            "duration_ms_mean": duration_stats["mean"],
+            "duration_ms_p50": duration_stats["p50"],
+            "duration_ms_p95": duration_stats["p95"],
+            "duration_ms_max": duration_stats["max"],
+        })
+        summary_rows.extend([
+            _metadata_row(
+                **meta,
+                runner="real_agent_adversarial",
+                metric="duration_ms",
+                group_key="mode_attack_case",
+                group_value=group_value,
+                rows=group,
+                values=durations,
+                unit="ms",
+                source_csv="real_agent_adversarial.csv",
+            ),
+            _count_metric_row(
+                **meta,
+                runner="real_agent_adversarial",
+                metric="rejected_count",
+                group_key="mode_attack_case",
+                group_value=group_value,
+                rows=group,
+                value=rejected_count,
+                source_csv="real_agent_adversarial.csv",
+            ),
+            _count_metric_row(
+                **meta,
+                runner="real_agent_adversarial",
+                metric="false_accept_count",
+                group_key="mode_attack_case",
+                group_value=group_value,
+                rows=group,
+                value=false_accept_count,
+                source_csv="real_agent_adversarial.csv",
+            ),
+        ])
+    write_csv(path, output, REAL_AGENT_ADVERSARIAL_SUMMARY_SCHEMA)
+    return rates
+
+
 def _write_performance_summary(
     raw_path: Path,
     path: Path,
@@ -581,6 +671,12 @@ def _validate_configured_content(config: dict, raw_dir: Path) -> dict[str, bool]
         validate_attack_cases_measured_or_unsupported(raw_dir / "adversarial_rejection.csv", config["adversarial_attack_cases"])
     if config.get("admission_modes") and config.get("admission_peer_cases"):
         validate_admission_matrix_present(raw_dir / "admission_modes.csv", config["admission_modes"], config["admission_peer_cases"])
+    if config.get("real_agent_lineage_modes") and config.get("real_agent_attack_cases"):
+        validate_real_agent_matrix_present(
+            raw_dir / "real_agent_adversarial.csv",
+            config["real_agent_lineage_modes"],
+            config["real_agent_attack_cases"],
+        )
     validate_required_operations_present(raw_dir / "performance_latency.csv", REQUIRED_OPERATIONS)
     result["configured_content_validated"] = True
     return result
@@ -626,6 +722,7 @@ def run(args: argparse.Namespace) -> Path:
         "admission_modes_summary.csv": tables_dir / "admission_modes_summary.csv",
         "performance_latency_summary.csv": tables_dir / "performance_latency_summary.csv",
         "storage_scaling_summary.csv": tables_dir / "storage_scaling_summary.csv",
+        "real_agent_adversarial_summary.csv": tables_dir / "real_agent_adversarial_summary.csv",
         "summary.csv": tables_dir / "summary.csv",
     }
 
@@ -645,6 +742,12 @@ def run(args: argparse.Namespace) -> Path:
         "admission_join_success_rate_by_mode_peer_case": _write_admission_summary(
             rows_by_csv["admission_modes.csv"],
             table_paths["admission_modes_summary.csv"],
+            summary_rows,
+            metadata,
+        ),
+        "real_agent_rejection_rate_by_mode_attack_case": _write_real_agent_adversarial_summary(
+            rows_by_csv["real_agent_adversarial.csv"],
+            table_paths["real_agent_adversarial_summary.csv"],
             summary_rows,
             metadata,
         ),
@@ -701,7 +804,10 @@ def run(args: argparse.Namespace) -> Path:
         "figure_outputs": _path_map(figure_paths),
         "validation": validation,
         "metrics": metrics,
-        "claim_boundary": "mock-anchored proof-of-descendancy experiment; no Bitcoin RPC/regtest anchoring",
+        "claim_boundary": (
+            "verifier-level and real OpenClawAgent/IPv8 admission experiments use "
+            "mock anchor records; no Bitcoin RPC/regtest OP_RETURN anchoring"
+        ),
     }
     run_summary_path = run_dir / "summary.json"
     write_json(run_summary_path, summary_json)
