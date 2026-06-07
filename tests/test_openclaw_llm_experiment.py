@@ -95,6 +95,33 @@ async def test_controller_enforces_state_machine_and_valid_baseline(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_controller_resolves_relative_trial_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config()
+    monkeypatch.chdir(tmp_path)
+    controller = LineageExperimentController(
+        config=config,
+        experiment_name="openclaw_llm_adversarial",
+        mode="required",
+        target_attack_case="valid_agent_baseline",
+        trial_index=0,
+        trial_id="test-relative-root",
+        trial_root=Path("results/runtime"),
+        ledger_path=Path("results/tool_calls.jsonl"),
+    )
+    try:
+        prepared = await controller.prepare_case("valid_agent_baseline")
+        assert prepared["ok"] is True
+        assert controller.trial_root == (tmp_path / "results" / "runtime").resolve()
+        joined = await controller.request_join()
+        assert joined["join_accepted"] is True
+    finally:
+        await controller.stop()
+
+
+@pytest.mark.asyncio
 async def test_controller_rejects_tampered_parent_signature(tmp_path: Path) -> None:
     controller = _controller(tmp_path, "tampered_parent_signature", trial_index=1)
     try:

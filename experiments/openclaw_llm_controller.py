@@ -56,7 +56,7 @@ class LineageExperimentController:
         self.target_attack_case = target_attack_case
         self.trial_index = trial_index
         self.trial_id = trial_id
-        self.trial_root = trial_root
+        self.trial_root = trial_root.resolve()
         self.ledger_path = ledger_path
         self.prepared = False
         self.join_attempted = False
