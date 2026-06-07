@@ -21,7 +21,11 @@ from experiments.openclaw_llm_controller import (
     build_experiment_mcp_server,
 )
 from experiments.run_openclaw_llm_adversarial import (
+    _await_mcp,
     _run_trial,
+    _start_mcp_http_server,
+    _stop_mcp_http_server,
+    _free_tcp_port,
     _summary_rows,
     assert_no_secrets,
     main as openclaw_llm_main,
@@ -149,6 +153,37 @@ async def test_experiment_mcp_exposes_exactly_three_tools(tmp_path: Path) -> Non
         "lineage_experiment_request_join",
         "lineage_experiment_peer_status",
     }
+
+
+@pytest.mark.asyncio
+async def test_trial_mcp_http_server_restarts_cleanly(tmp_path: Path) -> None:
+    for trial_index in range(2):
+        controller = _controller(
+            tmp_path,
+            "tampered_parent_signature",
+            trial_index=trial_index,
+        )
+        mcp = build_experiment_mcp_server(controller)
+        port = _free_tcp_port()
+        url = f"http://127.0.0.1:{port}/mcp"
+        server, task = _start_mcp_http_server(
+            mcp,
+            host="127.0.0.1",
+            port=port,
+        )
+        try:
+            await _await_mcp(url)
+            async with Client(url) as client:
+                result = await client.call_tool(
+                    "lineage_experiment_prepare_case",
+                    {"attack_case": "tampered_parent_signature"},
+                )
+            assert result.is_error is False
+        finally:
+            await controller.stop()
+            await _stop_mcp_http_server(server, task)
+        assert task.done()
+        assert task.exception() is None
 
 
 def test_redaction_hash_and_schemas() -> None:

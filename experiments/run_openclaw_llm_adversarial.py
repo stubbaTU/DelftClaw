@@ -240,7 +240,14 @@ def _start_mcp_http_server(
 ) -> tuple[uvicorn.Server, asyncio.Task[None]]:
     """Start FastMCP with a retained Uvicorn handle for graceful shutdown."""
 
-    app = mcp.http_app(transport="streamable-http")
+    # Each experiment tool stores state in the controller, not in an MCP
+    # session. Stateless JSON responses avoid leaving an SSE response open
+    # when OpenClaw disconnects or the per-trial server shuts down.
+    app = mcp.http_app(
+        transport="streamable-http",
+        stateless_http=True,
+        json_response=True,
+    )
     server = uvicorn.Server(uvicorn.Config(
         app,
         host=host,
