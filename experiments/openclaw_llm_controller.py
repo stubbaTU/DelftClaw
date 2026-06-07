@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from fastmcp import FastMCP
@@ -79,6 +80,7 @@ class LineageExperimentController:
         ok: bool,
         result: Any = None,
         error: str = "",
+        duration_ms: float = 0.0,
     ) -> None:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -89,6 +91,7 @@ class LineageExperimentController:
             "ok": ok,
             "result": result,
             "error": error,
+            "duration_ms": duration_ms,
         }
         with self.ledger_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
@@ -101,6 +104,7 @@ class LineageExperimentController:
         arguments: dict[str, Any],
         operation,
     ) -> dict[str, Any]:
+        started_at = perf_counter()
         try:
             result = await operation()
         except Exception as exc:
@@ -110,6 +114,7 @@ class LineageExperimentController:
                 arguments=arguments,
                 ok=False,
                 error=error,
+                duration_ms=(perf_counter() - started_at) * 1000,
             )
             return {"ok": False, "error": error}
         self._append_ledger(
@@ -117,6 +122,7 @@ class LineageExperimentController:
             arguments=arguments,
             ok=True,
             result=result,
+            duration_ms=(perf_counter() - started_at) * 1000,
         )
         return result
 

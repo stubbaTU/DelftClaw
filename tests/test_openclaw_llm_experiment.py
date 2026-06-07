@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,8 @@ from experiments.run_openclaw_llm_adversarial import (
     _stop_mcp_http_server,
     _free_tcp_port,
     _summary_rows,
+    ProgressReporter,
+    TimingCollector,
     assert_no_secrets,
     main as openclaw_llm_main,
     qualify_openrouter_model,
@@ -94,6 +97,11 @@ async def test_controller_enforces_state_machine_and_valid_baseline(tmp_path: Pa
         result = controller.protocol_result()
         assert result["protocol_expectation_met"] is True
         assert result["join_accepted"] is True
+        ledger_rows = [
+            json.loads(line)
+            for line in controller.ledger_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert all(row["duration_ms"] >= 0 for row in ledger_rows)
     finally:
         await controller.stop()
 
@@ -306,6 +314,60 @@ async def test_runner_records_no_tool_model_outcome(
     assert row["ok"] is True
     assert row["tool_ledger_sha256"]
     assert row["artifact_manifest_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_runner_reports_heartbeat_and_collects_stage_timings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "experiments.run_openclaw_llm_adversarial.provision_openclaw_workspace",
+        lambda spec: None,
+    )
+
+    def slow_agent(spec, prompt):
+        time.sleep(0.04)
+        return subprocess.CompletedProcess(
+            ["openclaw"],
+            0,
+            stdout='{"payloads":[{"text":"Done."}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "experiments.run_openclaw_llm_adversarial.invoke_openclaw_agent",
+        slow_agent,
+    )
+    messages: list[tuple[str, str]] = []
+    progress = ProgressReporter(total_trials=1, progress_interval_s=0.01)
+    progress.log = lambda stage, message, *args: messages.append(
+        (stage, message % args)
+    )
+    timings = TimingCollector()
+    run_dir = tmp_path / "run"
+    (run_dir / "raw").mkdir(parents=True)
+
+    await _run_trial(
+        config=_config(),
+        environment={
+            "git_commit": "abc123",
+            "python_version": "3.11",
+            "platform": "test",
+        },
+        preflight={"openclaw": {"openclaw_version": "openclaw stub"}},
+        run_dir=run_dir,
+        mode="required",
+        attack_case="valid_agent_baseline",
+        trial_index=0,
+        progress=progress,
+        timings=timings,
+    )
+
+    assert any("event=heartbeat" in message for _, message in messages)
+    assert timings.stages["trial.llm_api_wait_estimate"][0] >= 0.03
+    assert "trial.workspace_provision" in timings.stages
+    assert timings.trials[0]["stages"]["openclaw_model_tool_loop"] >= 0.03
 
 
 def test_provisioning_uses_env_reference_and_non_reserved_agent(
