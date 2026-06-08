@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,10 +49,19 @@ def run_agentdojo_vukzero(
     openrouter_api_key: str | None = None,
     openrouter_base_url: str | None = None,
     trusted_tool_metadata: Path | None = None,
+    agentdojo_path: Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    if dry_run or importlib.util.find_spec("agentdojo") is None:
+    expected_agentdojo_package = _configure_agentdojo_path(agentdojo_path)
+    if dry_run:
         return run_mock_dry_run(suite=suite, attack=attack, model=model, conditions=conditions, logdir=logdir)
+    if importlib.util.find_spec("agentdojo") is None:
+        raise RuntimeError(
+            "AgentDojo is not importable. Install it or pass --agentdojo-path pointing to the Progent AgentDojo fork. "
+            "Use --dry-run only for the explicit mock smoke test."
+        )
+    agentdojo_module_file = _verify_agentdojo_import(expected_agentdojo_package)
+    _verify_c1_secagent_disabled(conditions)
     return _run_real_agentdojo(
         suite=suite,
         attack=attack,
@@ -70,6 +80,8 @@ def run_agentdojo_vukzero(
         openrouter_api_key=openrouter_api_key,
         openrouter_base_url=openrouter_base_url,
         trusted_tool_metadata=trusted_tool_metadata,
+        agentdojo_module_file=agentdojo_module_file,
+        expected_agentdojo_package=expected_agentdojo_package,
     )
 
 
@@ -181,6 +193,8 @@ def _run_real_agentdojo(
     openrouter_api_key: str | None,
     openrouter_base_url: str | None,
     trusted_tool_metadata: Path | None,
+    agentdojo_module_file: str,
+    expected_agentdojo_package: Path | None,
 ) -> dict[str, Any]:
     import agentdojo.attacks  # noqa: F401 - registers bundled attacks
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
@@ -254,6 +268,7 @@ def _run_real_agentdojo(
                 "condition": condition,
                 "benchmark_version": benchmark_version,
                 "dry_run": False,
+                **_execution_metadata(agentdojo_module_file, expected_agentdojo_package),
             }
         except Exception as exc:  # noqa: BLE001 - preserve partial benchmark artifacts on provider/runtime failures.
             permission_entries = _decision_entries(decision_logs)
@@ -272,10 +287,17 @@ def _run_real_agentdojo(
                 "benchmark_version": benchmark_version,
                 "dry_run": False,
                 "error": f"{type(exc).__name__}: {exc}",
+                **_execution_metadata(agentdojo_module_file, expected_agentdojo_package),
             }
         all_trial_rows.extend(condition_rows)
         all_permission_entries.extend(permission_entries)
         write_outputs(condition_dir, metadata=condition_metadata, trial_rows=condition_rows, permission_entries=permission_entries)
+        if condition == C1_AGENTDOJO_VUKZERO:
+            denied = sum(entry.get("decision") == "deny" for entry in permission_entries)
+            print(
+                f"VukZero condition={condition} permission_decisions={len(permission_entries)} "
+                f"denied_tool_calls={denied}"
+            )
 
     return write_outputs(
         logdir,
@@ -286,10 +308,86 @@ def _run_real_agentdojo(
             "conditions": conditions,
             "benchmark_version": benchmark_version,
             "dry_run": False,
+            **_execution_metadata(agentdojo_module_file, expected_agentdojo_package),
         },
         trial_rows=all_trial_rows,
         permission_entries=all_permission_entries,
     )
+
+
+def _configure_agentdojo_path(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+
+    requested = path.expanduser().resolve()
+    candidates = [
+        requested,
+        requested / "agentdojo",
+        requested / "src" / "agentdojo",
+    ]
+    package = next((candidate for candidate in candidates if (candidate / "__init__.py").is_file()), None)
+    if package is None:
+        raise RuntimeError(
+            f"--agentdojo-path {requested} does not contain an AgentDojo package. "
+            "Expected agentdojo/__init__.py, src/agentdojo/__init__.py, or the package directory itself."
+        )
+
+    import_root = package.parent
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+    return package
+
+
+def _verify_agentdojo_import(expected_package: Path | None) -> str:
+    import agentdojo
+
+    module_file = Path(agentdojo.__file__ or "").resolve()
+    if expected_package is not None and not module_file.is_relative_to(expected_package):
+        raise RuntimeError(
+            "Imported AgentDojo does not come from the requested Progent fork: "
+            f"expected under {expected_package}, imported {module_file}"
+        )
+    return str(module_file)
+
+
+def _verify_c1_secagent_disabled(conditions: list[str]) -> None:
+    if C1_AGENTDOJO_VUKZERO not in conditions:
+        return
+    disabled = os.getenv("SECAGENT_DISABLE", "").strip().lower()
+    if disabled not in {"1", "true", "yes", "on"}:
+        raise RuntimeError(
+            "C1_agentdojo_vukzero requires SECAGENT_DISABLE=True so VukZero is the only active defense."
+        )
+    conflicting = [
+        name
+        for name in (
+            "SECAGENT_POLICY_MODEL",
+            "SECAGENT_UPDATE",
+            "SECAGENT_IGNORE_UPDATE_ERROR",
+            "SECAGENT_SUITE",
+        )
+        if os.getenv(name)
+    ]
+    if conflicting:
+        raise RuntimeError(f"Unset SecAgent configuration variables before C1: {', '.join(conflicting)}")
+
+
+def _execution_metadata(agentdojo_module_file: str, expected_agentdojo_package: Path | None) -> dict[str, Any]:
+    return {
+        "agentdojo_module_file": agentdojo_module_file,
+        "agentdojo_expected_package": str(expected_agentdojo_package or ""),
+        "openai_base_url": os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or "",
+        "secagent_disabled": os.getenv("SECAGENT_DISABLE", "").strip().lower() in {"1", "true", "yes", "on"},
+        "secagent_configuration_present": any(
+            os.getenv(name)
+            for name in (
+                "SECAGENT_POLICY_MODEL",
+                "SECAGENT_UPDATE",
+                "SECAGENT_IGNORE_UPDATE_ERROR",
+                "SECAGENT_SUITE",
+            )
+        ),
+    }
 
 
 def _error_trial_row(*, condition: str, suite: str, attack: str, model: str, error: Exception) -> dict[str, Any]:
@@ -577,10 +675,16 @@ def main() -> int:
     parser.add_argument("--suite", default="workspace")
     parser.add_argument("--attack", default="important_instructions")
     parser.add_argument("--model", required=True)
-    parser.add_argument("--conditions", nargs="+", default=[C0_AGENTDOJO_BASELINE, C1_AGENTDOJO_VUKZERO])
+    condition_group = parser.add_mutually_exclusive_group()
+    condition_group.add_argument("--conditions", nargs="+", default=None)
+    condition_group.add_argument("--condition", action="append", default=None)
     parser.add_argument("--logdir", type=Path, required=True)
-    parser.add_argument("--user-tasks", nargs="*", default=None)
-    parser.add_argument("--injection-tasks", nargs="*", default=None)
+    user_task_group = parser.add_mutually_exclusive_group()
+    user_task_group.add_argument("--user-tasks", nargs="*", default=None)
+    user_task_group.add_argument("--user-task", action="append", default=None)
+    injection_task_group = parser.add_mutually_exclusive_group()
+    injection_task_group.add_argument("--injection-tasks", nargs="*", default=None)
+    injection_task_group.add_argument("--injection-task", action="append", default=None)
     parser.add_argument("--benchmark-version", default="v1.2.2")
     parser.add_argument("--model-id", default=None)
     parser.add_argument("--tool-delimiter", default="tool")
@@ -590,19 +694,32 @@ def main() -> int:
     parser.add_argument("--openrouter-api-key", default=None)
     parser.add_argument("--openrouter-base-url", default=None)
     parser.add_argument("--trusted-tool-metadata", type=Path, default=None)
-    parser.add_argument("--no-force-rerun", action="store_true")
+    parser.add_argument(
+        "--agentdojo-path",
+        type=Path,
+        default=None,
+        help="Path to the Progent AgentDojo checkout or its importable agentdojo package.",
+    )
+    rerun_group = parser.add_mutually_exclusive_group()
+    rerun_group.add_argument("--force-rerun", dest="force_rerun", action="store_true")
+    rerun_group.add_argument("--no-force-rerun", dest="force_rerun", action="store_false")
+    parser.set_defaults(force_rerun=True)
+    parser.add_argument("--fail-on-error", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    conditions = args.condition or args.conditions or [C0_AGENTDOJO_BASELINE, C1_AGENTDOJO_VUKZERO]
+    user_tasks = args.user_task or args.user_tasks
+    injection_tasks = args.injection_task or args.injection_tasks
     summary = run_agentdojo_vukzero(
         suite=args.suite,
         attack=args.attack,
         model=args.model,
-        conditions=args.conditions,
+        conditions=conditions,
         logdir=args.logdir,
-        user_tasks=args.user_tasks,
-        injection_tasks=args.injection_tasks,
+        user_tasks=user_tasks,
+        injection_tasks=injection_tasks,
         benchmark_version=args.benchmark_version,
-        force_rerun=not args.no_force_rerun,
+        force_rerun=args.force_rerun,
         model_id=args.model_id,
         tool_delimiter=args.tool_delimiter,
         system_message_name=args.system_message_name,
@@ -611,9 +728,12 @@ def main() -> int:
         openrouter_api_key=args.openrouter_api_key,
         openrouter_base_url=args.openrouter_base_url,
         trusted_tool_metadata=args.trusted_tool_metadata,
+        agentdojo_path=args.agentdojo_path,
         dry_run=args.dry_run,
     )
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    if args.fail_on_error and any(row.get("error_count", 0) for row in summary.get("metrics_by_condition", [])):
+        return 1
     return 0
 
 

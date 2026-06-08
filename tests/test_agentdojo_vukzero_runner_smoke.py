@@ -6,6 +6,8 @@ from security.preventative_layer.agentdojo_runner import (
     C0_AGENTDOJO_BASELINE,
     C1_AGENTDOJO_VUKZERO,
     _OpenRouterChatLLM,
+    _configure_agentdojo_path,
+    _verify_c1_secagent_disabled,
     run_agentdojo_vukzero,
 )
 from security.preventative_layer.export_results import suite_results_to_trial_rows
@@ -93,3 +95,21 @@ def test_openrouter_llm_reports_empty_provider_response() -> None:
 
     with pytest.raises(RuntimeError, match="no completion choices"):
         llm.query("", FakeRuntime(), messages=())
+
+
+def test_agentdojo_path_accepts_src_layout(tmp_path, monkeypatch) -> None:
+    package = tmp_path / "src" / "agentdojo"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("sys.path", list(__import__("sys").path))
+    assert _configure_agentdojo_path(tmp_path) == package.resolve()
+
+
+def test_c1_requires_secagent_to_be_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("SECAGENT_DISABLE", raising=False)
+    with pytest.raises(RuntimeError, match="SECAGENT_DISABLE=True"):
+        _verify_c1_secagent_disabled([C1_AGENTDOJO_VUKZERO])
+
+    monkeypatch.setenv("SECAGENT_DISABLE", "True")
+    _verify_c1_secagent_disabled([C1_AGENTDOJO_VUKZERO])
