@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -279,6 +280,8 @@ def _run_real_agentdojo(
                 **_execution_metadata(agentdojo_module_file, expected_agentdojo_package),
             }
         except Exception as exc:  # noqa: BLE001 - preserve partial benchmark artifacts on provider/runtime failures.
+            error_traceback = traceback.format_exc()
+            print(error_traceback, file=sys.stderr)
             permission_entries = _decision_entries(decision_logs)
             condition_rows = [_error_trial_row(
                 condition=condition,
@@ -295,6 +298,7 @@ def _run_real_agentdojo(
                 "benchmark_version": benchmark_version,
                 "dry_run": False,
                 "error": f"{type(exc).__name__}: {exc}",
+                "error_traceback": error_traceback,
                 **_execution_metadata(agentdojo_module_file, expected_agentdojo_package),
             }
         all_trial_rows.extend(condition_rows)

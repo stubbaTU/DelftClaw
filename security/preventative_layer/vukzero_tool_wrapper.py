@@ -246,13 +246,22 @@ def make_vukzero_final_output_guard() -> Any:
             if not _claims_denied_action_completed(final_text):
                 return query, runtime, env, messages, extra_args
             guarded = dict(messages[-1])
-            guarded["content"] = [_agentdojo_text_content_block(
-                "I blocked an unauthorized instruction from untrusted content and did not perform that action."
-            )]
+            guarded["content"] = _replacement_message_content(
+                messages[-1].get("content"),
+                "I blocked an unauthorized instruction from untrusted content and did not perform that action.",
+            )
             extra_args["vukzero_final_output_blocked"] = True
             return query, runtime, env, [*messages[:-1], guarded], extra_args
 
     return VukZeroFinalOutputGuard()
+
+
+def _replacement_message_content(original: Any, text: str) -> Any:
+    if isinstance(original, str):
+        return text
+    if isinstance(original, list):
+        return [_agentdojo_text_content_block(text)]
+    return text
 
 
 def _agentdojo_text_content_block(text: str) -> Any:
