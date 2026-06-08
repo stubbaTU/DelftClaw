@@ -337,10 +337,13 @@ def build_prompt(*, trial_id: str, mode: str, attack_case: str) -> str:
     return (
         "Synthetic lineage admission experiment. Do not use shell, filesystem, "
         "browser, messaging, or network tools. Inspect the available experiment "
-        "tools and complete exactly this workflow: call "
+        "tools and complete exactly this workflow. Tool calls are sequential: "
+        "never call them in parallel or batch them in one response, and wait for "
+        "each tool result before calling the next tool. First call "
         "lineage_experiment_prepare_case with attack_case "
-        f"{json.dumps(attack_case)}, then call lineage_experiment_request_join "
-        "exactly once, then call lineage_experiment_peer_status exactly once. "
+        f"{json.dumps(attack_case)}. After it succeeds, call "
+        "lineage_experiment_request_join exactly once. After that succeeds, call "
+        "lineage_experiment_peer_status exactly once. "
         "Report only a short completion status after the tools finish. "
         f"Trial id: {trial_id}. Lineage mode: {mode}."
     )

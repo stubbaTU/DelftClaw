@@ -22,6 +22,7 @@ from experiments.openclaw_llm_controller import (
     LineageExperimentController,
     build_experiment_mcp_server,
 )
+from experiments.recover_openclaw_llm_run import recover_run
 from experiments.run_openclaw_llm_adversarial import (
     _await_mcp,
     _run_trial,
@@ -33,6 +34,7 @@ from experiments.run_openclaw_llm_adversarial import (
     ProgressReporter,
     TimingCollector,
     assert_no_secrets,
+    build_prompt,
     main as openclaw_llm_main,
     qualify_openrouter_model,
     redact_text,
@@ -86,6 +88,96 @@ def test_select_trials_rejects_out_of_range_index() -> None:
     config["openclaw_llm_trials_per_case"] = 3
     with pytest.raises(ValueError, match="between 0 and 2"):
         _select_trials(_selection_args(trial_index=[3]), config)
+
+
+def test_prompt_requires_sequential_tool_calls() -> None:
+    prompt = build_prompt(
+        trial_id="test-trial",
+        mode="required",
+        attack_case="valid_agent_baseline",
+    )
+    prepare = prompt.index("lineage_experiment_prepare_case")
+    request = prompt.index("lineage_experiment_request_join")
+    status = prompt.index("lineage_experiment_peer_status")
+    assert prepare < request < status
+    assert "never call them in parallel or batch them" in prompt
+    assert "After it succeeds" in prompt
+    assert "After that succeeds" in prompt
+
+
+def test_recover_interrupted_run_writes_raw_and_summary(tmp_path: Path) -> None:
+    run_dir = tmp_path / "20260608-120000Z-test"
+    artifact_dir = (
+        run_dir
+        / "raw"
+        / "openclaw_llm_adversarial"
+        / "openclaw-llm-optional-valid_agent_baseline-trial-0000"
+    )
+    artifact_dir.mkdir(parents=True)
+    (run_dir / "tables").mkdir()
+    config = _config()
+    (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (run_dir / "environment.json").write_text(json.dumps({
+        "git_commit": "abc123",
+        "python_version": "3.11.0",
+        "platform": "test-platform",
+    }), encoding="utf-8")
+    (run_dir / "preflight.json").write_text(json.dumps({
+        "openclaw": {"openclaw_version": "openclaw test"},
+    }), encoding="utf-8")
+    protocol = {
+        "selected_attack_case": "valid_agent_baseline",
+        "join_attempted": True,
+        "proof_supplied": True,
+        "expected_accept": True,
+        "join_accepted": True,
+        "lineage_status": "valid",
+        "rejected": False,
+        "false_accept": False,
+        "protocol_expectation_met": True,
+        "lineage_errors": [],
+    }
+    metadata = {
+        "provider": "openrouter",
+        "model": "openrouter/owl-alpha",
+        "model_ref": "openrouter/openrouter/owl-alpha",
+        "openclaw_version": "openclaw test",
+        "agent_id": "lineage-test",
+        "temperature": 0.0,
+        "model_seed": 123,
+        "max_tokens": 1024,
+        "timing_seconds": {"prepare": 0.1, "openclaw_model_tool_loop": 1.2},
+    }
+    ledger = [
+        {"tool": "lineage_experiment_prepare_case", "ok": True},
+        {"tool": "lineage_experiment_request_join", "ok": True},
+        {"tool": "lineage_experiment_peer_status", "ok": True},
+    ]
+    files = {
+        "prompt.txt": "test prompt",
+        "openclaw_stdout.json": json.dumps({
+            "payloads": [{"text": "complete"}],
+            "meta": {},
+        }),
+        "openclaw_stderr.txt": "",
+        "tool_calls.jsonl": "".join(json.dumps(row) + "\n" for row in ledger),
+        "protocol_result.json": json.dumps(protocol),
+        "metadata.json": json.dumps(metadata),
+        "artifact_manifest.json": json.dumps({"artifacts": {}}),
+    }
+    for name, content in files.items():
+        (artifact_dir / name).write_text(content, encoding="utf-8")
+
+    raw_path, summary_path = recover_run(run_dir)
+    with raw_path.open(encoding="utf-8", newline="") as handle:
+        raw_rows = list(csv.DictReader(handle))
+    with summary_path.open(encoding="utf-8", newline="") as handle:
+        summary_rows = list(csv.DictReader(handle))
+    assert len(raw_rows) == 1
+    assert raw_rows[0]["trial_id"].endswith("trial-0000")
+    assert raw_rows[0]["result"] == "measured"
+    assert summary_rows[0]["trials"] == "1"
+    assert summary_rows[0]["llm_task_successes"] == "1"
 
 
 def _controller(

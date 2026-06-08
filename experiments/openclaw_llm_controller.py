@@ -416,23 +416,33 @@ def build_experiment_mcp_server(controller: LineageExperimentController) -> Fast
     mcp = FastMCP(
         name="delftclaw-lineage-experiment",
         instructions=(
-            "Use only these controlled tools. Prepare the requested case, request "
-            "one join, then inspect peer status."
+            "Use only these controlled tools. Calls must be sequential, never "
+            "parallel or batched: prepare the requested case and wait for success, "
+            "request one join and wait for success, then inspect peer status."
         ),
     )
     mcp.add_tool(FastMCPTool.from_function(
         controller.prepare_case,
         name="lineage_experiment_prepare_case",
-        description="Prepare the exact predeclared lineage attack case for this trial.",
+        description=(
+            "Step 1 of 3. Prepare the exact predeclared lineage attack case. Call "
+            "this first and wait for a successful result before requesting a join."
+        ),
     ))
     mcp.add_tool(FastMCPTool.from_function(
         controller.request_join,
         name="lineage_experiment_request_join",
-        description="Attempt exactly one normal IPv8 admission join for the prepared case.",
+        description=(
+            "Step 2 of 3. Requires prepare_case to have succeeded. Attempt exactly "
+            "one normal IPv8 admission join, then wait for its result before status."
+        ),
     ))
     mcp.add_tool(FastMCPTool.from_function(
         controller.peer_status,
         name="lineage_experiment_peer_status",
-        description="Read the deterministic gatekeeper admission and lineage status.",
+        description=(
+            "Step 3 of 3. Requires request_join to have succeeded. Read the "
+            "deterministic gatekeeper admission and lineage status."
+        ),
     ))
     return mcp
