@@ -12,6 +12,7 @@ from typing import Any
 from security.preventative_layer.export_results import write_outputs
 from security.preventative_layer.export_results import suite_results_to_trial_rows
 from security.preventative_layer.vukzero_tool_wrapper import (
+    _agentdojo_text_content_block,
     make_vukzero_final_output_guard,
     make_vukzero_pipeline_element,
     wrap_functions_runtime,
@@ -39,7 +40,7 @@ def run_agentdojo_vukzero(
     logdir: Path,
     user_tasks: list[str] | None = None,
     injection_tasks: list[str] | None = None,
-    benchmark_version: str = "v1.2.2",
+    benchmark_version: str = "v1.1.2",
     force_rerun: bool = True,
     model_id: str | None = None,
     tool_delimiter: str = "tool",
@@ -579,7 +580,7 @@ def _agentdojo_function_to_openrouter(function: Any) -> dict[str, Any]:
 
 def _openrouter_message_to_agentdojo(message: Any) -> Any:
     from agentdojo.functions_runtime import FunctionCall
-    from agentdojo.types import ChatAssistantMessage, text_content_block_from_string
+    from agentdojo.types import ChatAssistantMessage
 
     tool_calls = None
     if message.tool_calls:
@@ -591,7 +592,7 @@ def _openrouter_message_to_agentdojo(message: Any) -> Any:
             )
             for tool_call in message.tool_calls
         ]
-    content = None if message.content is None else [text_content_block_from_string(message.content)]
+    content = None if message.content is None else [_agentdojo_text_content_block(message.content)]
     return ChatAssistantMessage(role="assistant", content=content, tool_calls=tool_calls)
 
 
@@ -685,7 +686,7 @@ def main() -> int:
     injection_task_group = parser.add_mutually_exclusive_group()
     injection_task_group.add_argument("--injection-tasks", nargs="*", default=None)
     injection_task_group.add_argument("--injection-task", action="append", default=None)
-    parser.add_argument("--benchmark-version", default="v1.2.2")
+    parser.add_argument("--benchmark-version", default="v1.1.2")
     parser.add_argument("--model-id", default=None)
     parser.add_argument("--tool-delimiter", default="tool")
     parser.add_argument("--system-message-name", default=None)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from security.preventative_layer.vukzero_tool_wrapper import wrap_functions_runtime
+import sys
+from types import ModuleType
+
+from security.preventative_layer.vukzero_tool_wrapper import _agentdojo_text_content_block, wrap_functions_runtime
 
 
 class MockFunction:
@@ -22,6 +25,13 @@ class MockRuntime:
 
     def run_function(self, _env, function, kwargs):
         return self.functions[function].run(**kwargs), None
+
+
+def test_text_content_block_supports_older_agentdojo_fork(monkeypatch) -> None:
+    old_types_module = ModuleType("agentdojo.types")
+    monkeypatch.setitem(sys.modules, "agentdojo.types", old_types_module)
+
+    assert _agentdojo_text_content_block("blocked") == {"type": "text", "content": "blocked"}
 
 
 def test_wrapper_allows_legitimate_email_and_blocks_attacker_recipient() -> None:

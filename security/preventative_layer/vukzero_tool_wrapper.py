@@ -224,7 +224,6 @@ def make_vukzero_final_output_guard() -> Any:
     try:
         from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
         from agentdojo.functions_runtime import EmptyEnv
-        from agentdojo.types import text_content_block_from_string
     except ModuleNotFoundError as exc:
         raise RuntimeError("AgentDojo is not installed; cannot create final output guard") from exc
 
@@ -247,13 +246,23 @@ def make_vukzero_final_output_guard() -> Any:
             if not _claims_denied_action_completed(final_text):
                 return query, runtime, env, messages, extra_args
             guarded = dict(messages[-1])
-            guarded["content"] = [text_content_block_from_string(
+            guarded["content"] = [_agentdojo_text_content_block(
                 "I blocked an unauthorized instruction from untrusted content and did not perform that action."
             )]
             extra_args["vukzero_final_output_blocked"] = True
             return query, runtime, env, [*messages[:-1], guarded], extra_args
 
     return VukZeroFinalOutputGuard()
+
+
+def _agentdojo_text_content_block(text: str) -> Any:
+    try:
+        from agentdojo.types import text_content_block_from_string
+    except ImportError:
+        # Progent's AgentDojo fork predates this convenience helper but uses
+        # the same underlying typed-dict content-block representation.
+        return {"type": "text", "content": text}
+    return text_content_block_from_string(text)
 
 
 def _message_text(message: Any) -> str:

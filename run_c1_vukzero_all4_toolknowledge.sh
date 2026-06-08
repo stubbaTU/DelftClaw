@@ -33,6 +33,7 @@ mkdir -p "$RUN_ROOT"
   echo "model=$AGENTDOJO_MODEL"
   echo "actual_model=openrouter/openai/gpt-4o-mini via LiteLLM"
   echo "endpoint=$OPENAI_BASE_URL"
+  echo "benchmark_version=v1.1.2"
   echo "attack=tool_knowledge"
   echo "suites=workspace slack travel banking"
   echo "started=$(date -Is)"
@@ -44,6 +45,7 @@ for SUITE in workspace slack travel banking; do
   python -m security.agentdojo_vukzero.agentdojo_runner \
     --condition C1_agentdojo_vukzero \
     --suite "$SUITE" \
+    --benchmark-version v1.1.2 \
     --model "$AGENTDOJO_MODEL" \
     --attack tool_knowledge \
     --agentdojo-path "$AGENTDOJO_PATH" \
