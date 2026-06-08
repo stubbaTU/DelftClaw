@@ -7,6 +7,7 @@ from security.preventative_layer.agentdojo_runner import (
     C1_AGENTDOJO_VUKZERO,
     _OpenRouterChatLLM,
     _configure_agentdojo_path,
+    _supported_benchmark_version,
     _verify_c1_secagent_disabled,
     run_agentdojo_vukzero,
 )
@@ -113,3 +114,14 @@ def test_c1_requires_secagent_to_be_disabled(monkeypatch) -> None:
 
     monkeypatch.setenv("SECAGENT_DISABLE", "True")
     _verify_c1_secagent_disabled([C1_AGENTDOJO_VUKZERO])
+
+
+def test_benchmark_version_is_only_passed_when_supported() -> None:
+    def old_api(pipeline, suite):  # noqa: ANN001
+        return pipeline, suite
+
+    def new_api(pipeline, suite, benchmark_version=None):  # noqa: ANN001
+        return pipeline, suite, benchmark_version
+
+    assert _supported_benchmark_version(old_api, "v1.1.2") == {}
+    assert _supported_benchmark_version(new_api, "v1.1.2") == {"benchmark_version": "v1.1.2"}

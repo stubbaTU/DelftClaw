@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -242,7 +243,10 @@ def _run_real_agentdojo(
                         force_rerun=force_rerun,
                         user_tasks=user_tasks,
                         injection_tasks=injection_tasks,
-                        benchmark_version=benchmark_version,
+                        **_supported_benchmark_version(
+                            benchmark_suite_with_injections,
+                            benchmark_version,
+                        ),
                     )
                 else:
                     suite_results = benchmark_suite_without_injections(
@@ -251,7 +255,10 @@ def _run_real_agentdojo(
                         logdir=condition_dir,
                         force_rerun=force_rerun,
                         user_tasks=user_tasks,
-                        benchmark_version=benchmark_version,
+                        **_supported_benchmark_version(
+                            benchmark_suite_without_injections,
+                            benchmark_version,
+                        ),
                     )
             permission_entries = _decision_entries(decision_logs)
             condition_rows = suite_results_to_trial_rows(
@@ -314,6 +321,17 @@ def _run_real_agentdojo(
         trial_rows=all_trial_rows,
         permission_entries=all_permission_entries,
     )
+
+
+def _supported_benchmark_version(function: Any, benchmark_version: str) -> dict[str, str]:
+    """Pass the version only to AgentDojo releases whose benchmark API accepts it."""
+    parameters = inspect.signature(function).parameters
+    if "benchmark_version" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return {"benchmark_version": benchmark_version}
+    return {}
 
 
 def _configure_agentdojo_path(path: Path | None) -> Path | None:
