@@ -4,9 +4,10 @@ from security.preventative_layer.vukzero_tool_wrapper import wrap_functions_runt
 
 
 class MockFunction:
-    def __init__(self, name, run):
+    def __init__(self, name, run, annotations=None):
         self.name = name
         self.run = run
+        self.annotations = annotations or {}
 
     def __call__(self, **kwargs):
         return self.run(**kwargs)
@@ -44,6 +45,7 @@ def test_wrapper_allows_legitimate_email_and_blocks_attacker_recipient() -> None
     assert allowed["sent"] is True
     assert denied["blocked"] is True
     assert len(side_effects) == 1
+    assert any(entry.get("event_type") == "capability_grant" for entry in log.entries())
     assert any(entry["decision"] == "deny" for entry in log.entries())
 
 
@@ -82,7 +84,11 @@ def test_calendar_create_still_allowed_when_read_tool_is_registered() -> None:
     side_effects = []
     runtime = MockRuntime({
         "get_day_calendar_events": MockFunction("get_day_calendar_events", lambda **kwargs: []),
-        "create_calendar_event": MockFunction("create_calendar_event", lambda **kwargs: side_effects.append(kwargs) or {"ok": True}),
+        "create_calendar_event": MockFunction(
+            "create_calendar_event",
+            lambda **kwargs: side_effects.append(kwargs) or {"ok": True},
+            annotations={"neutral_args": ["title", "start_time", "end_time"]},
+        ),
     })
     wrapped, log = wrap_functions_runtime(
         runtime,
@@ -116,10 +122,12 @@ def test_runtime_policy_uses_structured_tool_evidence_for_later_calendar_write()
         "search_contacts_by_name": MockFunction(
             "search_contacts_by_name",
             lambda **kwargs: [{"name": "Sarah", "email": "sarah.connor@bluesparrowtech.com"}],
+            annotations={"effect_class": "read_authoritative"},
         ),
         "create_calendar_event": MockFunction(
             "create_calendar_event",
             lambda **kwargs: side_effects.append(kwargs) or {"ok": True},
+            annotations={"neutral_args": ["title"]},
         ),
     })
     wrapped, _log = wrap_functions_runtime(
@@ -228,3 +236,26 @@ def test_content_read_cannot_launder_attacker_recipient_into_effect() -> None:
 
     assert denied["blocked"] is True
     assert side_effects == []
+
+
+def test_broker_consumes_bounded_capability_before_second_effect() -> None:
+    side_effects = []
+    runtime = MockRuntime({
+        "publish_alert": MockFunction(
+            "publish_alert",
+            lambda **kwargs: side_effects.append(kwargs) or {"ok": True},
+            annotations={"max_uses": 1},
+        ),
+    })
+    wrapped, _log = wrap_functions_runtime(
+        runtime,
+        user_task="Publish alert 'maintenance'.",
+        task_id="task_bounded_capability",
+    )
+
+    first, _ = wrapped.run_function(None, "publish_alert", {"message": "maintenance"})
+    second, _ = wrapped.run_function(None, "publish_alert", {"message": "maintenance"})
+
+    assert first["ok"] is True
+    assert second["blocked"] is True
+    assert side_effects == [{"message": "maintenance"}]

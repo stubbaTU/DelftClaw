@@ -81,6 +81,14 @@ def build_task_capabilities(
         )
         if not authorized:
             continue
+        constraints = {
+            "tool_name": spec.name,
+            "authorized_literals": literals,
+            "planner_reason": reason,
+        }
+        max_uses = spec.annotations.get("max_uses")
+        if isinstance(max_uses, int) and max_uses > 0:
+            constraints["max_uses"] = max_uses
         capabilities.append(Capability(
             capability_id=f"cap_{task_id}_{spec.name}",
             subject_id=subject_id,
@@ -88,11 +96,7 @@ def build_task_capabilities(
             resource_id=classification.resource_id,
             resource_label=classification.resource_label,
             task_id=task_id,
-            constraints={
-                "tool_name": spec.name,
-                "authorized_literals": literals,
-                "planner_reason": reason,
-            },
+            constraints=constraints,
         ))
     return capabilities
 

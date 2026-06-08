@@ -21,6 +21,9 @@ class RegisteredTool:
     sink: str | None = None
     effect_class: str | None = None
     classification_source: str | None = None
+    neutral_args: tuple[str, ...] = ()
+    broadcast_sink: bool = False
+    allow_content_after_untrusted: bool = False
 
 
 class ToolBroker:
@@ -38,6 +41,9 @@ class ToolBroker:
         sink: str | None = None,
         effect_class: str | None = None,
         classification_source: str | None = None,
+        neutral_args: tuple[str, ...] = (),
+        broadcast_sink: bool = False,
+        allow_content_after_untrusted: bool = False,
     ) -> None:
         self._tools[tool_name] = RegisteredTool(
             fn,
@@ -46,6 +52,9 @@ class ToolBroker:
             sink,
             effect_class,
             classification_source,
+            neutral_args,
+            broadcast_sink,
+            allow_content_after_untrusted,
         )
 
     def register_proxy(self, proxy_name: str, fn: ToolFn) -> None:
@@ -81,12 +90,23 @@ class ToolBroker:
             input_taint=input_taint,
             effect_class=registered.effect_class,
             classification_source=registered.classification_source,
+            neutral_args=registered.neutral_args,
+            broadcast_sink=registered.broadcast_sink,
+            allow_content_after_untrusted=registered.allow_content_after_untrusted,
         )
         decision = self.permission_engine.decide(request, current_round=current_round)
         if decision.decision == "deny":
             return {"ok": False, "blocked": True, "error": "permission_denied", "reason": decision.reason}
 
         call_args = decision.sanitized_args if decision.sanitized_args is not None else args
+        if decision.matched_capability_id is not None:
+            if not self.permission_engine.capability_store.consume(decision.matched_capability_id):
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "error": "permission_denied",
+                    "reason": "capability use limit exhausted",
+                }
         try:
             if decision.decision == "allow_via_proxy":
                 if not decision.proxy_name or decision.proxy_name not in self._proxies:

@@ -34,6 +34,15 @@ capability and provenance validation for every `EFFECT`.
 Unknown tools are not assumed safe. They default to `EFFECT`, so they need
 explicit task authorization and clean arguments.
 
+Read tools default to `READ_CONTENT`. Mark a source `READ_AUTHORITATIVE` only
+after auditing that its identifier fields cannot be attacker-written. Even
+then, identifiers are promoted only when the lookup inputs are trusted.
+
+All effect arguments require trusted provenance by default. Generated control
+arguments require an explicit audited `neutral_args` annotation. Public or
+broadcast effects are denied after untrusted reads unless trusted metadata
+explicitly approves the flow.
+
 ## Add A Protected Resource
 
 Register a resource handle instead of exposing a raw path:
@@ -56,7 +65,44 @@ ToolSecuritySpec(
 ```
 
 Without an annotation, classification is inferred conservatively from trusted
-tool metadata. Ambiguous tools default to `EFFECT`.
+tool metadata. Read-like tools default to untrusted content reads; ambiguous
+tools default to `EFFECT`.
+
+Example effect metadata:
+
+```python
+ToolSecuritySpec(
+    name="create_calendar_event",
+    annotations={
+        "neutral_args": ["title", "start_time", "end_time"],
+        "max_uses": 1,
+    },
+)
+```
+
+For external catalogs whose tool objects cannot carry annotations, provide an
+audited JSON overlay to the SQ1 runner:
+
+```json
+{
+  "search_contacts_by_name": {
+    "effect_class": "read_authoritative"
+  },
+  "create_calendar_event": {
+    "neutral_args": ["title", "start_time", "end_time"],
+    "max_uses": 1
+  }
+}
+```
+
+```bash
+python -m security.preventative_layer.agentdojo_runner \
+  ... \
+  --trusted-tool-metadata security/preventative_layer/trusted_tool_metadata.json
+```
+
+The overlay is trusted deployment configuration and must be reviewed. Never
+mark an episode-writable store authoritative.
 
 Register the raw callable with the broker and describe how to resolve its
 resource:

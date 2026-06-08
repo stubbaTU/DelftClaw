@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from security.preventative_layer.permissions.egress_guard import DEFAULT_SECRET_PATTERNS
-from security.preventative_layer.permissions.models import PermissionDecision, PermissionRequest
+from security.preventative_layer.permissions.models import Capability, PermissionDecision, PermissionRequest
 
 
 class DecisionLog:
@@ -27,10 +27,30 @@ class DecisionLog:
             "sink": request.sink,
             "effect_class": request.effect_class,
             "classification_source": request.classification_source,
+            "neutral_args": list(request.neutral_args),
+            "broadcast_sink": request.broadcast_sink,
             "decision": decision.decision,
             "reason": _redact(decision.reason),
             "matched_rule_id": decision.matched_rule_id,
             "proxy_name": decision.proxy_name,
+            "matched_capability_id": decision.matched_capability_id,
+        })
+
+    def record_capability_grant(self, capability: Capability) -> None:
+        self._entries.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "capability_grant",
+            "decision": "grant",
+            "reason": capability.constraints.get("planner_reason"),
+            "capability_id": capability.capability_id,
+            "subject_id": capability.subject_id,
+            "action": capability.allowed_action,
+            "resource_id": capability.resource_id,
+            "resource_label": capability.resource_label,
+            "task_id": capability.task_id,
+            "tool_name": capability.constraints.get("tool_name"),
+            "planner_reason": capability.constraints.get("planner_reason"),
+            "max_uses": capability.constraints.get("max_uses"),
         })
 
     def export_jsonl(self, path: str | Path) -> None:

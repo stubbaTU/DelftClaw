@@ -26,7 +26,7 @@ from security.preventative_layer.permissions.models import (
 from security.preventative_layer.permissions.permission_engine import PermissionEngine
 from security.preventative_layer.permissions.policy_loader import load_default_policy, load_policy
 from security.preventative_layer.permissions.resource_registry import ResourceRegistry
-from security.preventative_layer.permissions.provenance import ProvenanceStore, validate_effect_provenance
+from security.preventative_layer.permissions.provenance import Origin, ProvenanceStore, validate_effect_provenance
 from security.preventative_layer.permissions.tool_broker import ToolBroker
 from security.preventative_layer.permissions.validators import default_validator_registry
 
@@ -47,6 +47,7 @@ __all__ = [
     "ToolSecuritySpec",
     "ValidationResult",
     "ProvenanceStore",
+    "Origin",
     "classify_tool",
     "default_validator_registry",
     "load_default_policy",

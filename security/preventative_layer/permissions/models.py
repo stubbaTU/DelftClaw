@@ -46,6 +46,9 @@ class PermissionRequest:
     input_taint: str | None = None
     effect_class: str | None = None
     classification_source: str | None = None
+    neutral_args: tuple[str, ...] = ()
+    broadcast_sink: bool = False
+    allow_content_after_untrusted: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,7 @@ class PermissionDecision:
     matched_rule_id: str | None = None
     proxy_name: str | None = None
     sanitized_args: dict[str, Any] | None = None
+    matched_capability_id: str | None = None
 
 
 @dataclass(frozen=True)

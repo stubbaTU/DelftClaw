@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Any, Iterable
 
 from security.preventative_layer.permissions.effects import EffectClass
@@ -14,6 +15,7 @@ QUOTED_RE = re.compile(r"['\"]([^'\"]{1,512})['\"]")
 DATE_TIME_RE = re.compile(
     r"\b(?:\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})\b"
 )
+NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 IDENTIFIER_KEYS = {
     "address",
     "email",
@@ -27,43 +29,14 @@ IDENTIFIER_KEYS = {
     "url",
     "username",
 }
-IGNORED_EFFECT_KEYS = {
-    "action",
-    "format",
-    "mode",
-    "operation",
-    "sort",
-    "type",
-}
-STRICT_PROVENANCE_KEYS = {
-    "account",
-    "address",
-    "attachment",
-    "body",
-    "content",
-    "credential",
-    "destination",
-    "email",
-    "file",
-    "file_id",
-    "file_name",
-    "filename",
-    "from",
-    "host",
-    "id",
-    "message",
-    "participant",
-    "participants",
-    "path",
-    "payload",
-    "recipient",
-    "recipients",
-    "report",
-    "target",
-    "to",
-    "token",
-    "url",
-}
+
+
+class Origin(IntEnum):
+    """Trust origin. Higher-trust origins take precedence for equal values."""
+
+    UNTRUSTED = 1
+    AUTH_READ = 2
+    TASK = 3
 
 
 def normalize(value: Any) -> str:
@@ -71,67 +44,106 @@ def normalize(value: Any) -> str:
 
 
 def extract_task_literals(text: str) -> set[str]:
-    """Extract exact task values plus task vocabulary for deterministic planning."""
+    """Extract strong literals that may authorize effect arguments."""
 
-    literals = {normalize(text)}
-    for pattern in (EMAIL_RE, URL_RE, QUOTED_RE, DATE_TIME_RE):
+    literals: set[str] = set()
+    for pattern in (EMAIL_RE, URL_RE, QUOTED_RE, DATE_TIME_RE, NUMBER_RE):
         literals.update(normalize(value) for value in pattern.findall(text))
-    literals.update(_words(text))
     return {value for value in literals if value}
+
+
+def extract_task_vocabulary(text: str) -> set[str]:
+    """Extract low-privilege vocabulary usable only to authorize lookup keys."""
+
+    return _words(text)
 
 
 @dataclass
 class ProvenanceStore:
-    """Tracks trusted task/identifier values and values observed in content reads."""
+    """Tracks value origins without granting effect authority to loose vocabulary."""
 
     trusted_task_text: str
-    trusted_values: set[str] = field(default_factory=set)
-    untrusted_values: set[str] = field(default_factory=set)
+    provenance: dict[str, Origin] = field(default_factory=dict)
+    task_vocabulary: set[str] = field(default_factory=set)
     observations: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.trusted_values.update(extract_task_literals(self.trusted_task_text))
+        self.task_vocabulary.update(extract_task_vocabulary(self.trusted_task_text))
+        for value in extract_task_literals(self.trusted_task_text):
+            self.observe(value, Origin.TASK)
 
-    def record_read(self, effect_class: EffectClass, result: Any, *, tool_name: str = "") -> None:
+    @property
+    def trusted_values(self) -> set[str]:
+        return {value for value, origin in self.provenance.items() if origin >= Origin.AUTH_READ}
+
+    @property
+    def untrusted_values(self) -> set[str]:
+        return {value for value, origin in self.provenance.items() if origin == Origin.UNTRUSTED}
+
+    @property
+    def has_untrusted_observations(self) -> bool:
+        return any(origin == Origin.UNTRUSTED for origin in self.provenance.values())
+
+    def observe(self, value: Any, origin: Origin) -> None:
+        for candidate in canonical_values(value):
+            self.provenance[candidate] = max(origin, self.provenance.get(candidate, origin))
+
+    def record_read(
+        self,
+        effect_class: EffectClass,
+        result: Any,
+        *,
+        call_args: dict[str, Any] | None = None,
+        tool_name: str = "",
+    ) -> None:
+        inputs_trusted = all(
+            self.is_lookup_input_trusted(value)
+            for _path, value in primitive_argument_values(call_args or {})
+        )
         trusted: set[str] = set()
         untrusted: set[str] = set()
-        if effect_class is EffectClass.READ_AUTHORITATIVE:
+        if effect_class is EffectClass.READ_AUTHORITATIVE and inputs_trusted:
             trusted.update(structured_identifier_values(result))
             untrusted.update(all_string_values(result) - trusted)
         else:
             untrusted.update(all_string_values(result))
-        self.trusted_values.update(trusted)
-        self.untrusted_values.update(untrusted)
+        for value in trusted:
+            self.observe(value, Origin.AUTH_READ)
+        for value in untrusted:
+            self.observe(value, Origin.UNTRUSTED)
         self.observations.append({
             "tool_name": tool_name,
             "effect_class": effect_class.value,
+            "lookup_inputs_trusted": inputs_trusted,
             "trusted_identifiers": sorted(trusted),
             "untrusted_values": sorted(untrusted),
         })
 
     def authorize_literal(self, value: Any) -> None:
-        normalized = normalize(value)
-        if normalized:
-            self.trusted_values.add(normalized)
+        self.observe(value, Origin.TASK)
 
-    def is_trusted(self, value: str, capability: Capability | None = None) -> bool:
-        candidate = normalize(value)
-        if not candidate:
+    def is_lookup_input_trusted(self, value: Any) -> bool:
+        if self.is_trusted(value):
             return True
-        authorized = set(self.trusted_values)
-        if capability is not None:
-            authorized.update(
-                normalize(item)
-                for item in capability.constraints.get("authorized_literals", [])
-                if normalize(item)
-            )
-        if candidate in authorized:
-            return True
-        candidate_words = _words(candidate)
-        trusted_words = {item for item in authorized if " " not in item}
-        return bool(candidate_words) and candidate_words.issubset(trusted_words)
+        candidate_words = _words(str(value))
+        return bool(candidate_words) and candidate_words.issubset(self.task_vocabulary)
 
-    def untrusted_influence(self, value: str) -> str | None:
+    def is_trusted(self, value: Any, capability: Capability | None = None) -> bool:
+        candidates = canonical_values(value)
+        if not candidates:
+            return True
+        if any(self.provenance.get(candidate, Origin.UNTRUSTED) >= Origin.AUTH_READ for candidate in candidates):
+            return True
+        if capability is None:
+            return False
+        authorized = {
+            candidate
+            for item in capability.constraints.get("authorized_literals", [])
+            for candidate in canonical_values(item)
+        }
+        return bool(candidates.intersection(authorized))
+
+    def untrusted_influence(self, value: Any) -> str | None:
         candidate = normalize(value)
         for untrusted in sorted(self.untrusted_values, key=len, reverse=True):
             if len(untrusted) >= 3 and untrusted in candidate:
@@ -144,21 +156,27 @@ def validate_effect_provenance(
     provenance: ProvenanceStore,
     capabilities: Iterable[Capability],
 ) -> ValidationResult:
-    """Require every security-relevant string argument to have trusted provenance."""
+    """Require trusted provenance for every effect argument by default."""
 
     capability = matching_capability(request, capabilities)
     if capability is None:
         return ValidationResult(False, "no matching task capability for effect")
-    for path, value in string_argument_values(request.args):
-        if path and path[-1].lower() in IGNORED_EFFECT_KEYS:
+    neutral_args = set(request.neutral_args)
+    if request.broadcast_sink and provenance.has_untrusted_observations and not request.allow_content_after_untrusted:
+        if any(name not in neutral_args for name in request.args):
+            return ValidationResult(False, "broadcast/public effect denied after untrusted read")
+    for path, value in primitive_argument_values(request.args):
+        top_level = path[0] if path else "value"
+        if top_level in neutral_args:
+            if provenance.untrusted_influence(value) is not None:
+                return ValidationResult(False, f"neutral argument {'.'.join(path)} depends on untrusted content")
             continue
         if provenance.is_trusted(value, capability):
             continue
         influence = provenance.untrusted_influence(value)
         if influence is not None:
             return ValidationResult(False, f"argument {'.'.join(path)} depends on untrusted content")
-        if _strict_provenance_path(path):
-            return ValidationResult(False, f"argument {'.'.join(path)} has unknown provenance")
+        return ValidationResult(False, f"argument {'.'.join(path)} has no trusted provenance")
     return ValidationResult(True, "effect arguments have trusted provenance")
 
 
@@ -193,9 +211,7 @@ def structured_identifier_values(value: Any, key: str | None = None) -> set[str]
             values.update(structured_identifier_values(child, key))
         return values
     if key and _identifier_key(key) and isinstance(value, (str, int)):
-        normalized = normalize(value)
-        if normalized:
-            values.add(normalized)
+        values.update(canonical_values(value))
     return values
 
 
@@ -210,43 +226,43 @@ def all_string_values(value: Any) -> set[str]:
         for child in value:
             values.update(all_string_values(child))
     elif isinstance(value, str):
-        normalized = normalize(value)
-        if normalized:
-            values.add(normalized)
+        values.update(canonical_values(value))
     return values
 
 
-def string_argument_values(value: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
-    values: list[tuple[tuple[str, ...], str]] = []
+def primitive_argument_values(value: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Any]]:
+    values: list[tuple[tuple[str, ...], Any]] = []
     if hasattr(value, "model_dump"):
-        return string_argument_values(value.model_dump(), path)
+        return primitive_argument_values(value.model_dump(), path)
     if isinstance(value, dict):
         for key, child in value.items():
-            values.extend(string_argument_values(child, (*path, str(key))))
+            values.extend(primitive_argument_values(child, (*path, str(key))))
     elif isinstance(value, (list, tuple, set)):
         for index, child in enumerate(value):
-            values.extend(string_argument_values(child, (*path, str(index))))
-    elif isinstance(value, str) and value.strip():
+            values.extend(primitive_argument_values(child, (*path, str(index))))
+    elif value is not None:
         values.append((path or ("value",), value))
+    return values
+
+
+def canonical_values(value: Any) -> set[str]:
+    normalized = normalize(value)
+    if not normalized:
+        return set()
+    values = {normalized}
+    for address in EMAIL_RE.findall(str(value)):
+        local, domain = address.lower().rsplit("@", 1)
+        try:
+            domain = domain.encode("idna").decode("ascii")
+        except UnicodeError:
+            pass
+        values.add(f"{local}@{domain}")
     return values
 
 
 def _identifier_key(key: str) -> bool:
     lowered = key.lower()
     return lowered in IDENTIFIER_KEYS or lowered.endswith("_id") or lowered.endswith("_ids")
-
-
-def _strict_provenance_path(path: tuple[str, ...]) -> bool:
-    keys = {part.lower() for part in path if not part.isdigit()}
-    return any(
-        key in STRICT_PROVENANCE_KEYS
-        or key.endswith("_id")
-        or key.endswith("_ids")
-        or key.endswith("_email")
-        or key.endswith("_path")
-        or key.endswith("_url")
-        for key in keys
-    )
 
 
 def _words(value: str) -> set[str]:

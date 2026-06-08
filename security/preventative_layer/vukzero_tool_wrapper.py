@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from security.preventative_layer.permissions.effects import (
     EffectClass,
@@ -52,6 +52,8 @@ def build_agentdojo_tool_broker(
         lambda request: validate_effect_provenance(request, provenance, capabilities),
     )
     decision_log = DecisionLog()
+    for capability in capabilities:
+        decision_log.record_capability_grant(capability)
     engine = PermissionEngine(
         policy=build_provenance_policy(),
         resource_registry=registry,
@@ -84,6 +86,9 @@ def wrap_agentdojo_tool(
         sink=classification.sink,
         effect_class=classification.effect_class.value,
         classification_source=classification.classification_source,
+        neutral_args=classification.neutral_args,
+        broadcast_sink=classification.broadcast_sink,
+        allow_content_after_untrusted=classification.allow_content_after_untrusted,
     )
 
     @functools.wraps(original_tool)
@@ -101,7 +106,12 @@ def wrap_agentdojo_tool(
             and classification.effect_class is not EffectClass.EFFECT
             and not _is_denied_result(result)
         ):
-            provenance_store.record_read(classification.effect_class, result, tool_name=tool_name)
+            provenance_store.record_read(
+                classification.effect_class,
+                result,
+                call_args=dict(kwargs),
+                tool_name=tool_name,
+            )
         return result
 
     return wrapped_tool
@@ -113,12 +123,21 @@ def wrap_functions_runtime(
     user_task: Any,
     subject_id: str = "agentdojo_agent",
     task_id: str = "agentdojo_task",
+    trusted_tool_annotations: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[Any, DecisionLog]:
     subject = Subject(subject_id, "normal_agent")
     functions = getattr(runtime, "functions", None)
     if not isinstance(functions, dict):
         raise TypeError("AgentDojo runtime must expose a functions dictionary")
-    specs = [tool_security_spec(function, fallback_name=name) for name, function in functions.items()]
+    annotations = trusted_tool_annotations or {}
+    specs = [
+        tool_security_spec(
+            function,
+            fallback_name=name,
+            annotation_overrides=annotations.get(name),
+        )
+        for name, function in functions.items()
+    ]
     broker, _capabilities, decision_log, provenance = build_agentdojo_tool_broker(
         user_task=user_task,
         subject=subject,
@@ -160,6 +179,7 @@ def make_vukzero_pipeline_element(
     user_task_text: str = "",
     task_id: str = "agentdojo_task",
     decision_logs: list[DecisionLog] | None = None,
+    trusted_tool_annotations: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Any:
     try:
         from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -187,6 +207,7 @@ def make_vukzero_pipeline_element(
                 runtime,
                 user_task=user_task_text or query,
                 task_id=effective_task_id,
+                trusted_tool_annotations=trusted_tool_annotations,
             )
             setattr(decision_log, "agentdojo_user_task_id", effective_task_id)
             setattr(decision_log, "agentdojo_injection_task_id", injection_task_id)

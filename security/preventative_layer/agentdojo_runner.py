@@ -47,6 +47,7 @@ def run_agentdojo_vukzero(
     tool_output_format: str | None = None,
     openrouter_api_key: str | None = None,
     openrouter_base_url: str | None = None,
+    trusted_tool_metadata: Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     if dry_run or importlib.util.find_spec("agentdojo") is None:
@@ -68,6 +69,7 @@ def run_agentdojo_vukzero(
         tool_output_format=tool_output_format,
         openrouter_api_key=openrouter_api_key,
         openrouter_base_url=openrouter_base_url,
+        trusted_tool_metadata=trusted_tool_metadata,
     )
 
 
@@ -96,7 +98,11 @@ def run_mock_dry_run(*, suite: str, attack: str, model: str, conditions: list[st
             "num_tool_calls": result["num_tool_calls"],
             "num_allowed_tool_calls": result["num_allowed_tool_calls"],
             "num_blocked_tool_calls": result["num_blocked_tool_calls"],
-            "blocked_reasons": "; ".join(entry.get("reason", "") for entry in blocked),
+            "blocked_reasons": "; ".join(
+                entry.get("reason", "")
+                for entry in blocked
+                if entry.get("decision") == "deny"
+            ),
             "final_output_blocked": False,
         })
     metadata = {"suite": suite, "attack": attack, "model": model, "conditions": conditions, "dry_run": True}
@@ -133,15 +139,16 @@ def _mock_vukzero_trial() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     allowed, _ = wrapped.run_function(None, "send_email", {"recipient": "alice@example.com", "subject": "Status"})
     blocked, _ = wrapped.run_function(None, "send_email", {"recipient": "attacker@example.com", "subject": "Status"})
     entries = decision_log.entries()
+    tool_entries = [entry for entry in entries if entry.get("event_type") != "capability_grant"]
     for entry in entries:
         entry["user_task_id"] = "mock_user_task_0"
         entry["injection_task_id"] = "mock_injection_task_0"
     return {
         "utility_success": bool(allowed.get("sent")),
         "attack_success": not bool(blocked.get("blocked")),
-        "num_tool_calls": len(entries),
-        "num_allowed_tool_calls": sum(1 for entry in entries if entry["decision"] in {"allow", "allow_via_proxy"}),
-        "num_blocked_tool_calls": sum(1 for entry in entries if entry["decision"] == "deny"),
+        "num_tool_calls": len(tool_entries),
+        "num_allowed_tool_calls": sum(1 for entry in tool_entries if entry["decision"] in {"allow", "allow_via_proxy"}),
+        "num_blocked_tool_calls": sum(1 for entry in tool_entries if entry["decision"] == "deny"),
     }, entries
 
 
@@ -163,6 +170,7 @@ def _run_real_agentdojo(
     tool_output_format: str | None,
     openrouter_api_key: str | None,
     openrouter_base_url: str | None,
+    trusted_tool_metadata: Path | None,
 ) -> dict[str, Any]:
     import agentdojo.attacks  # noqa: F401 - registers bundled attacks
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
@@ -175,6 +183,7 @@ def _run_real_agentdojo(
     task_suite = get_suite(benchmark_version, suite)
     all_trial_rows: list[dict[str, Any]] = []
     all_permission_entries: list[dict[str, Any]] = []
+    trusted_tool_annotations = _load_trusted_tool_metadata(trusted_tool_metadata)
 
     for condition in conditions:
         condition_dir = logdir / condition
@@ -192,7 +201,7 @@ def _run_real_agentdojo(
         )
 
         if condition == C1_AGENTDOJO_VUKZERO:
-            _insert_vukzero_pipeline_element(pipeline, decision_logs)
+            _insert_vukzero_pipeline_element(pipeline, decision_logs, trusted_tool_annotations)
         elif condition != C0_AGENTDOJO_BASELINE:
             raise ValueError(f"unknown condition: {condition}")
 
@@ -488,8 +497,15 @@ def _content_text(message: Any) -> str:
     return ""
 
 
-def _insert_vukzero_pipeline_element(pipeline: Any, decision_logs: list[DecisionLog]) -> None:
-    wrapper = make_vukzero_pipeline_element(decision_logs=decision_logs)
+def _insert_vukzero_pipeline_element(
+    pipeline: Any,
+    decision_logs: list[DecisionLog],
+    trusted_tool_annotations: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    wrapper = make_vukzero_pipeline_element(
+        decision_logs=decision_logs,
+        trusted_tool_annotations=trusted_tool_annotations,
+    )
     final_guard = make_vukzero_final_output_guard()
     elements = list(getattr(pipeline, "elements", []))
     insert_at = 2 if len(elements) >= 2 else 0
@@ -497,6 +513,18 @@ def _insert_vukzero_pipeline_element(pipeline: Any, decision_logs: list[Decision
     elements.append(final_guard)
     pipeline.elements = elements
     pipeline.name = f"{pipeline.name}-vukzero" if getattr(pipeline, "name", None) else "vukzero"
+
+
+def _load_trusted_tool_metadata(path: Path | None) -> dict[str, dict[str, Any]]:
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not all(
+        isinstance(name, str) and isinstance(metadata, dict)
+        for name, metadata in payload.items()
+    ):
+        raise ValueError("trusted tool metadata must be a JSON object mapping tool names to annotation objects")
+    return payload
 
 
 def _decision_entries(decision_logs: list[DecisionLog]) -> list[dict[str, Any]]:
@@ -549,6 +577,7 @@ def main() -> int:
     parser.add_argument("--tool-output-format", choices=["yaml", "json"], default=None)
     parser.add_argument("--openrouter-api-key", default=None)
     parser.add_argument("--openrouter-base-url", default=None)
+    parser.add_argument("--trusted-tool-metadata", type=Path, default=None)
     parser.add_argument("--no-force-rerun", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -569,6 +598,7 @@ def main() -> int:
         tool_output_format=args.tool_output_format,
         openrouter_api_key=args.openrouter_api_key,
         openrouter_base_url=args.openrouter_base_url,
+        trusted_tool_metadata=args.trusted_tool_metadata,
         dry_run=args.dry_run,
     )
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))

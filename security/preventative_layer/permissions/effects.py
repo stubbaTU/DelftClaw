@@ -35,6 +35,9 @@ class ToolClassification:
     requires_capability: bool
     sink: str | None = None
     classification_source: str = "inferred"
+    neutral_args: tuple[str, ...] = ()
+    broadcast_sink: bool = False
+    allow_content_after_untrusted: bool = False
 
 
 READ_PREFIXES = {
@@ -100,44 +103,44 @@ SENSITIVE_TERMS = {
     "token",
     "wallet",
 }
-AUTHORITATIVE_TERMS = {
-    "catalog",
-    "contact",
-    "directory",
-    "index",
-    "metadata",
-    "registry",
-    "schema",
-}
-
-
 def classify_tool(spec: ToolSecuritySpec) -> ToolClassification:
     """Classify a tool from trusted metadata, failing ambiguous cases closed."""
 
     explicit = _explicit_effect(spec.annotations)
     if explicit is not None:
-        return _classification(spec.name, explicit, source="annotation")
+        if explicit is EffectClass.READ_AUTHORITATIVE and spec.annotations.get("mutable_source") is True:
+            return _classification(
+                spec.name,
+                EffectClass.READ_CONTENT,
+                source="mutable-source",
+                annotations=spec.annotations,
+            )
+        return _classification(spec.name, explicit, source="annotation", annotations=spec.annotations)
 
     tokens = set(_tokens(f"{spec.name} {spec.description}"))
     first = _tokens(spec.name)
     first_token = first[0] if first else ""
 
     if tokens & SENSITIVE_TERMS:
-        return _classification(spec.name, EffectClass.EFFECT, source="sensitive-default")
+        return _classification(spec.name, EffectClass.EFFECT, source="sensitive-default", annotations=spec.annotations)
     if first_token in EFFECT_PREFIXES:
-        return _classification(spec.name, EffectClass.EFFECT, source="effect-verb")
+        return _classification(spec.name, EffectClass.EFFECT, source="effect-verb", annotations=spec.annotations)
     if first_token in READ_PREFIXES:
-        semantic_tokens = tokens | {token[:-1] for token in tokens if token.endswith("s") and len(token) > 3}
-        effect = (
-            EffectClass.READ_AUTHORITATIVE
-            if semantic_tokens & AUTHORITATIVE_TERMS or _declares_typed_records(spec)
-            else EffectClass.READ_CONTENT
+        return _classification(
+            spec.name,
+            EffectClass.READ_CONTENT,
+            source="read-default-untrusted",
+            annotations=spec.annotations,
         )
-        return _classification(spec.name, effect, source="read-inference")
-    return _classification(spec.name, EffectClass.EFFECT, source="ambiguous-default")
+    return _classification(spec.name, EffectClass.EFFECT, source="ambiguous-default", annotations=spec.annotations)
 
 
-def tool_security_spec(tool: Any, *, fallback_name: str | None = None) -> ToolSecuritySpec:
+def tool_security_spec(
+    tool: Any,
+    *,
+    fallback_name: str | None = None,
+    annotation_overrides: Mapping[str, Any] | None = None,
+) -> ToolSecuritySpec:
     """Extract security metadata from common OpenAI/MCP/tool wrapper shapes."""
 
     name = str(getattr(tool, "name", fallback_name or "") or fallback_name or "")
@@ -155,6 +158,8 @@ def tool_security_spec(tool: Any, *, fallback_name: str | None = None) -> ToolSe
     callable_tool = getattr(tool, "run", getattr(tool, "fn", tool))
     if callable(callable_tool) and _has_typed_return_annotation(callable_tool):
         normalized_annotations.setdefault("returns_typed_records", True)
+    if annotation_overrides:
+        normalized_annotations.update(annotation_overrides)
     return ToolSecuritySpec(
         name=name,
         description=description,
@@ -163,7 +168,20 @@ def tool_security_spec(tool: Any, *, fallback_name: str | None = None) -> ToolSe
     )
 
 
-def _classification(name: str, effect: EffectClass, *, source: str) -> ToolClassification:
+def _classification(
+    name: str,
+    effect: EffectClass,
+    *,
+    source: str,
+    annotations: Mapping[str, Any] | None = None,
+) -> ToolClassification:
+    annotations = annotations or {}
+    raw_neutral_args = annotations.get("neutral_args", ())
+    if isinstance(raw_neutral_args, str):
+        raw_neutral_args = (raw_neutral_args,)
+    neutral_args = tuple(sorted(str(value) for value in raw_neutral_args))
+    broadcast_sink = bool(annotations.get("broadcast_sink") or annotations.get("public_sink"))
+    allow_content_after_untrusted = bool(annotations.get("allow_content_after_untrusted"))
     if effect is EffectClass.READ_AUTHORITATIVE:
         return ToolClassification(
             name=name,
@@ -173,6 +191,9 @@ def _classification(name: str, effect: EffectClass, *, source: str) -> ToolClass
             resource_label="effect.read_authoritative",
             requires_capability=False,
             classification_source=source,
+            neutral_args=neutral_args,
+            broadcast_sink=broadcast_sink,
+            allow_content_after_untrusted=allow_content_after_untrusted,
         )
     if effect is EffectClass.READ_CONTENT:
         return ToolClassification(
@@ -183,6 +204,9 @@ def _classification(name: str, effect: EffectClass, *, source: str) -> ToolClass
             resource_label="effect.read_content",
             requires_capability=False,
             classification_source=source,
+            neutral_args=neutral_args,
+            broadcast_sink=broadcast_sink,
+            allow_content_after_untrusted=allow_content_after_untrusted,
         )
     return ToolClassification(
         name=name,
@@ -193,6 +217,9 @@ def _classification(name: str, effect: EffectClass, *, source: str) -> ToolClass
         requires_capability=True,
         sink="external_or_mutating_effect",
         classification_source=source,
+        neutral_args=neutral_args,
+        broadcast_sink=broadcast_sink,
+        allow_content_after_untrusted=allow_content_after_untrusted,
     )
 
 
@@ -206,21 +233,8 @@ def _explicit_effect(annotations: Mapping[str, Any]) -> EffectClass | None:
         except ValueError:
             return None
     if annotations.get("readOnlyHint") is True or annotations.get("read_only") is True:
-        return (
-            EffectClass.READ_AUTHORITATIVE
-            if annotations.get("returns_typed_records") is True
-            else EffectClass.READ_CONTENT
-        )
+        return EffectClass.READ_CONTENT
     return None
-
-
-def _declares_typed_records(spec: ToolSecuritySpec) -> bool:
-    annotations = spec.annotations
-    return bool(
-        annotations.get("returns_typed_records")
-        or annotations.get("authoritative_identifiers")
-        or annotations.get("x-vukzero-authoritative-identifiers")
-    )
 
 
 def _has_typed_return_annotation(fn: Any) -> bool:

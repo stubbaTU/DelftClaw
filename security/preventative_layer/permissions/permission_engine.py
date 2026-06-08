@@ -58,8 +58,9 @@ class PermissionEngine:
         exact = [rule for rule in matches if rule.resource_id is not None and rule.resource_id == request.resource_id]
         allow_rule = (exact or matches)[0]
 
+        matched_capability = None
         if allow_rule.requires_capability:
-            ok = self.capability_store.has_valid_capability(
+            matched_capability = self.capability_store.find_valid_capability(
                 request.subject.subject_id,
                 request.action,
                 resource_id=request.resource_id,
@@ -67,7 +68,7 @@ class PermissionEngine:
                 task_id=request.task_id,
                 current_round=current_round,
             )
-            if not ok:
+            if matched_capability is None:
                 return _deny(request, "missing or expired capability", allow_rule.id)
 
         sanitized_args = request.args
@@ -85,6 +86,7 @@ class PermissionEngine:
             matched_rule_id=allow_rule.id,
             proxy_name=allow_rule.proxy,
             sanitized_args=sanitized_args,
+            matched_capability_id=matched_capability.capability_id if matched_capability else None,
         )
 
 

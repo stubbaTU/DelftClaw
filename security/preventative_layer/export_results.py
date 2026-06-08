@@ -56,6 +56,7 @@ def suite_results_to_trial_rows(
     for key, utility_success in utility.items():
         user_task_id, injection_task_id = _split_key(key)
         relevant = _entries_for(entries, user_task_id, injection_task_id)
+        tool_decisions = [entry for entry in relevant if entry.get("event_type") != "capability_grant"]
         blocked = [entry for entry in relevant if entry.get("decision") == "deny"]
         allowed = [entry for entry in relevant if entry.get("decision") in {"allow", "allow_via_proxy"}]
         rows.append({
@@ -68,7 +69,7 @@ def suite_results_to_trial_rows(
             "utility_success": bool(utility_success),
             "attack_success": bool(security.get(key, False)),
             "error": "",
-            "num_tool_calls": len(relevant),
+            "num_tool_calls": len(tool_decisions),
             "num_allowed_tool_calls": len(allowed),
             "num_blocked_tool_calls": len(blocked),
             "blocked_reasons": "; ".join(str(entry.get("reason", "")) for entry in blocked),
