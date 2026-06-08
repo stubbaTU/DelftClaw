@@ -71,7 +71,14 @@ class ToolBroker:
     ) -> Any:
         registered = self._tools.get(tool_name)
         if registered is None:
-            return {"ok": False, "error": "permission_denied", "reason": "unknown tool"}
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "permission_denied",
+                "reason": "unknown tool",
+                "reason_code": "unknown_tool",
+                "denial_class": "security_enforcement",
+            }
 
         try:
             resource_id = registered.resource_resolver(args)
@@ -96,7 +103,14 @@ class ToolBroker:
         )
         decision = self.permission_engine.decide(request, current_round=current_round)
         if decision.decision == "deny":
-            return {"ok": False, "blocked": True, "error": "permission_denied", "reason": decision.reason}
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "permission_denied",
+                "reason": decision.reason,
+                "reason_code": decision.reason_code,
+                "denial_class": decision.denial_class,
+            }
 
         call_args = decision.sanitized_args if decision.sanitized_args is not None else args
         if decision.matched_capability_id is not None:
@@ -106,6 +120,8 @@ class ToolBroker:
                     "blocked": True,
                     "error": "permission_denied",
                     "reason": "capability use limit exhausted",
+                    "reason_code": "capability_use_limit_exhausted",
+                    "denial_class": "security_enforcement",
                 }
         try:
             if decision.decision == "allow_via_proxy":
@@ -115,6 +131,8 @@ class ToolBroker:
                         "blocked": True,
                         "error": "permission_denied",
                         "reason": "missing proxy",
+                        "reason_code": "missing_proxy",
+                        "denial_class": "security_enforcement",
                     }
                 result = self._proxies[decision.proxy_name](subject=subject, **call_args)
             else:

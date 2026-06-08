@@ -34,6 +34,8 @@ class DecisionLog:
             "matched_rule_id": decision.matched_rule_id,
             "proxy_name": decision.proxy_name,
             "matched_capability_id": decision.matched_capability_id,
+            "reason_code": decision.reason_code,
+            "denial_class": decision.denial_class,
         })
 
     def record_capability_grant(self, capability: Capability) -> None:

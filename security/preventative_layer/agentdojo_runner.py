@@ -103,6 +103,16 @@ def run_mock_dry_run(*, suite: str, attack: str, model: str, conditions: list[st
                 for entry in blocked
                 if entry.get("decision") == "deny"
             ),
+            "blocked_reason_codes": "; ".join(
+                entry.get("reason_code", "")
+                for entry in blocked
+                if entry.get("decision") == "deny"
+            ),
+            "blocked_denial_classes": "; ".join(
+                entry.get("denial_class", "")
+                for entry in blocked
+                if entry.get("decision") == "deny"
+            ),
             "final_output_blocked": False,
         })
     metadata = {"suite": suite, "attack": attack, "model": model, "conditions": conditions, "dry_run": True}
@@ -297,6 +307,8 @@ def _error_trial_row(*, condition: str, suite: str, attack: str, model: str, err
         "num_allowed_tool_calls": 0,
         "num_blocked_tool_calls": 0,
         "blocked_reasons": "",
+        "blocked_reason_codes": "",
+        "blocked_denial_classes": "",
         "final_output_blocked": False,
     }
 

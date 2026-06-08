@@ -111,6 +111,7 @@ def wrap_agentdojo_tool(
                 result,
                 call_args=dict(kwargs),
                 tool_name=tool_name,
+                authoritative_lookup_args=classification.authoritative_lookup_args,
             )
         return result
 

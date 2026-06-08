@@ -161,10 +161,24 @@ def test_authoritative_read_requires_trusted_lookup_inputs() -> None:
         {"email": "attacker@example.com"},
         call_args={"name": "urgent-support"},
         tool_name="search_contacts_by_name",
+        authoritative_lookup_args=("name",),
     )
 
     assert not provenance.is_trusted("attacker@example.com")
     assert provenance.observations[-1]["lookup_inputs_trusted"] is False
+
+
+def test_authoritative_read_with_arguments_requires_reviewed_lookup_arg_metadata() -> None:
+    provenance = ProvenanceStore("Find Alice.")
+    provenance.record_read(
+        EffectClass.READ_AUTHORITATIVE,
+        {"email": "alice@example.com"},
+        call_args={"name": "Alice"},
+        tool_name="search_contacts_by_name",
+    )
+
+    assert not provenance.is_trusted("alice@example.com")
+    assert "no reviewed authoritative_lookup_args" in provenance.observations[-1]["promotion_reason"]
 
 
 def test_task_origin_wins_if_same_value_is_seen_in_untrusted_content() -> None:
@@ -280,3 +294,40 @@ def test_capability_max_uses_is_enforced_at_match_time() -> None:
     assert store.has_valid_capability("agent", "effect", "tool:send_record", "effect.effect", "task")
     assert store.consume("cap")
     assert not store.has_valid_capability("agent", "effect", "tool:send_record", "effect.effect", "task")
+
+
+def test_capability_bound_number_is_scoped_to_argument_position() -> None:
+    provenance = ProvenanceStore("Send $100 to alice@example.com.")
+    capability = replace(
+        _capability(),
+        constraints={
+            "tool_name": "send_record",
+            "authorized_literals": ["alice@example.com"],
+            "argument_literals": {"amount": ("number:100",)},
+        },
+    )
+    request = _request(
+        {"recipient": "alice@example.com", "amount": "100.00 USD"},
+    )
+
+    assert validate_effect_provenance(request, provenance, [capability]).ok
+
+    wrong_position = replace(
+        request,
+        args={"recipient": "100", "amount": "100"},
+    )
+    assert not validate_effect_provenance(wrong_position, provenance, [capability]).ok
+
+
+def test_numeric_task_literal_is_not_globally_trusted() -> None:
+    provenance = ProvenanceStore("Send $100 to alice@example.com.")
+
+    assert not provenance.is_trusted(100)
+    assert provenance.is_trusted("alice@example.com")
+
+
+def test_effect_resources_are_distinct_per_tool() -> None:
+    email = classify_tool(ToolSecuritySpec(name="send_email"))
+    money = classify_tool(ToolSecuritySpec(name="send_money"))
+
+    assert email.resource_id != money.resource_id

@@ -86,11 +86,17 @@ audited JSON overlay to the SQ1 runner:
 ```json
 {
   "search_contacts_by_name": {
-    "effect_class": "read_authoritative"
+    "effect_class": "read_authoritative",
+    "authoritative_lookup_args": ["name"]
   },
   "create_calendar_event": {
     "neutral_args": ["title", "start_time", "end_time"],
     "max_uses": 1
+  },
+  "send_money": {
+    "bind_task_literals": {
+      "amount": "amount"
+    }
   }
 }
 ```
@@ -103,6 +109,27 @@ python -m security.preventative_layer.agentdojo_runner \
 
 The overlay is trusted deployment configuration and must be reviewed. Never
 mark an episode-writable store authoritative.
+
+`authoritative_lookup_args` is mandatory for authoritative reads that accept
+arguments. Only those reviewed lookup-key arguments gate identifier promotion.
+Without this metadata, an argument-bearing authoritative read promotes no
+output.
+
+`bind_task_literals` binds task literals to capability argument positions.
+For example, an explicitly requested `$100` may authorize `amount=100.00`, but
+does not globally make the value `100` trusted for another argument or tool.
+
+Before a full AgentDojo run, audit likely utility-ceiling tasks on the VPS:
+
+```bash
+python -m security.preventative_layer.audit_agentdojo_tasks \
+  --benchmark-version v1.2.2 \
+  --suites workspace slack banking travel \
+  --out results/sq1_task_shape_audit
+```
+
+The audit flags likely multi-hop-into-effect and read-then-broadcast tasks for
+manual review. It is a heuristic upper bound, not an AgentDojo utility score.
 
 Register the raw callable with the broker and describe how to resolve its
 resource:

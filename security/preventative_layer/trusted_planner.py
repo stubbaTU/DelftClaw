@@ -6,7 +6,7 @@ from typing import Iterable
 
 from security.preventative_layer.permissions.effects import EffectClass, ToolClassification, ToolSecuritySpec
 from security.preventative_layer.permissions.models import Capability
-from security.preventative_layer.permissions.provenance import extract_task_literals
+from security.preventative_layer.permissions.provenance import extract_task_literals, extract_task_literals_by_kind
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,7 @@ def build_task_capabilities(
     explicit = set(explicit_tools or ())
     task_tokens = set(_tokens(trusted_task))
     literals = sorted(extract_task_literals(trusted_task))
+    literals_by_kind = extract_task_literals_by_kind(trusted_task)
     capabilities: list[Capability] = []
     for spec in tool_specs:
         classification = classifications[spec.name]
@@ -89,6 +90,21 @@ def build_task_capabilities(
         max_uses = spec.annotations.get("max_uses")
         if isinstance(max_uses, int) and max_uses > 0:
             constraints["max_uses"] = max_uses
+        raw_bindings = spec.annotations.get("bind_task_literals", {})
+        if isinstance(raw_bindings, dict):
+            argument_literals: dict[str, tuple[str, ...]] = {}
+            for argument, kinds in raw_bindings.items():
+                if isinstance(kinds, str):
+                    kinds = (kinds,)
+                bound = {
+                    value
+                    for kind in kinds
+                    for value in literals_by_kind.get(str(kind), set())
+                }
+                if bound:
+                    argument_literals[str(argument)] = tuple(sorted(bound))
+            if argument_literals:
+                constraints["argument_literals"] = argument_literals
         capabilities.append(Capability(
             capability_id=f"cap_{task_id}_{spec.name}",
             subject_id=subject_id,

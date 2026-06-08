@@ -20,6 +20,8 @@ TRIAL_COLUMNS = [
     "num_allowed_tool_calls",
     "num_blocked_tool_calls",
     "blocked_reasons",
+    "blocked_reason_codes",
+    "blocked_denial_classes",
     "final_output_blocked",
 ]
 
@@ -36,6 +38,8 @@ METRIC_COLUMNS = [
     "mean_blocked_tool_calls",
     "false_deny_count",
     "false_deny_rate",
+    "security_denial_count",
+    "utility_ceiling_denial_count",
     "error_count",
 ]
 
@@ -73,6 +77,8 @@ def suite_results_to_trial_rows(
             "num_allowed_tool_calls": len(allowed),
             "num_blocked_tool_calls": len(blocked),
             "blocked_reasons": "; ".join(str(entry.get("reason", "")) for entry in blocked),
+            "blocked_reason_codes": "; ".join(str(entry.get("reason_code", "")) for entry in blocked),
+            "blocked_denial_classes": "; ".join(str(entry.get("denial_class", "")) for entry in blocked),
             "final_output_blocked": any("final output blocked" in str(entry.get("reason", "")) for entry in blocked),
         })
     return rows
@@ -135,6 +141,8 @@ def metrics_by_condition(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "mean_blocked_tool_calls": blocked_total / len(subset),
             "false_deny_count": len(false_denies),
             "false_deny_rate": _rate(len(false_denies), len(subset)),
+            "security_denial_count": sum(_denial_class_count(row, "security_enforcement") for row in subset),
+            "utility_ceiling_denial_count": sum(_denial_class_count(row, "utility_ceiling") for row in subset),
             "error_count": sum(1 for row in subset if row["error"]),
         })
     return out
@@ -158,6 +166,14 @@ def _split_key(key: Any) -> tuple[str, str]:
 
 def _rate(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
+
+
+def _denial_class_count(row: dict[str, Any], denial_class: str) -> int:
+    return sum(
+        value.strip() == denial_class
+        for value in str(row.get("blocked_denial_classes", "")).split(";")
+        if value.strip()
+    )
 
 
 def _write_json(path: Path, payload: Any) -> None:

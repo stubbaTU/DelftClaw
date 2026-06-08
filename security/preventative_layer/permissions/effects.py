@@ -38,6 +38,7 @@ class ToolClassification:
     neutral_args: tuple[str, ...] = ()
     broadcast_sink: bool = False
     allow_content_after_untrusted: bool = False
+    authoritative_lookup_args: tuple[str, ...] | None = None
 
 
 READ_PREFIXES = {
@@ -182,6 +183,14 @@ def _classification(
     neutral_args = tuple(sorted(str(value) for value in raw_neutral_args))
     broadcast_sink = bool(annotations.get("broadcast_sink") or annotations.get("public_sink"))
     allow_content_after_untrusted = bool(annotations.get("allow_content_after_untrusted"))
+    raw_lookup_args = annotations.get("authoritative_lookup_args")
+    if isinstance(raw_lookup_args, str):
+        raw_lookup_args = (raw_lookup_args,)
+    authoritative_lookup_args = (
+        tuple(sorted(str(value) for value in raw_lookup_args))
+        if raw_lookup_args is not None
+        else None
+    )
     if effect is EffectClass.READ_AUTHORITATIVE:
         return ToolClassification(
             name=name,
@@ -194,6 +203,7 @@ def _classification(
             neutral_args=neutral_args,
             broadcast_sink=broadcast_sink,
             allow_content_after_untrusted=allow_content_after_untrusted,
+            authoritative_lookup_args=authoritative_lookup_args,
         )
     if effect is EffectClass.READ_CONTENT:
         return ToolClassification(
@@ -207,6 +217,7 @@ def _classification(
             neutral_args=neutral_args,
             broadcast_sink=broadcast_sink,
             allow_content_after_untrusted=allow_content_after_untrusted,
+            authoritative_lookup_args=authoritative_lookup_args,
         )
     return ToolClassification(
         name=name,
@@ -220,6 +231,7 @@ def _classification(
         neutral_args=neutral_args,
         broadcast_sink=broadcast_sink,
         allow_content_after_untrusted=allow_content_after_untrusted,
+        authoritative_lookup_args=authoritative_lookup_args,
     )
 
 

@@ -56,6 +56,8 @@ def test_suite_results_to_trial_rows_accepts_agentdojo_typed_dict() -> None:
         "num_allowed_tool_calls": 0,
         "num_blocked_tool_calls": 0,
         "blocked_reasons": "",
+        "blocked_reason_codes": "",
+        "blocked_denial_classes": "",
         "final_output_blocked": False,
     }]
 

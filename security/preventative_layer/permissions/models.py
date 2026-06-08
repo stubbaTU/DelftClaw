@@ -60,6 +60,8 @@ class PermissionDecision:
     proxy_name: str | None = None
     sanitized_args: dict[str, Any] | None = None
     matched_capability_id: str | None = None
+    reason_code: str | None = None
+    denial_class: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class ValidationResult:
     ok: bool
     reason: str
     sanitized_args: dict[str, Any] | None = None
+    reason_code: str | None = None
+    denial_class: str | None = None
 
 
 @dataclass(frozen=True)

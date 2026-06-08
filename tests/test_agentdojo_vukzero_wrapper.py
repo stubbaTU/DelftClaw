@@ -122,7 +122,10 @@ def test_runtime_policy_uses_structured_tool_evidence_for_later_calendar_write()
         "search_contacts_by_name": MockFunction(
             "search_contacts_by_name",
             lambda **kwargs: [{"name": "Sarah", "email": "sarah.connor@bluesparrowtech.com"}],
-            annotations={"effect_class": "read_authoritative"},
+            annotations={
+                "effect_class": "read_authoritative",
+                "authoritative_lookup_args": ["name"],
+            },
         ),
         "create_calendar_event": MockFunction(
             "create_calendar_event",
@@ -205,8 +208,13 @@ def test_action_substitution_is_denied_without_matching_tool_capability() -> Non
     denied, _ = wrapped.run_function(None, "delete_email", {"email": "alice@example.com"})
 
     assert denied["blocked"] is True
+    assert denied["reason_code"] == "capability_unavailable"
+    assert denied["denial_class"] == "security_enforcement"
     assert "missing or expired capability" in denied["reason"]
     assert side_effects == []
+    denial = next(entry for entry in _log.entries() if entry.get("decision") == "deny")
+    assert denial["reason_code"] == "capability_unavailable"
+    assert denial["denial_class"] == "security_enforcement"
 
 
 def test_content_read_cannot_launder_attacker_recipient_into_effect() -> None:

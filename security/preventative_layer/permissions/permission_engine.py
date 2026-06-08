@@ -38,22 +38,27 @@ class PermissionEngine:
         if request.resource_id:
             resource = self.resource_registry.resolve(request.resource_id)
             if resource is None:
-                return _deny(request, "unknown resource")
+                return _deny(request, "unknown resource", reason_code="unknown_resource")
             resource_label = resource.label
             request = replace(request, resource_label=resource_label)
         if not resource_label:
-            return _deny(request, "resource label could not be resolved")
+            return _deny(request, "resource label could not be resolved", reason_code="unresolved_resource")
 
         matches = [
             rule for rule in self.policy.rules
             if _rule_matches(rule, request, resource_label)
         ]
         if not matches:
-            return _deny(request, "no matching allow rule")
+            return _deny(request, "no matching allow rule", reason_code="policy_no_allow_rule")
 
         deny_rule = next((rule for rule in matches if rule.effect == "deny"), None)
         if deny_rule is not None:
-            return _deny(request, f"denied by policy rule {deny_rule.id}", deny_rule.id)
+            return _deny(
+                request,
+                f"denied by policy rule {deny_rule.id}",
+                deny_rule.id,
+                reason_code="policy_explicit_deny",
+            )
 
         exact = [rule for rule in matches if rule.resource_id is not None and rule.resource_id == request.resource_id]
         allow_rule = (exact or matches)[0]
@@ -69,13 +74,24 @@ class PermissionEngine:
                 current_round=current_round,
             )
             if matched_capability is None:
-                return _deny(request, "missing or expired capability", allow_rule.id)
+                return _deny(
+                    request,
+                    "missing or expired capability, or capability use limit exhausted",
+                    allow_rule.id,
+                    reason_code="capability_unavailable",
+                )
 
         sanitized_args = request.args
         for validator_name in allow_rule.validators:
             result = self.validator_registry.run(validator_name, replace(request, args=sanitized_args))
             if not result.ok:
-                return _deny(request, f"{validator_name} failed: {result.reason}", allow_rule.id)
+                return _deny(
+                    request,
+                    f"{validator_name} failed: {result.reason}",
+                    allow_rule.id,
+                    reason_code=result.reason_code or f"validator_{validator_name}",
+                    denial_class=result.denial_class or "security_enforcement",
+                )
             if result.sanitized_args is not None:
                 sanitized_args = result.sanitized_args
 
@@ -98,10 +114,19 @@ def _rule_matches(rule: PolicyRule, request: PermissionRequest, resource_label: 
     return rule.resource_label == resource_label
 
 
-def _deny(request: PermissionRequest, reason: str, rule_id: str | None = None) -> PermissionDecision:
+def _deny(
+    request: PermissionRequest,
+    reason: str,
+    rule_id: str | None = None,
+    *,
+    reason_code: str = "security_denial",
+    denial_class: str = "security_enforcement",
+) -> PermissionDecision:
     return PermissionDecision(
         request_id=request.request_id,
         decision="deny",
         reason=reason,
         matched_rule_id=rule_id,
+        reason_code=reason_code,
+        denial_class=denial_class,
     )

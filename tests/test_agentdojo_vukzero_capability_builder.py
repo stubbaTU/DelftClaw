@@ -53,3 +53,20 @@ def test_same_action_different_object_does_not_gain_capability() -> None:
 
     assert "send_money" in names
     assert "send_email" not in names
+
+
+def test_numeric_literal_can_be_bound_to_specific_capability_argument() -> None:
+    tools = [
+        ToolSecuritySpec(
+            name="send_money",
+            annotations={"bind_task_literals": {"amount": "amount"}},
+        ),
+    ]
+    caps = build_capabilities_from_user_task(
+        "Send $100 in money to account 'acct-7'.",
+        subject_id="agent",
+        task_id="task_bound_amount",
+        tool_specs=tools,
+    )
+
+    assert caps[0].constraints["argument_literals"]["amount"] == ("number:100",)
