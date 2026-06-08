@@ -1,10 +1,3 @@
-"""VukZero permission system.
-
-This package implements the Layer-1 Brain-vs-Hands reference monitor used by
-VukZero. The LLM-facing brain may propose tool calls, but privileged hands
-actions must pass through the permission engine and broker before execution.
-"""
-
 from security.preventative_layer.permissions.capability_store import CapabilityStore
 from security.preventative_layer.permissions.decision_log import DecisionLog
 from security.preventative_layer.permissions.egress_guard import EgressGuard

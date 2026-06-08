@@ -1,5 +1,3 @@
-"""AgentDojo adapter for evaluating VukZero as SQ1 condition C1."""
-
 from security.preventative_layer.vukzero_tool_wrapper import (
     build_agentdojo_tool_broker,
     make_vukzero_final_output_guard,
