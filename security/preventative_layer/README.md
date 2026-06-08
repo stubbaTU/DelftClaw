@@ -12,6 +12,22 @@ Conditions:
 The adapter does not rewrite AgentDojo tasks, attacks, or scoring. It wraps the
 AgentDojo `FunctionsRuntime` tool functions at the tool-execution boundary.
 
+The SQ1 security boundary is tool-agnostic:
+
+- tools are classified from trusted metadata into `READ_AUTHORITATIVE`,
+  `READ_CONTENT`, or `EFFECT`;
+- unknown or ambiguous tools default to `EFFECT`;
+- a deterministic trusted-task planner issues task-scoped capabilities for
+  effect tools;
+- authoritative reads contribute only identifier-like fields to trusted
+  provenance;
+- content reads remain untrusted;
+- every effect call must have both a matching capability and acceptable
+  argument provenance.
+
+AgentDojo-specific per-tool maps and email/file/calendar validators are not
+part of the enforcement path.
+
 Run the local smoke path:
 
 ```bash

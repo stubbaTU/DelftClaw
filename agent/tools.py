@@ -55,6 +55,7 @@ class Tool:
     description: str
     parameters: dict[str, Any]              # OpenAI-style JSON schema
     fn: Callable[..., Awaitable[Any]]       # always async; sync tools wrap themselves
+    annotations: dict[str, Any] | None = None  # trusted VukZero/MCP security metadata
 
     def spec(self) -> dict[str, Any]:
         """OpenAI-compatible function-tool spec."""

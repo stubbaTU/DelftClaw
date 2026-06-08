@@ -1,22 +1,10 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
-from security.preventative_layer.tool_mapping import AGENTDOJO_TOOL_MAP, get_tool_mapping
+from security.preventative_layer.permissions.effects import ToolSecuritySpec, classify_tool
 from security.preventative_layer.permissions.models import Capability
-
-
-EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
-QUOTED_RE = re.compile(r"['\"]([^'\"]{2,120})['\"]")
-
-
-@dataclass(frozen=True)
-class AgentDojoCapabilityContext:
-    subject_id: str
-    task_id: str
-    user_task_text: str
+from security.preventative_layer.trusted_planner import build_task_capabilities
 
 
 def user_task_to_text(user_task: Any) -> str:
@@ -34,64 +22,18 @@ def build_capabilities_from_user_task(
     *,
     subject_id: str = "agentdojo_agent",
     task_id: str = "agentdojo_task",
+    tool_specs: Iterable[ToolSecuritySpec],
+    explicit_tools: Iterable[str] | None = None,
 ) -> list[Capability]:
-    text = user_task_to_text(user_task)
-    ctx = AgentDojoCapabilityContext(subject_id=subject_id, task_id=task_id, user_task_text=text)
-    capabilities: list[Capability] = []
-    for tool_name, raw in AGENTDOJO_TOOL_MAP.items():
-        if not raw.get("requires_capability"):
-            continue
-        if not _task_authorizes_tool(text, tool_name):
-            continue
-        mapping = get_tool_mapping(tool_name)
-        if mapping is None:
-            continue
-        capabilities.append(Capability(
-            capability_id=f"cap_{task_id}_{tool_name}",
-            subject_id=subject_id,
-            allowed_action=mapping.action,
-            resource_id=mapping.resource_id,
-            resource_label=mapping.resource_label,
-            task_id=task_id,
-            constraints=_constraints_for_tool(ctx, tool_name),
-        ))
-    return capabilities
+    """Build capabilities from a trusted task and its actual tool catalog."""
 
-
-def _task_authorizes_tool(text: str, tool_name: str) -> bool:
-    lowered = text.lower()
-    if tool_name == "send_email":
-        return "email" in lowered and any(word in lowered for word in ("send", "reply", "forward"))
-    if tool_name == "share_file":
-        return "share" in lowered and "file" in lowered
-    if tool_name in {"create_calendar_event", "cancel_calendar_event", "reschedule_calendar_event", "add_calendar_event_participants"}:
-        return any(word in lowered for word in ("calendar", "meeting", "event", "schedule", "reschedule", "cancel", "invite"))
-    if tool_name in {"create_file", "append_to_file", "delete_file"}:
-        action = tool_name.split("_", 1)[0]
-        return "file" in lowered and action in lowered
-    if tool_name in {"send_slack_message", "send_money", "transfer_money", "book_flight", "book_hotel"}:
-        return any(token in lowered for token in tool_name.split("_"))
-    return False
-
-
-def _constraints_for_tool(ctx: AgentDojoCapabilityContext, tool_name: str) -> dict[str, Any]:
-    text = ctx.user_task_text
-    emails = sorted(set(EMAIL_RE.findall(text)))
-    quotes = QUOTED_RE.findall(text)
-    constraints: dict[str, Any] = {"tool_name": tool_name}
-    if emails:
-        constraints["allowed_recipients"] = emails
-        constraints["allowed_participants"] = emails
-    elif tool_name in {"send_email", "share_file", "create_calendar_event", "add_calendar_event_participants"}:
-        constraints["requires_authorized_recipients"] = True
-    if quotes:
-        constraints["quoted_values"] = quotes
-        if tool_name == "send_email":
-            constraints["allowed_subject_or_body_contains"] = quotes
-        if tool_name in {"share_file", "create_file", "append_to_file", "delete_file"}:
-            constraints["allowed_file_refs"] = quotes
-        if "calendar" in tool_name or "event" in tool_name:
-            constraints["allowed_calendar_text"] = quotes
-    elif tool_name in {"share_file", "create_file", "append_to_file", "delete_file"}:
-        constraints["requires_authorized_file_ref"] = True
-    return constraints
+    specs = list(tool_specs)
+    classifications = {spec.name: classify_tool(spec) for spec in specs}
+    return build_task_capabilities(
+        user_task_to_text(user_task),
+        specs,
+        classifications,
+        subject_id=subject_id,
+        task_id=task_id,
+        explicit_tools=explicit_tools,
+    )

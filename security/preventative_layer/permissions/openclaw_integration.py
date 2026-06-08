@@ -131,7 +131,10 @@ def classify_openclaw_tool(tool_name: str) -> dict[str, Any]:
         return _classification(tool_name, "append", "protected.community_log", True)
     if tool_name in SEEDBOX_COMMAND:
         return _classification(tool_name, "request", "protected.seedbox_command", True)
-    return _classification(tool_name, "execute", "legacy.safe", False)
+    # Unknown or newly added tools must never silently inherit a safe class.
+    # Until trusted deployment metadata classifies them more precisely, treat
+    # them as privileged effects requiring an explicit capability.
+    return _classification(tool_name, "request", "protected.seedbox_command", True)
 
 
 def authorize_openclaw_tool(agent: Any, tool_name: str, args: dict[str, Any]) -> PermissionDecision:

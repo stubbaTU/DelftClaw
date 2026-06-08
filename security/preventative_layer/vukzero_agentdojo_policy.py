@@ -1,66 +1,60 @@
 from __future__ import annotations
 
-from security.preventative_layer.tool_mapping import all_resource_labels
 from security.preventative_layer.permissions.models import Policy, PolicyRule
 
 
-AGENTDOJO_RESOURCE_LABELS = {
-    "external.email_sink": {"description": "Outgoing AgentDojo email sink"},
-    "external.file_sink": {"description": "Outgoing AgentDojo file-share sink"},
-    "external.slack_sink": {"description": "Outgoing AgentDojo Slack sink"},
-    "external.banking_sink": {"description": "Outgoing AgentDojo banking sink"},
-    "external.travel_sink": {"description": "Outgoing AgentDojo travel booking sink"},
-    "protected.email_state": {"description": "Mutable AgentDojo email state"},
-    "protected.calendar_state": {"description": "Mutable AgentDojo calendar state"},
-    "protected.file_state": {"description": "Mutable AgentDojo file state"},
-    "protected.slack_state": {"description": "Mutable AgentDojo Slack state"},
-    "protected.banking_state": {"description": "Mutable AgentDojo banking state"},
-    "protected.travel_state": {"description": "Mutable AgentDojo travel state"},
-    "public.task": {"description": "Public task context"},
-    "untrusted.input": {"description": "Untrusted environment/tool data"},
+PROVENANCE_RESOURCE_LABELS = {
+    "effect.read_authoritative": {
+        "description": "Read-only structured source whose identifier fields may establish trusted provenance",
+    },
+    "effect.read_content": {
+        "description": "Read-only source whose returned values remain untrusted",
+    },
+    "effect.effect": {
+        "description": "Any external or state-mutating effect requiring task authorization and trusted provenance",
+    },
 }
 
 
-def build_agentdojo_policy() -> Policy:
-    labels = dict(AGENTDOJO_RESOURCE_LABELS)
-    for label in all_resource_labels():
-        labels.setdefault(label, {"description": f"AgentDojo label {label}"})
+def build_provenance_policy() -> Policy:
+    """Build the generic SQ1 provenance policy."""
+
+    labels = dict(PROVENANCE_RESOURCE_LABELS)
     rules = [
-        PolicyRule("agentdojo_allow_public_read", "normal_agent", "read", "allow", resource_label="public.task"),
-        PolicyRule("agentdojo_allow_untrusted_read", "normal_agent", "read", "allow", resource_label="untrusted.input"),
+        PolicyRule(
+            "allow_authoritative_read",
+            "normal_agent",
+            "read",
+            "allow",
+            resource_label="effect.read_authoritative",
+        ),
+        PolicyRule(
+            "allow_content_read",
+            "normal_agent",
+            "read",
+            "allow",
+            resource_label="effect.read_content",
+        ),
+        PolicyRule(
+            "allow_task_scoped_effect",
+            "normal_agent",
+            "effect",
+            "allow",
+            resource_label="effect.effect",
+            requires_capability=True,
+            validators=("effect_argument_provenance", "egress_no_secret_canary"),
+        ),
     ]
-    external_labels = sorted(label for label in labels if label.startswith("external."))
-    protected_labels = sorted(label for label in labels if label.startswith("protected."))
-    for label in external_labels:
-        for action in ("send", "write", "request"):
-            rules.append(PolicyRule(
-                id=f"agentdojo_allow_{action}_{_safe(label)}",
-                role="normal_agent",
-                action=action,
-                resource_label=label,
-                effect="allow",
-                requires_capability=True,
-                validators=("agentdojo_capability_constraints", "agentdojo_external_sink_egress"),
-            ))
-    for label in protected_labels:
-        for action in ("write", "append", "delete", "mutate", "send", "request"):
-            rules.append(PolicyRule(
-                id=f"agentdojo_allow_{action}_{_safe(label)}",
-                role="normal_agent",
-                action=action,
-                resource_label=label,
-                effect="allow",
-                requires_capability=True,
-                validators=("agentdojo_capability_constraints",),
-            ))
     return Policy(
         version=1,
         default_effect="deny",
-        roles={"normal_agent": {"description": "AgentDojo agent under VukZero"}},
+        roles={"normal_agent": {"description": "Agent under VukZero provenance enforcement"}},
         resource_labels=labels,
         rules=tuple(rules),
     )
 
 
-def _safe(value: str) -> str:
-    return value.replace(".", "_").replace("-", "_")
+def build_agentdojo_policy() -> Policy:
+    """Backward-compatible name for the generic provenance policy."""
+
+    return build_provenance_policy()

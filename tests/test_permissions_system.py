@@ -24,6 +24,7 @@ from security.preventative_layer.permissions import (
     load_default_policy,
 )
 from security.preventative_layer.permissions.policy_loader import PolicyLoadError, parse_policy
+from security.preventative_layer.permissions.openclaw_integration import classify_openclaw_tool
 from security.preventative_layer.permissions.proxies import AppendOnlyLogProxy, IdentityProxy, ReputationProxy, SeedboxProxy
 
 
@@ -313,3 +314,10 @@ async def test_run_tool_loop_blocks_final_answer_canary_with_permissioned_regist
 
     assert final.startswith("[permission_denied: final output blocked:")
     assert "SHOULD_NOT_LEAVE" not in final
+
+
+def test_unknown_openclaw_tool_defaults_to_capability_guarded_effect() -> None:
+    classification = classify_openclaw_tool("new_unclassified_tool")
+
+    assert classification["requires_capability"] is True
+    assert classification["resource_label"] == "protected.seedbox_command"

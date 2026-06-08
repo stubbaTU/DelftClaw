@@ -19,6 +19,8 @@ class RegisteredTool:
     action: str
     resource_resolver: ResourceResolver
     sink: str | None = None
+    effect_class: str | None = None
+    classification_source: str | None = None
 
 
 class ToolBroker:
@@ -34,8 +36,17 @@ class ToolBroker:
         action: str,
         resource_resolver: ResourceResolver,
         sink: str | None = None,
+        effect_class: str | None = None,
+        classification_source: str | None = None,
     ) -> None:
-        self._tools[tool_name] = RegisteredTool(fn, action, resource_resolver, sink)
+        self._tools[tool_name] = RegisteredTool(
+            fn,
+            action,
+            resource_resolver,
+            sink,
+            effect_class,
+            classification_source,
+        )
 
     def register_proxy(self, proxy_name: str, fn: ToolFn) -> None:
         self._proxies[proxy_name] = fn
@@ -68,6 +79,8 @@ class ToolBroker:
             task_id=task_id,
             sink=registered.sink,
             input_taint=input_taint,
+            effect_class=registered.effect_class,
+            classification_source=registered.classification_source,
         )
         decision = self.permission_engine.decide(request, current_round=current_round)
         if decision.decision == "deny":

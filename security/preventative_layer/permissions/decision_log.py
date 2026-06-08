@@ -25,6 +25,8 @@ class DecisionLog:
             "resource_label": request.resource_label,
             "task_id": request.task_id,
             "sink": request.sink,
+            "effect_class": request.effect_class,
+            "classification_source": request.classification_source,
             "decision": decision.decision,
             "reason": _redact(decision.reason),
             "matched_rule_id": decision.matched_rule_id,

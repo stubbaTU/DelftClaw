@@ -5,11 +5,17 @@ import functools
 import threading
 from typing import Any, Callable
 
-from security.preventative_layer.capability_builder import build_capabilities_from_user_task
-from security.preventative_layer.runtime_policy import AgentDojoRuntimePolicy
-from security.preventative_layer.tool_mapping import AGENTDOJO_TOOL_MAP, get_tool_mapping
-from security.preventative_layer.validators import build_agentdojo_validator_registry
-from security.preventative_layer.vukzero_agentdojo_policy import build_agentdojo_policy
+from security.preventative_layer.permissions.effects import (
+    EffectClass,
+    ToolClassification,
+    ToolSecuritySpec,
+    classify_tool,
+    tool_security_spec,
+)
+from security.preventative_layer.permissions.provenance import ProvenanceStore, validate_effect_provenance
+from security.preventative_layer.permissions.validators import default_validator_registry
+from security.preventative_layer.trusted_planner import build_task_capabilities
+from security.preventative_layer.vukzero_agentdojo_policy import build_provenance_policy
 from security.preventative_layer.permissions import CapabilityStore, DecisionLog, PermissionEngine, Resource, ResourceRegistry, Subject, ToolBroker
 
 
@@ -19,26 +25,44 @@ def build_agentdojo_tool_broker(
     subject: Subject | None = None,
     task_id: str = "agentdojo_task",
     current_round: int | None = None,
-) -> tuple[ToolBroker, list[Any], DecisionLog, AgentDojoRuntimePolicy]:
+    tool_specs: list[ToolSecuritySpec] | None = None,
+    explicit_capability_tools: list[str] | None = None,
+) -> tuple[ToolBroker, list[Any], DecisionLog, ProvenanceStore]:
     subject = subject or Subject("agentdojo_agent", "normal_agent")
-    capabilities = build_capabilities_from_user_task(user_task, subject_id=subject.subject_id, task_id=task_id)
-    runtime_policy = AgentDojoRuntimePolicy(user_task_text=str(user_task))
+    specs = list(tool_specs or [])
+    classifications = {spec.name: classify_tool(spec) for spec in specs}
+    capabilities = build_task_capabilities(
+        str(user_task),
+        specs,
+        classifications,
+        subject_id=subject.subject_id,
+        task_id=task_id,
+        explicit_tools=explicit_capability_tools,
+    )
+    provenance = ProvenanceStore(trusted_task_text=str(user_task))
     capability_store = CapabilityStore()
     for capability in capabilities:
         capability_store.issue(capability)
     registry = ResourceRegistry()
-    for raw in AGENTDOJO_TOOL_MAP.values():
-        registry.register(Resource(raw["resource_id"], raw["resource_label"]))
-    validators = build_agentdojo_validator_registry(capabilities, runtime_policy=runtime_policy)
+    for classification in classifications.values():
+        registry.register(Resource(classification.resource_id, classification.resource_label))
+    validators = default_validator_registry()
+    validators.register(
+        "effect_argument_provenance",
+        lambda request: validate_effect_provenance(request, provenance, capabilities),
+    )
     decision_log = DecisionLog()
     engine = PermissionEngine(
-        policy=build_agentdojo_policy(),
+        policy=build_provenance_policy(),
         resource_registry=registry,
         capability_store=capability_store,
         validator_registry=validators,
         decision_log=decision_log,
     )
-    return ToolBroker(engine), capabilities, decision_log, runtime_policy
+    broker = ToolBroker(engine)
+    setattr(broker, "tool_classifications", classifications)
+    setattr(broker, "provenance_store", provenance)
+    return broker, capabilities, decision_log, provenance
 
 
 def wrap_agentdojo_tool(
@@ -48,22 +72,22 @@ def wrap_agentdojo_tool(
     subject: Subject,
     task_id: str,
     current_round: int | None = None,
-    runtime_policy: AgentDojoRuntimePolicy | None = None,
+    provenance_store: ProvenanceStore | None = None,
+    classification: ToolClassification | None = None,
 ) -> Callable[..., Any]:
-    mapping = get_tool_mapping(tool_name)
-    if mapping is not None:
-        broker.register_tool(
-            tool_name,
-            original_tool,
-            mapping.action,
-            lambda _args, resource_id=mapping.resource_id: resource_id,
-            sink=mapping.sink,
-        )
+    classification = classification or classify_tool(ToolSecuritySpec(name=tool_name))
+    broker.register_tool(
+        tool_name,
+        original_tool,
+        classification.action,
+        lambda _args, resource_id=classification.resource_id: resource_id,
+        sink=classification.sink,
+        effect_class=classification.effect_class.value,
+        classification_source=classification.classification_source,
+    )
 
     @functools.wraps(original_tool)
     def wrapped_tool(**kwargs: Any) -> Any:
-        if mapping is None:
-            return {"ok": False, "error": "permission_denied", "reason": f"unknown AgentDojo tool: {tool_name}"}
         result = _await_sync(broker.call_tool(
             subject=subject,
             tool_name=tool_name,
@@ -72,11 +96,12 @@ def wrap_agentdojo_tool(
             current_round=current_round,
             input_taint="agentdojo_untrusted_environment",
         ))
-        if runtime_policy is not None:
-            if isinstance(result, dict) and result.get("error") == "permission_denied":
-                runtime_policy.observe_denial(tool_name, mapping.action, result)
-            else:
-                runtime_policy.observe_tool_result(tool_name, result)
+        if (
+            provenance_store is not None
+            and classification.effect_class is not EffectClass.EFFECT
+            and not _is_denied_result(result)
+        ):
+            provenance_store.record_read(classification.effect_class, result, tool_name=tool_name)
         return result
 
     return wrapped_tool
@@ -90,18 +115,29 @@ def wrap_functions_runtime(
     task_id: str = "agentdojo_task",
 ) -> tuple[Any, DecisionLog]:
     subject = Subject(subject_id, "normal_agent")
-    broker, _capabilities, decision_log, runtime_policy = build_agentdojo_tool_broker(
-        user_task=user_task,
-        subject=subject,
-        task_id=task_id,
-    )
     functions = getattr(runtime, "functions", None)
     if not isinstance(functions, dict):
         raise TypeError("AgentDojo runtime must expose a functions dictionary")
+    specs = [tool_security_spec(function, fallback_name=name) for name, function in functions.items()]
+    broker, _capabilities, decision_log, provenance = build_agentdojo_tool_broker(
+        user_task=user_task,
+        subject=subject,
+        task_id=task_id,
+        tool_specs=specs,
+    )
+    classifications: dict[str, ToolClassification] = getattr(broker, "tool_classifications")
     wrapped_functions = {}
     for name, function in functions.items():
         original_callable = getattr(function, "run", function)
-        wrapped_run = wrap_agentdojo_tool(original_callable, name, broker, subject, task_id, runtime_policy=runtime_policy)
+        wrapped_run = wrap_agentdojo_tool(
+            original_callable,
+            name,
+            broker,
+            subject,
+            task_id,
+            provenance_store=provenance,
+            classification=classifications[name],
+        )
         if hasattr(function, "model_copy"):
             wrapped_functions[name] = function.model_copy(update={"run": wrapped_run})
         elif hasattr(function, "copy"):
@@ -111,10 +147,12 @@ def wrap_functions_runtime(
             wrapped_functions[name] = function
     if hasattr(runtime, "update_functions"):
         runtime.update_functions(wrapped_functions)
-        setattr(decision_log, "agentdojo_runtime_policy", runtime_policy)
+        setattr(decision_log, "provenance_store", provenance)
+        setattr(decision_log, "tool_classifications", classifications)
         return runtime, decision_log
     runtime.functions = wrapped_functions
-    setattr(decision_log, "agentdojo_runtime_policy", runtime_policy)
+    setattr(decision_log, "provenance_store", provenance)
+    setattr(decision_log, "tool_classifications", classifications)
     return runtime, decision_log
 
 
@@ -174,8 +212,12 @@ def make_vukzero_final_output_guard() -> Any:
         def query(self, query, runtime, env=EmptyEnv(), messages=(), extra_args=None):  # type: ignore[no-untyped-def]
             extra_args = dict(extra_args or {})
             decision_log = extra_args.get("vukzero_decision_log")
-            runtime_policy = getattr(decision_log, "agentdojo_runtime_policy", None)
-            if not runtime_policy or not runtime_policy.has_denied_dangerous_action():
+            entries = decision_log.entries() if decision_log is not None else []
+            denied_effect = any(
+                entry.get("action") == "effect" and entry.get("decision") == "deny"
+                for entry in entries
+            )
+            if not denied_effect:
                 return query, runtime, env, messages, extra_args
             if not messages or messages[-1].get("role") != "assistant":
                 return query, runtime, env, messages, extra_args
@@ -237,3 +279,7 @@ def _await_sync(awaitable: Any) -> Any:
     if error:
         raise error[0]
     return result[0]
+
+
+def _is_denied_result(result: Any) -> bool:
+    return isinstance(result, dict) and result.get("error") == "permission_denied"

@@ -44,6 +44,8 @@ class PermissionRequest:
     task_id: str | None = None
     sink: str | None = None
     input_taint: str | None = None
+    effect_class: str | None = None
+    classification_source: str | None = None
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,9 @@ for protected canaries before returning it from the tool loop.
 Main components:
 
 - `default_policy.yaml`: deny-by-default policy rules.
+- `effects.py`: generic three-class tool classification with an effect-safe
+  default.
+- `provenance.py`: trusted-task and runtime value-provenance tracking.
 - `ResourceRegistry`: maps resource handles to security labels.
 - `CapabilityStore`: stores scoped, revocable task permissions.
 - `PermissionEngine`: evaluates policy, capabilities, and validators.
@@ -23,6 +26,13 @@ Main components:
 - `EgressGuard`: blocks protected canaries and secret-shaped material.
 - `proxies.py`: narrow proxy APIs for privileged resources.
 - `DecisionLog`: local audit trail for permission decisions.
+
+SQ1 uses a separate generic provenance policy built by
+`build_provenance_policy()`. It allows reads, but requires both a task-scoped
+capability and provenance validation for every `EFFECT`.
+
+Unknown tools are not assumed safe. They default to `EFFECT`, so they need
+explicit task authorization and clean arguments.
 
 ## Add A Protected Resource
 
@@ -35,6 +45,18 @@ registry.register(Resource("identity_key", "secret.identity"))
 Unknown resources fail closed.
 
 ## Add A Tool
+
+Prefer attaching trusted security metadata to the tool:
+
+```python
+ToolSecuritySpec(
+    name="lookup_directory",
+    annotations={"effect_class": "read_authoritative"},
+)
+```
+
+Without an annotation, classification is inferred conservatively from trusted
+tool metadata. Ambiguous tools default to `EFFECT`.
 
 Register the raw callable with the broker and describe how to resolve its
 resource:
