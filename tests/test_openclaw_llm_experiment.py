@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -24,6 +25,7 @@ from experiments.openclaw_llm_controller import (
 from experiments.run_openclaw_llm_adversarial import (
     _await_mcp,
     _run_trial,
+    _select_trials,
     _start_mcp_http_server,
     _stop_mcp_http_server,
     _free_tcp_port,
@@ -38,11 +40,52 @@ from experiments.run_openclaw_llm_adversarial import (
 )
 
 
+def _selection_args(**overrides) -> argparse.Namespace:
+    values = {
+        "milestone": False,
+        "lineage_mode": None,
+        "attack_case": None,
+        "trial_index": None,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
 def _config() -> dict:
     config = resolve_config("results/config/smoke.json", smoke=True)
     config["openclaw_llm_challenge_timeout_s"] = 0.5
     config["openclaw_llm_join_timeout_s"] = 2.0
     return config
+
+
+def test_select_trials_defaults_to_configured_matrix() -> None:
+    config = _config()
+    modes, cases, trial_indices = _select_trials(_selection_args(), config)
+    assert modes == config["openclaw_llm_lineage_modes"]
+    assert cases == config["openclaw_llm_attack_cases"]
+    assert trial_indices == [0]
+
+
+def test_select_trials_supports_an_exact_subset() -> None:
+    config = _config()
+    config["openclaw_llm_trials_per_case"] = 3
+    args = _selection_args(
+        lineage_mode=["optional"],
+        attack_case=["cloned_agent_identity"],
+        trial_index=[2],
+    )
+    assert _select_trials(args, config) == (
+        ["optional"],
+        ["cloned_agent_identity"],
+        [2],
+    )
+
+
+def test_select_trials_rejects_out_of_range_index() -> None:
+    config = _config()
+    config["openclaw_llm_trials_per_case"] = 3
+    with pytest.raises(ValueError, match="between 0 and 2"):
+        _select_trials(_selection_args(trial_index=[3]), config)
 
 
 def _controller(

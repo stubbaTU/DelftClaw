@@ -846,18 +846,17 @@ async def _build_rows(
     environment: dict[str, Any],
     preflight: dict[str, Any],
     run_dir: Path,
-    milestone: bool,
+    modes: list[str],
+    cases: list[str],
+    trial_indices: list[int],
     progress: ProgressReporter | None = None,
     timings: TimingCollector | None = None,
 ) -> list[dict[str, object]]:
-    modes = ["required"] if milestone else list(config["openclaw_llm_lineage_modes"])
-    cases = list(MILESTONE_CASES) if milestone else list(config["openclaw_llm_attack_cases"])
-    trials = 1 if milestone else int(config["openclaw_llm_trials_per_case"])
     rows = []
     trial_number = 0
     for mode in modes:
         for attack_case in cases:
-            for trial_index in range(trials):
+            for trial_index in trial_indices:
                 trial_number += 1
                 rows.append(await _run_trial(
                     config=config,
@@ -872,6 +871,46 @@ async def _build_rows(
                     trial_number=trial_number,
                 ))
     return rows
+
+
+def _select_trials(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[list[str], list[str], list[int]]:
+    if args.milestone:
+        if args.lineage_mode or args.attack_case or args.trial_index:
+            raise ValueError(
+                "--milestone cannot be combined with trial selection flags"
+            )
+        return ["required"], list(MILESTONE_CASES), [0]
+
+    configured_modes = list(config["openclaw_llm_lineage_modes"])
+    configured_cases = list(config["openclaw_llm_attack_cases"])
+    trials_per_case = int(config["openclaw_llm_trials_per_case"])
+    modes = list(dict.fromkeys(args.lineage_mode or configured_modes))
+    cases = list(dict.fromkeys(args.attack_case or configured_cases))
+    trial_indices = list(dict.fromkeys(
+        args.trial_index
+        if args.trial_index is not None
+        else range(trials_per_case)
+    ))
+
+    unknown_modes = sorted(set(modes) - set(configured_modes))
+    if unknown_modes:
+        raise ValueError(f"lineage modes are not enabled in config: {unknown_modes}")
+    unknown_cases = sorted(set(cases) - set(configured_cases))
+    if unknown_cases:
+        raise ValueError(f"attack cases are not enabled in config: {unknown_cases}")
+    invalid_indices = sorted(
+        index for index in trial_indices
+        if index < 0 or index >= trials_per_case
+    )
+    if invalid_indices:
+        raise ValueError(
+            "trial indices must be between 0 and "
+            f"{trials_per_case - 1}: {invalid_indices}"
+        )
+    return modes, cases, trial_indices
 
 
 def run(args: argparse.Namespace) -> Path:
@@ -921,20 +960,18 @@ def run(args: argparse.Namespace) -> Path:
         _log_timing_summary(timings, total_elapsed_s=total_elapsed_s, trial_count=0)
         return run_dir
 
-    modes = ["required"] if args.milestone else config["openclaw_llm_lineage_modes"]
-    cases = MILESTONE_CASES if args.milestone else config["openclaw_llm_attack_cases"]
-    trials_per_case = 1 if args.milestone else config["openclaw_llm_trials_per_case"]
-    total_trials = len(modes) * len(cases) * int(trials_per_case)
+    modes, cases, trial_indices = _select_trials(args, config)
+    total_trials = len(modes) * len(cases) * len(trial_indices)
     progress = ProgressReporter(
         total_trials=total_trials,
         progress_interval_s=float(args.progress_interval),
     )
     LOGGER.info(
-        "stage=trials event=start total=%d modes=%d attacks=%d trials_per_case=%d",
+        "stage=trials event=start total=%d modes=%d attacks=%d trial_indices=%s",
         total_trials,
         len(modes),
         len(cases),
-        int(trials_per_case),
+        ",".join(str(index) for index in trial_indices),
     )
     with timings.measure("run.execute_trials"):
         rows = asyncio.run(_build_rows(
@@ -942,7 +979,9 @@ def run(args: argparse.Namespace) -> Path:
             environment=environment,
             preflight=preflight,
             run_dir=run_dir,
-            milestone=bool(args.milestone),
+            modes=modes,
+            cases=cases,
+            trial_indices=trial_indices,
             progress=progress,
             timings=timings,
         ))
@@ -1056,6 +1095,23 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-model-qualification",
         action="store_true",
         help="Skip the live OpenRouter catalog check.",
+    )
+    parser.add_argument(
+        "--lineage-mode",
+        action="append",
+        choices=("disabled", "optional", "required"),
+        help="Run only this lineage mode; repeat to select multiple modes.",
+    )
+    parser.add_argument(
+        "--attack-case",
+        action="append",
+        help="Run only this configured attack case; repeat to select multiple cases.",
+    )
+    parser.add_argument(
+        "--trial-index",
+        action="append",
+        type=int,
+        help="Run only this zero-based trial index; repeat to select multiple indices.",
     )
     parser.add_argument(
         "--log-level",
