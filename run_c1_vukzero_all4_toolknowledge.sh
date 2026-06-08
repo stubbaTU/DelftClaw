@@ -17,7 +17,9 @@ unset SECAGENT_UPDATE
 unset SECAGENT_IGNORE_UPDATE_ERROR
 unset SECAGENT_SUITE
 
-curl -fsS "$OPENAI_BASE_URL/models" >/dev/null || {
+curl -fsS "$OPENAI_BASE_URL/models" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  >/dev/null || {
   echo "LiteLLM preflight failed: $OPENAI_BASE_URL/models is not reachable" >&2
   exit 1
 }
