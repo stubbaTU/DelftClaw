@@ -790,6 +790,7 @@ async def _run_trial(
         "result": result_name,
         "error_message": error_message,
     }
+    write_json(artifact_dir / "trial_row.json", row)
     trial_elapsed_s = perf_counter() - trial_started_at
     timings.trials.append({
         "trial_id": trial_id,
