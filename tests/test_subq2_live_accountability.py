@@ -6,7 +6,7 @@ from pathlib import Path
 
 from security.accountability_layer.generate_live_scenarios import FAMILIES, INTENSITIES, generate_scenarios
 from security.accountability_layer.event_gateway import normalize_reputation_tool_call
-from security.accountability_layer.live_orchestrator import run_live_measurement
+from security.accountability_layer.live_orchestrator import SQ2TrialRun, _summary, run_live_measurement
 from security.accountability_layer.live_agent_tools import event_tool_for_type, tool_args_for_event
 from security.accountability_layer.live_scenario_schema import (
     CONDITION_C0,
@@ -160,3 +160,30 @@ def test_event_gateway_normalizes_and_rejects_wrong_tool() -> None:
     assert "ground_truth" not in json.dumps(ok.canonical_event)
     assert bad.ok is False
     assert "tool mismatch" in bad.reason
+
+
+def test_live_summary_excludes_errored_trials_from_security_metrics() -> None:
+    common = dict(
+        scenario_id="scenario", family="family", intensity="medium", seed=1,
+        condition=CONDITION_C1, attacker_strategy="sybil_split", mode="live-llm",
+        model="model", num_events=10, first_malicious_event_index=1,
+        first_malicious_round=1, first_flag_event_index=None, first_flag_round=None,
+        expelled=False, expulsion_event_index=None, expulsion_round=None,
+        reputation_lag_events=9, reputation_lag_rounds=9, censored=True,
+        fallout_broadcasts=4, fraudulent_microtasks_accepted=1,
+        wash_trades_accepted=1, collusive_endorsements_accepted=1,
+        fraudulent_reputation_gain=1.0, false_positive_count=0,
+        false_positive_rate=0.0, final_attacker_reputation=0.0,
+        final_attacker_suspicion=0, detection_reasons="", log_chain_valid=True,
+        tamper_injected=False,
+    )
+    successful = SQ2TrialRun(**common, error=None)
+    failed = SQ2TrialRun(**{**common, "fallout_broadcasts": 1}, error="TimeoutError: timed out")
+
+    summary = _summary([successful, failed])
+
+    assert summary["trial_count"] == 2
+    assert summary["successful_trial_count"] == 1
+    assert summary["error_trial_count"] == 1
+    assert summary["by_condition"][0]["runs"] == 1
+    assert summary["fallout_by_condition"][0]["mean_fallout_broadcasts"] == 4.0

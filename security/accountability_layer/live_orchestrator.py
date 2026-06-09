@@ -283,6 +283,7 @@ async def run_live_measurement(
     max_iterations: int,
     estimator_interval: int,
     expulsion_threshold: int,
+    request_timeout_s: float = 120.0,
     limit: int | None = None,
     start_openclaw_runtime: bool = False,
     inject_tamper: bool = False,
@@ -314,6 +315,7 @@ async def run_live_measurement(
                 model=model,
                 api_key=api_key,
                 temperature=temperature,
+                request_timeout_s=request_timeout_s,
                 max_iterations=max_iterations,
                 estimator_interval=estimator_interval,
                 expulsion_threshold=expulsion_threshold,
@@ -343,6 +345,7 @@ async def run_live_measurement(
         "model": model if mode == "live-llm" else "scripted-deterministic",
         "base_url": base_url if mode == "live-llm" else "",
         "temperature": temperature,
+        "request_timeout_s": request_timeout_s,
         "max_iterations": max_iterations,
         "inject_tamper": inject_tamper,
         "attacker_strategies": sorted({scenario.attacker_strategy for scenario in scenarios}),
@@ -366,6 +369,7 @@ async def run_scenario_condition(
     estimator_interval: int,
     expulsion_threshold: int,
     start_openclaw_runtime: bool,
+    request_timeout_s: float = 120.0,
     inject_tamper: bool = False,
 ) -> dict[str, Any]:
     trial_dir = root / "trials" / _safe(condition) / _safe(scenario.scenario_id)
@@ -416,7 +420,13 @@ async def run_scenario_condition(
             llm = (
                 ScriptedSQ2LLM(event)
                 if mode == "deterministic"
-                else _build_live_tool_llm(base_url=base_url, model=model, api_key=api_key, temperature=temperature)
+                else _build_live_tool_llm(
+                    base_url=base_url,
+                    model=model,
+                    api_key=api_key,
+                    temperature=temperature,
+                    timeout_s=request_timeout_s,
+                )
             )
 
             submit_called = False
@@ -878,13 +888,20 @@ def _stable_identity_hash(public_key: bytes, network: str) -> str:
     return hashlib.sha256(public_key + network.encode("utf-8")).hexdigest()
 
 
-def _build_live_tool_llm(*, base_url: str, model: str, api_key: str, temperature: float) -> Any:
+def _build_live_tool_llm(
+    *,
+    base_url: str,
+    model: str,
+    api_key: str,
+    temperature: float,
+    timeout_s: float,
+) -> Any:
     return _HTTPToolLLM(
         base_url=base_url,
         model_id=model,
         api_key=api_key,
         temperature=temperature,
-        timeout_s=120.0,
+        timeout_s=timeout_s,
     )
 
 
@@ -1041,6 +1058,7 @@ def _export(
     metadata: dict[str, Any],
 ) -> None:
     trial_rows = [asdict(trial) for trial in trials]
+    successful_trials = _successful_trials(trials)
     event_rows = [asdict(record) for record in event_records]
     write_json(export_dir / "sq2_run_metadata.json", metadata)
     write_json(export_dir / "sq2_summary.json", _summary(trials))
@@ -1053,13 +1071,13 @@ def _export(
         for row in event_rows:
             handle.write(json.dumps(row, default=str, sort_keys=True) + "\n")
     _write_csv_ordered(export_dir / "sq2_reputation_timeseries.csv", timeseries_rows, TIMESERIES_COLUMNS)
-    write_csv(export_dir / "sq2_expulsions.csv", _expulsion_rows(trials))
-    _write_csv_ordered(export_dir / "sq2_lag_by_condition.csv", _lag_rows(trials, "condition"), [c for c in LAG_COLUMNS if c != "family"])
-    _write_csv_ordered(export_dir / "sq2_lag_by_family.csv", _lag_rows(trials, "family"), [c for c in LAG_COLUMNS if c != "condition"])
-    _write_csv_ordered(export_dir / "sq2_fallout_by_condition.csv", _fallout_rows(trials, "condition"), [c for c in FALLOUT_COLUMNS if c != "family"])
-    _write_csv_ordered(export_dir / "sq2_fallout_by_family.csv", _fallout_rows(trials, "family"), [c for c in FALLOUT_COLUMNS if c != "condition"])
-    write_csv(export_dir / "sq2_detection_reasons.csv", _detection_reason_rows(trials))
-    write_csv(export_dir / "sq2_false_positives.csv", _false_positive_rows(trials))
+    write_csv(export_dir / "sq2_expulsions.csv", _expulsion_rows(successful_trials))
+    _write_csv_ordered(export_dir / "sq2_lag_by_condition.csv", _lag_rows(successful_trials, "condition"), [c for c in LAG_COLUMNS if c != "family"])
+    _write_csv_ordered(export_dir / "sq2_lag_by_family.csv", _lag_rows(successful_trials, "family"), [c for c in LAG_COLUMNS if c != "condition"])
+    _write_csv_ordered(export_dir / "sq2_fallout_by_condition.csv", _fallout_rows(successful_trials, "condition"), [c for c in FALLOUT_COLUMNS if c != "family"])
+    _write_csv_ordered(export_dir / "sq2_fallout_by_family.csv", _fallout_rows(successful_trials, "family"), [c for c in FALLOUT_COLUMNS if c != "condition"])
+    write_csv(export_dir / "sq2_detection_reasons.csv", _detection_reason_rows(successful_trials))
+    write_csv(export_dir / "sq2_false_positives.csv", _false_positive_rows(successful_trials))
     write_csv(export_dir / "sq2_log_integrity.csv", log_integrity_rows)
     run_log = export_dir / "run.log"
     if not run_log.exists():
@@ -1081,11 +1099,18 @@ def _write_csv_ordered(path: Path, rows: list[dict[str, Any]], columns: list[str
 
 
 def _summary(trials: list[SQ2TrialRun]) -> dict[str, Any]:
+    successful_trials = _successful_trials(trials)
     return {
         "trial_count": len(trials),
-        "by_condition": _lag_rows(trials, "condition"),
-        "fallout_by_condition": _fallout_rows(trials, "condition"),
+        "successful_trial_count": len(successful_trials),
+        "error_trial_count": len(trials) - len(successful_trials),
+        "by_condition": _lag_rows(successful_trials, "condition"),
+        "fallout_by_condition": _fallout_rows(successful_trials, "condition"),
     }
+
+
+def _successful_trials(trials: list[SQ2TrialRun]) -> list[SQ2TrialRun]:
+    return [trial for trial in trials if not trial.error]
 
 
 def _expulsion_rows(trials: list[SQ2TrialRun]) -> list[dict[str, Any]]:
@@ -1198,6 +1223,7 @@ def main() -> int:
     parser.add_argument("--model", default=os.getenv("OPENCLAW_MODEL") or os.getenv("QWEN_MODEL", "qwen2.5-coder:7b"))
     parser.add_argument("--api-key", default=os.getenv(os.getenv("OPENCLAW_API_KEY_ENV", "OPENAI_API_KEY"), ""))
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--request-timeout-s", type=float, default=120.0)
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--estimator-interval", type=int, default=1)
     parser.add_argument("--expulsion-threshold", type=int, default=EXPULSION_SUSPICION_THRESHOLD)
@@ -1223,6 +1249,7 @@ def main() -> int:
         model=args.model,
         api_key=args.api_key,
         temperature=args.temperature,
+        request_timeout_s=args.request_timeout_s,
         max_iterations=args.max_iterations,
         estimator_interval=args.estimator_interval,
         expulsion_threshold=args.expulsion_threshold,

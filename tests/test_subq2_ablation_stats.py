@@ -4,7 +4,12 @@ import asyncio
 import json
 from pathlib import Path
 
-from security.accountability_layer.analysis_utils import aggregate_rescores, read_log_entries, rescore_entries
+from security.accountability_layer.analysis_utils import (
+    aggregate_rescores,
+    discover_c1_logs,
+    read_log_entries,
+    rescore_entries,
+)
 from security.accountability_layer.generate_live_scenarios import generate_scenarios
 from security.accountability_layer.live_orchestrator import run_live_measurement
 from security.accountability_layer.live_scenario_schema import (
@@ -240,3 +245,23 @@ def test_threshold_sweep_exports_frontiers_and_operating_point(tmp_path: Path) -
     assert (analysis / "sq2_latency_fp_frontier.csv").exists()
     assert (analysis / "sq2_operating_points.csv").exists()
     assert "mean_fallout_broadcasts" in (analysis / "sq2_threshold_sweep.csv").read_text(encoding="utf-8")
+
+
+def test_discover_c1_logs_excludes_failed_trial_logs(tmp_path: Path) -> None:
+    scenarios = generate_scenarios(seeds_per_cell=1)[:2]
+    write_scenarios(tmp_path / "sq2_scenarios.jsonl", scenarios)
+    condition_dir = tmp_path / "trials" / CONDITION_C1
+    for scenario in scenarios:
+        trial_dir = condition_dir / scenario.scenario_id
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "accountability.log").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "sq2_trials.csv").write_text(
+        "scenario_id,condition,error\n"
+        f"{scenarios[0].scenario_id},{CONDITION_C1},\n"
+        f"{scenarios[1].scenario_id},{CONDITION_C1},TimeoutError: timed out\n",
+        encoding="utf-8",
+    )
+
+    found = discover_c1_logs(tmp_path)
+
+    assert [scenario.scenario_id for scenario, _ in found] == [scenarios[0].scenario_id]

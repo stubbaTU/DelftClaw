@@ -112,13 +112,29 @@ def discover_c1_logs(run_dir: str | Path) -> list[tuple[SQ2LiveScenario, Path]]:
     root = Path(run_dir)
     scenario_path = root / "sq2_scenarios.jsonl"
     scenarios = {scenario.scenario_id: scenario for scenario in load_scenarios(scenario_path)}
+    successful_scenarios = _successful_condition_scenarios(root, CONDITION_C1)
     condition_dir = root / "trials" / CONDITION_C1
     found: list[tuple[SQ2LiveScenario, Path]] = []
     for scenario_id, scenario in scenarios.items():
+        if successful_scenarios is not None and scenario_id not in successful_scenarios:
+            continue
         log_path = condition_dir / scenario_id / "accountability.log"
         if log_path.exists():
             found.append((scenario, log_path))
     return found
+
+
+def _successful_condition_scenarios(root: Path, condition: str) -> set[str] | None:
+    trials_path = root / "sq2_trials.csv"
+    if not trials_path.exists():
+        return None
+    with trials_path.open(encoding="utf-8") as handle:
+        rows = csv.DictReader(handle)
+        return {
+            row["scenario_id"]
+            for row in rows
+            if row.get("condition") == condition and not row.get("error")
+        }
 
 
 def write_rows(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
