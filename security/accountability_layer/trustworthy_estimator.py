@@ -4,7 +4,6 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any
 
-from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.accountability_layer.live_scenario_schema import HONEST_AGENTS, PRIMARY_ATTACKER
 
 
@@ -23,10 +22,12 @@ class EstimatorSnapshot:
 class TrustworthyEstimator:
     """C1 estimator that reconstructs behavior from a signed append-only log."""
 
-    log: SignedAppendOnlyLog
+    log: Any
     reporter_id: str
     primary_attacker: str = PRIMARY_ATTACKER
     expulsion_threshold: int = EXPULSION_SUSPICION_THRESHOLD
+    pattern_detection: bool = True
+    honest_agents: set[str] = field(default_factory=lambda: set(HONEST_AGENTS))
 
     reputation_score: dict[str, float] = field(default_factory=dict)
     suspicion_score: dict[str, int] = field(default_factory=dict)
@@ -151,8 +152,9 @@ class TrustworthyEstimator:
             self.wash_trades_accepted += 1
         if from_agent == to_agent:
             self._flag(from_agent, 3, "self_donation", event)
-        self._detect_two_node_wash_trade(event)
-        self._detect_three_node_wash_trade(event)
+        if self.pattern_detection:
+            self._detect_two_node_wash_trade(event)
+            self._detect_three_node_wash_trade(event)
 
     def _handle_endorsement(self, actor: str, event: dict[str, Any], payload: dict[str, Any]) -> None:
         target = str(payload.get("target") or "")
@@ -172,7 +174,7 @@ class TrustworthyEstimator:
         ]
         endorsers = {item["endorser"] for item in recent}
         linked = self._cluster_has_links(endorsers | {target}, int(event["round"]))
-        if len(endorsers) >= 2 and linked:
+        if self.pattern_detection and len(endorsers) >= 2 and linked:
             self._flag(target, 2, "collusive_endorsement_cluster", event)
             for endorser in endorsers:
                 self._flag(endorser, 1, "collusive_endorsement_cluster", event)
@@ -238,7 +240,7 @@ class TrustworthyEstimator:
             self.expelled_agents.add(agent_id)
             self.expulsion_event_index[agent_id] = int(event["index"])
             self.expulsion_round[agent_id] = int(event["round"])
-            if agent_id in HONEST_AGENTS:
+            if agent_id in self.honest_agents:
                 self.false_positive_count += 1
             reasons = self.detection_reasons.get(agent_id, [])
             appended.append(self.log.append_event(
@@ -274,4 +276,3 @@ def _event_from_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(event, dict):
         return None
     return event
-

@@ -29,7 +29,10 @@ from security.accountability_layer.live_agent_tools import (
     tool_args_for_event,
 )
 from security.accountability_layer.live_scenario_schema import (
+    ACCOUNTABILITY_CONDITIONS,
     ALL_AGENTS,
+    CONDITION_B1,
+    CONDITION_B2,
     CONDITION_C0,
     CONDITION_C1,
     DEFAULT_LIVE_SCENARIOS,
@@ -42,6 +45,7 @@ from security.accountability_layer.live_scenario_schema import (
     sanitized_event_for_agent,
     write_scenarios,
 )
+from security.accountability_layer.mutable_log import MutableJSONLog
 from security.accountability_layer.naive_reputation import NaiveReputationState
 from security.accountability_layer.trustworthy_estimator import (
     EXPULSION_SUSPICION_THRESHOLD,
@@ -63,6 +67,7 @@ TRIAL_COLUMNS = [
     "intensity",
     "seed",
     "condition",
+    "attacker_strategy",
     "mode",
     "model",
     "num_events",
@@ -87,6 +92,7 @@ TRIAL_COLUMNS = [
     "final_attacker_suspicion",
     "detection_reasons",
     "log_chain_valid",
+    "tamper_injected",
     "error",
 ]
 
@@ -150,6 +156,7 @@ class SQ2TrialRun:
     intensity: str
     seed: int
     condition: str
+    attacker_strategy: str
     mode: str
     model: str
     num_events: int
@@ -174,6 +181,7 @@ class SQ2TrialRun:
     final_attacker_suspicion: int
     detection_reasons: str
     log_chain_valid: bool | None
+    tamper_injected: bool = False
     error: str | None = None
 
 
@@ -187,6 +195,7 @@ class SQ2RunContext:
     model: str
     naive: NaiveReputationState | None = None
     signed_log: SignedAppendOnlyLog | None = None
+    mutable_log: MutableJSONLog | None = None
     estimator: TrustworthyEstimator | None = None
     reporter_id: str = ""
     event_records: list[SQ2EventRecord] = field(default_factory=list)
@@ -203,10 +212,16 @@ class SQ2RunContext:
     collusive_endorsements_accepted: int = 0
     fallout_broadcasts: int = 0
     fraudulent_reputation_gain: float = 0.0
+    inject_tamper: bool = False
+    tamper_injected: bool = False
 
     @property
     def c1(self) -> bool:
-        return self.condition == CONDITION_C1
+        return self.estimator is not None
+
+    @property
+    def accountability_log(self) -> Any:
+        return self.signed_log or self.mutable_log
 
     def is_expelled(self, agent_id: str) -> bool:
         if self.c1 and self.estimator is not None:
@@ -270,6 +285,8 @@ async def run_live_measurement(
     expulsion_threshold: int,
     limit: int | None = None,
     start_openclaw_runtime: bool = False,
+    inject_tamper: bool = False,
+    threshold_selection_rule: str = "lowest threshold with ambiguous-honest FP <= 5%",
 ) -> dict[str, Any]:
     if not scenarios_path.exists():
         scenarios = generate_scenarios()
@@ -301,6 +318,7 @@ async def run_live_measurement(
                 estimator_interval=estimator_interval,
                 expulsion_threshold=expulsion_threshold,
                 start_openclaw_runtime=start_openclaw_runtime,
+                inject_tamper=inject_tamper,
             )
             all_trials.append(trial["trial"])
             all_event_records.extend(trial["events"])
@@ -326,6 +344,9 @@ async def run_live_measurement(
         "base_url": base_url if mode == "live-llm" else "",
         "temperature": temperature,
         "max_iterations": max_iterations,
+        "inject_tamper": inject_tamper,
+        "attacker_strategies": sorted({scenario.attacker_strategy for scenario in scenarios}),
+        "threshold_selection_rule": threshold_selection_rule,
     }
     _export(export_dir, scenarios_path, scenarios, all_trials, all_event_records, all_timeseries, log_integrity_rows, metadata)
     return {"metadata": metadata, "summary": _summary(all_trials)}
@@ -345,10 +366,13 @@ async def run_scenario_condition(
     estimator_interval: int,
     expulsion_threshold: int,
     start_openclaw_runtime: bool,
+    inject_tamper: bool = False,
 ) -> dict[str, Any]:
     trial_dir = root / "trials" / _safe(condition) / _safe(scenario.scenario_id)
     trial_dir.mkdir(parents=True, exist_ok=True)
-    ctx = _build_run_context(scenario, condition, trial_dir, expulsion_threshold, mode=mode, model=model)
+    ctx = _build_run_context(
+        scenario, condition, trial_dir, expulsion_threshold, mode=mode, model=model, inject_tamper=inject_tamper
+    )
     agents: dict[str, Any] = {}
     started: list[Any] = []
     error: str | None = None
@@ -443,7 +467,7 @@ async def run_scenario_condition(
                 ))
                 _record_timeseries(ctx, event)
 
-            if condition == CONDITION_C1 and event.index % estimator_interval == 0 and ctx.estimator is not None:
+            if condition in ACCOUNTABILITY_CONDITIONS and event.index % estimator_interval == 0 and ctx.estimator is not None:
                 ctx.estimator.scan()
                 _sync_c1_flags(ctx)
 
@@ -457,7 +481,7 @@ async def run_scenario_condition(
                 stop_error = f"{type(exc).__name__}: {exc}"
                 error = f"{error}; stop_error={stop_error}" if error else f"stop_error={stop_error}"
 
-    if condition == CONDITION_C1 and ctx.estimator is not None:
+    if condition in ACCOUNTABILITY_CONDITIONS and ctx.estimator is not None:
         ctx.estimator.scan()
         _sync_c1_flags(ctx)
 
@@ -480,6 +504,8 @@ async def run_scenario_condition(
     if ctx.signed_log is not None:
         log_valid, log_errors = ctx.signed_log.verify_integrity()
         num_log_entries = len(ctx.signed_log.read_entries())
+    elif ctx.mutable_log is not None:
+        num_log_entries = len(ctx.mutable_log.read_entries())
     return {
         "trial": trial,
         "events": ctx.event_records,
@@ -489,9 +515,11 @@ async def run_scenario_condition(
             "condition": condition,
             "log_chain_valid": log_valid,
             "num_log_entries": num_log_entries,
+            "tampering_attempted": ctx.tamper_injected,
             "tampering_detected": bool(log_errors),
+            "tamper_suppressed_history": bool(ctx.tamper_injected and ctx.mutable_log is not None),
             "errors": ";".join(log_errors),
-            "log_path": str(ctx.signed_log.log_path) if ctx.signed_log is not None else "",
+            "log_path": str(ctx.accountability_log.log_path) if ctx.accountability_log is not None else "",
         },
     }
 
@@ -552,14 +580,14 @@ async def _submit_event(
         assert ctx.naive is not None
         decision = ctx.naive.process_event(event)
         reason = decision.reason
-    elif ctx.condition == CONDITION_C1:
-        assert ctx.signed_log is not None
+    elif ctx.condition in ACCOUNTABILITY_CONDITIONS:
+        assert ctx.accountability_log is not None
         assert ctx.estimator is not None
         if ctx.estimator.is_expelled(event.actor_id):
             decision = _SimpleDecision(False, True, False, "actor already expelled")
             reason = decision.reason
         else:
-            ctx.signed_log.append_event(
+            ctx.accountability_log.append_event(
                 reporter_id=ctx.reporter_id,
                 subject_id=event.actor_id,
                 action=event.event_type,
@@ -573,6 +601,8 @@ async def _submit_event(
                 },
                 evidence={"condition": ctx.condition},
             )
+            if ctx.inject_tamper and event.malicious:
+                _erase_latest_accountability_event(ctx)
             ctx.estimator.scan()
             _sync_c1_flags(ctx)
             decision = _SimpleDecision(True, False, ctx.is_expelled(event.actor_id), "accepted into signed accountability log")
@@ -638,6 +668,7 @@ def _build_run_context(
     *,
     mode: str,
     model: str,
+    inject_tamper: bool = False,
 ) -> SQ2RunContext:
     if condition == CONDITION_C0:
         return SQ2RunContext(
@@ -647,9 +678,12 @@ def _build_run_context(
             threshold=threshold,
             mode=mode,
             model=model if mode == "live-llm" else "scripted-deterministic",
-            naive=NaiveReputationState(primary_attacker=scenario.primary_attacker),
+            naive=NaiveReputationState(
+                primary_attacker=scenario.primary_attacker,
+                honest_agents=set(scenario.honest_agents),
+            ),
         )
-    if condition == CONDITION_C1:
+    if condition in {CONDITION_B2, CONDITION_C1}:
         identity = _SQ2SigningIdentity(network="TESTNET", key_path=trial_dir / "accountability_identity.json")
         signed_log = SignedAppendOnlyLog(identity, log_path=str(trial_dir / "accountability.log"))
         estimator = TrustworthyEstimator(
@@ -657,6 +691,8 @@ def _build_run_context(
             reporter_id=identity.identity_hash,
             primary_attacker=scenario.primary_attacker,
             expulsion_threshold=threshold,
+            pattern_detection=condition == CONDITION_C1,
+            honest_agents=set(scenario.honest_agents),
         )
         return SQ2RunContext(
             scenario=scenario,
@@ -668,6 +704,29 @@ def _build_run_context(
             signed_log=signed_log,
             estimator=estimator,
             reporter_id=identity.identity_hash,
+            inject_tamper=inject_tamper,
+        )
+    if condition == CONDITION_B1:
+        mutable_log = MutableJSONLog(trial_dir / "accountability_mutable.jsonl")
+        estimator = TrustworthyEstimator(
+            log=mutable_log,
+            reporter_id="mutable-evaluator",
+            primary_attacker=scenario.primary_attacker,
+            expulsion_threshold=threshold,
+            pattern_detection=True,
+            honest_agents=set(scenario.honest_agents),
+        )
+        return SQ2RunContext(
+            scenario=scenario,
+            condition=condition,
+            trial_dir=trial_dir,
+            threshold=threshold,
+            mode=mode,
+            model=model if mode == "live-llm" else "scripted-deterministic",
+            mutable_log=mutable_log,
+            estimator=estimator,
+            reporter_id="mutable-evaluator",
+            inject_tamper=inject_tamper,
         )
     raise ValueError(f"unknown SQ2 condition: {condition}")
 
@@ -680,6 +739,29 @@ def _sync_c1_flags(ctx: SQ2RunContext) -> None:
     ctx.first_flag_round = ctx.estimator.first_flag_round.get(primary)
     ctx.expulsion_event_index = ctx.estimator.expulsion_event_index.get(primary)
     ctx.expulsion_round = ctx.estimator.expulsion_round.get(primary)
+
+
+def _erase_latest_accountability_event(ctx: SQ2RunContext) -> None:
+    """Evaluator-controlled history deletion used only by the measured tamper experiment."""
+    if ctx.mutable_log is not None:
+        ctx.tamper_injected = ctx.mutable_log.erase_last_event() or ctx.tamper_injected
+        return
+    if ctx.signed_log is None:
+        return
+    path = Path(ctx.signed_log.log_path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if len(lines) > 1:
+        entry = json.loads(lines[-1])
+        entry.setdefault("details", {})["event"] = {
+            "index": -1,
+            "round": -1,
+            "actor_id": "ERASED",
+            "event_type": "erased_adverse_history",
+            "payload": {},
+        }
+        lines[-1] = json.dumps(entry)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        ctx.tamper_injected = True
 
 
 def _record_timeseries(ctx: SQ2RunContext, event: SQ2LiveEvent) -> None:
@@ -730,13 +812,14 @@ def _trial_from_context(ctx: SQ2RunContext, error: str | None) -> SQ2TrialRun:
     else:
         lag_events = max_event_index - scenario.first_malicious_event_index
         lag_rounds = max_round - scenario.first_malicious_round
-    false_positive_rate = false_positive_count / len(HONEST_AGENTS)
+    false_positive_rate = false_positive_count / len(scenario.honest_agents)
     return SQ2TrialRun(
         scenario_id=scenario.scenario_id,
         family=scenario.family,
         intensity=scenario.intensity,
         seed=scenario.seed,
         condition=ctx.condition,
+        attacker_strategy=scenario.attacker_strategy,
         mode=ctx.mode,
         model=ctx.model,
         num_events=len(scenario.events),
@@ -761,6 +844,7 @@ def _trial_from_context(ctx: SQ2RunContext, error: str | None) -> SQ2TrialRun:
         final_attacker_suspicion=final_suspicion,
         detection_reasons=reasons,
         log_chain_valid=log_valid,
+        tamper_injected=ctx.tamper_injected,
         error=error,
     )
 
@@ -1118,6 +1202,11 @@ def main() -> int:
     parser.add_argument("--estimator-interval", type=int, default=1)
     parser.add_argument("--expulsion-threshold", type=int, default=EXPULSION_SUSPICION_THRESHOLD)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--inject-tamper", action="store_true")
+    parser.add_argument(
+        "--threshold-selection-rule",
+        default="lowest threshold with ambiguous-honest FP <= 5%",
+    )
     parser.add_argument(
         "--start-openclaw-runtime",
         action="store_true",
@@ -1139,6 +1228,8 @@ def main() -> int:
         expulsion_threshold=args.expulsion_threshold,
         limit=args.limit,
         start_openclaw_runtime=args.start_openclaw_runtime,
+        inject_tamper=args.inject_tamper,
+        threshold_selection_rule=args.threshold_selection_rule,
     ))
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
     return 0

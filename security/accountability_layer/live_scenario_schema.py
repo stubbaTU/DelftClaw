@@ -9,12 +9,16 @@ from typing import Any
 DEFAULT_LIVE_SCENARIOS = Path("security/datasets/sq2_live_reputation_trap_scenarios.jsonl")
 
 HONEST_AGENTS = [f"H{i}" for i in range(8)]
+AMBIGUOUS_HONEST_AGENTS = [f"HA{i}" for i in range(3)]
 PRIMARY_ATTACKER = "M0"
 SYBIL_AGENTS = ["S1", "S2"]
-ALL_AGENTS = HONEST_AGENTS + [PRIMARY_ATTACKER] + SYBIL_AGENTS
+ALL_AGENTS = HONEST_AGENTS + AMBIGUOUS_HONEST_AGENTS + [PRIMARY_ATTACKER] + SYBIL_AGENTS
 
 CONDITION_C0 = "C0_naive_reputation"
+CONDITION_B1 = "B1_rules_mutable"
+CONDITION_B2 = "B2_signed_nopattern"
 CONDITION_C1 = "C1_vukzero_accountability"
+ACCOUNTABILITY_CONDITIONS = {CONDITION_B1, CONDITION_B2, CONDITION_C1}
 LEGACY_CONDITION_C0 = "C0_no_accountability"
 LEGACY_CONDITION_C1 = "C1_tamper_evident_accountability"
 
@@ -65,6 +69,7 @@ class SQ2LiveScenario:
     defection_round: int
     events: list[SQ2LiveEvent] = field(default_factory=list)
     honest_agents: list[str] = field(default_factory=lambda: list(HONEST_AGENTS))
+    attacker_strategy: str = "naive"
 
 
 def scenario_to_dict(scenario: SQ2LiveScenario) -> dict[str, Any]:
@@ -112,9 +117,11 @@ def validate_scenarios(scenarios: list[SQ2LiveScenario]) -> list[str]:
         seen_ids.add(scenario.scenario_id)
         if scenario.primary_attacker not in scenario.malicious_agents:
             errors.append(f"{scenario.scenario_id}: primary attacker not in malicious_agents")
-        if scenario.honest_agents != HONEST_AGENTS:
-            errors.append(f"{scenario.scenario_id}: honest_agents mismatch")
-        if scenario.num_honest_agents != len(HONEST_AGENTS):
+        if not set(HONEST_AGENTS).issubset(scenario.honest_agents):
+            errors.append(f"{scenario.scenario_id}: base honest_agents missing")
+        if not set(scenario.honest_agents).issubset(HONEST_AGENTS + AMBIGUOUS_HONEST_AGENTS):
+            errors.append(f"{scenario.scenario_id}: unknown honest agent")
+        if scenario.num_honest_agents != len(scenario.honest_agents):
             errors.append(f"{scenario.scenario_id}: num_honest_agents mismatch")
         if scenario.primary_attacker != PRIMARY_ATTACKER:
             errors.append(f"{scenario.scenario_id}: expected primary attacker {PRIMARY_ATTACKER}")

@@ -20,6 +20,7 @@ class NaiveReputationState:
 
     primary_attacker: str = PRIMARY_ATTACKER
     direct_defection_threshold: int = 5
+    honest_agents: set[str] = field(default_factory=lambda: set(HONEST_AGENTS))
     reputation_score: dict[str, float] = field(default_factory=dict)
     expelled_agents: set[str] = field(default_factory=set)
     direct_defection_count: dict[str, int] = field(default_factory=dict)
@@ -101,6 +102,6 @@ class NaiveReputationState:
         self.expelled_agents.add(agent_id)
         self.expulsion_event_index[agent_id] = event.index
         self.expulsion_round[agent_id] = event.round
-        if agent_id in HONEST_AGENTS:
+        if agent_id in self.honest_agents:
             self.false_positive_count += 1
         return True

@@ -2,6 +2,13 @@
 
 This package implements the SQ2 live OpenClaw-agent measurement harness.
 
+For the full implementation, evaluation methodology, clean merged live
+results, retry provenance, and interpretation, see:
+
+```text
+security/accountability_layer/ACCOUNTABILITY_SYSTEM_TECHNICAL_OVERVIEW.md
+```
+
 SQ2 asks whether tamper-evident behavioral recording plus trustworthy
 estimation reduces reputation lag and fallout radius during Reputation Trap
 Attacks. It is not a private-key exfiltration or prompt-injection ASR test.
@@ -78,6 +85,42 @@ append-only evidence chain or history-based estimator.
 `SignedAppendOnlyLog`, verifies the chain, estimates trustworthiness from the
 signed log, and writes policy violations plus expulsion decisions back into the
 same log.
+
+`B1_rules_mutable` runs the full history-based estimator over a plain mutable
+JSONL log. It isolates the integrity contribution of the signed log.
+
+`B2_signed_nopattern` retains the signed log but disables cyclic wash-trade,
+three-node, and linked-endorsement-cluster reconstruction. It isolates the
+detection contribution of cross-agent pattern analysis.
+
+## Redesigned Evaluation
+
+The reviewer-oriented SQ2 redesign adds adaptive attackers, ambiguous-honest
+agents, ablations, a measured tamper attack, threshold sweeps, survival
+analysis, effect sizes, and confidence intervals. The complete VPS procedure is:
+
+```text
+security/accountability_layer/SQ2_EVALUATION_RUNBOOK.md
+```
+
+The full live runner defaults to the GPT-4o-mini alias used by the current
+AgentDojo evaluation:
+
+```bash
+nohup ./run_sq2_accountability_evaluation.sh > results/sq2_factorial_master.log 2>&1 &
+```
+
+Post-hoc analysis does not invoke the model:
+
+```bash
+python -m security.accountability_layer.rescore_logs --run-dir <run> --out <analysis>
+python -m security.accountability_layer.sweep_thresholds --run-dir <run> --out <analysis>
+python -m security.accountability_layer.sq2_statistics --trials <run>/sq2_trials.csv --out <analysis>
+```
+
+The threshold sweep emits the complete sweep, an ROC-style table, a
+detection/false-positive Pareto frontier, and a selected operating point using
+the stated false-positive constraint.
 
 ## Metrics
 
