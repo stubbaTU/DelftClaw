@@ -403,7 +403,12 @@ def build_docker_command(
             ]
         )
     mount = fixture.agent_workspace if condition.architecture_enabled else fixture.root
-    cmd.extend(["-v", f"{mount.resolve()}:/workspace:rw", "-w", "/workspace", *env, image, "python", container_script])
+    cmd.extend(["-v", f"{mount.resolve()}:/workspace:rw"])
+    if not condition.architecture_enabled:
+        # Keep the legitimate agent-workspace path identical in every
+        # condition while still exposing the naive full fixture at /workspace.
+        cmd.extend(["-v", f"{fixture.agent_workspace.joinpath('input').resolve()}:/workspace/input:rw"])
+    cmd.extend(["-w", "/workspace", *env, image, "python", container_script])
     return cmd
 
 

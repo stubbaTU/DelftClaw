@@ -77,6 +77,7 @@ def test_runtime_and_architecture_are_independent_in_docker_command(tmp_path: Pa
         assert "--runtime=runsc" in gvisor_naive
         assert "--cap-drop=ALL" in gvisor_naive
         assert f"{fixture.root.resolve()}:/workspace:rw" in gvisor_naive
+        assert f"{fixture.agent_workspace.joinpath('input').resolve()}:/workspace/input:rw" in gvisor_naive
 
         assert "--runtime=runsc" not in arch_only
         assert "--cap-drop=ALL" not in arch_only
