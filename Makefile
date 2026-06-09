@@ -38,7 +38,7 @@ RSYNC_EXC := --exclude=venv --exclude=.git --exclude=__pycache__ \
 .PHONY: help deploy push bootstrap reinstall-units scenario scenarios watch watch-ipv8 \
         tools tail-turns tools-summary trace stop \
         demo llm-up llm-down llm-logs \
-        ssh test clean check-name sq3-containment-official sq3-containment-preflight
+        ssh test clean check-name sq3-containment-prepare sq3-containment-official sq3-containment-preflight
 
 help:
 	@awk 'BEGIN {FS=":.*?## "} /^[a-zA-Z0-9_-]+:.*## / { printf "  %-15s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -141,20 +141,30 @@ stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
 
-sq3-containment-preflight: push ## Check VPS has Docker + gVisor/runsc + iptables for SQ3
+sq3-containment-prepare: push ## Install/verify Docker, stable gVisor systrap, nftables, and AppArmor on the VPS
+	$(SSH) "cd $(VPS_ROOT) && bash security/containment_layer/prepare_vps.sh"
+
+sq3-containment-preflight: push ## Check VPS runtimes, nftables, seccomp, and AppArmor for SQ3
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
-		--out results/sq3_official_preflight \
+		--out results/sq3_factorial_preflight \
 		--timeout 10 \
 		--preflight-only \
 		--image python:3.12-slim"
 
-sq3-containment-official: push ## Run official SQ3 containment battery on the VPS
+sq3-containment-smoke: push ## Run selected probes plus L1-L4 under all six SQ3 conditions
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
-		--out results/sq3_official_containment \
+		--out results/sq3_factorial_smoke \
 		--timeout 10 \
+		--repetitions 1 \
+		--probe-ids A1 D1 E5 \
 		--image python:3.12-slim"
+
+sq3-containment-official: push ## Run preflight, smoke, then official six-condition SQ3 factorial battery
+	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
+		SQ3_OUT=results/sq3_factorial_containment \
+		bash security/containment_layer/run_factorial_vps.sh"
 
 # ---------------------------------------------------------------------------
 # Gemini proxy + one-shot demo launcher

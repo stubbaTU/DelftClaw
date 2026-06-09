@@ -123,9 +123,10 @@ snapshot, and recent history. Stop conditions live in
 - `security/preventative_layer/`: SQ1 AgentDojo prevention experiments.
 - `security/accountability_layer/`: SQ2 signed-log accountability and
   reputation-lag experiments.
-- `security/containment_layer/`: SQ3 containment-boundary experiments with
-  mock protected resources, hardened proxies, gVisor/runsc, iptables egress
-  checks, deterministic probes, and paper-ready exports.
+- `security/containment_layer/`: SQ3 six-condition factorial containment
+  experiment separating runtime/hardening from the VukZero data architecture,
+  with mock protected resources, hardened proxies, runc/runsc, nftables
+  egress enforcement, deterministic boundary probes, and paper-ready exports.
 - `security/preventative_layer/permissions/`: shared permission primitives used by SQ1 and the
   OpenClaw tool broker.
 

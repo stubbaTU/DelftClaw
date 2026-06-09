@@ -34,9 +34,14 @@ bash deploy/vps/demo_seek_cc.sh stop
 ## SQ3 VPS Checks
 
 ```bash
+make sq3-containment-prepare
 make sq3-containment-preflight
+make sq3-containment-smoke
 make sq3-containment-official
 ```
 
-These run the official VukZero SQ3 gVisor/iptables containment harness from
-`security/containment_layer`.
+The prepare target installs and configures the VPS dependencies. Preflight
+then verifies Docker runtimes, gVisor/runsc, nftables enforcement, the custom
+seccomp profile, AppArmor, and host metadata. The official target runs
+preflight and a six-condition smoke before launching the complete factorial
+experiment from `security/containment_layer`.

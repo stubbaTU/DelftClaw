@@ -5,21 +5,32 @@ import os
 import platform
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
+from security.containment_layer.firewall import detect_firewall_backend
+from security.containment_layer.runtimes import RUNTIMES
+
 
 def detect_enforcement_support() -> dict[str, Any]:
+    firewall = detect_firewall_backend()
     return {
         "platform": platform.system(),
+        "kernel_version": platform.release(),
         "is_linux": platform.system().lower() == "linux",
         "is_root": os.geteuid() == 0 if hasattr(os, "geteuid") else False,
         "docker": shutil.which("docker"),
+        "runc": shutil.which("runc"),
         "runsc": shutil.which("runsc"),
-        "ip": shutil.which("ip"),
-        "iptables": shutil.which("iptables"),
         "nft": shutil.which("nft"),
+        "iptables": shutil.which("iptables"),
+        "apparmor_parser": shutil.which("apparmor_parser"),
+        "registered_runtimes": _json_cmd(["docker", "info", "--format", "{{json .Runtimes}}"]),
+        "firewall_backend": firewall.to_dict(),
+        "gvisor_platform": RUNTIMES["runsc"].gvisor_platform,
+        "runc_version": _cmd_text(["runc", "--version"]),
+        "runsc_version": _cmd_text(["runsc", "--version"]),
+        "docker_security_options": _cmd_text(["docker", "info", "--format", "{{json .SecurityOptions}}"]),
         "can_use_gvisor": platform.system().lower() == "linux"
         and shutil.which("docker") is not None
         and shutil.which("runsc") is not None,
@@ -31,214 +42,28 @@ def detect_enforcement_support() -> dict[str, Any]:
     }
 
 
-def run_enforcement_preflight(out_dir: str | Path, *, timeout_s: int = 120) -> dict[str, Any]:
+def write_enforcement_inventory(out_dir: str | Path) -> dict[str, Any]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    support = detect_enforcement_support()
-    probe = run_real_guardrail_probe(out / "preflight", timeout_s=timeout_s)
-    report = {
-        "support": support,
-        "probe": probe,
-        "gvisor_enforced": bool(probe.get("gvisor", {}).get("ok")),
-        "iptables_namespace_enforced": bool(probe.get("iptables", {}).get("ok")),
-    }
-    (out / "sq3_enforcement_preflight.json").write_text(
+    report = detect_enforcement_support()
+    (out / "sq3_enforcement_inventory.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return report
 
 
-def run_real_guardrail_probe(root: str | Path, *, timeout_s: int = 120) -> dict[str, Any]:
-    """Run best-effort real gVisor and iptables guardrail checks.
-
-    The iptables probe uses a temporary Linux network namespace, so the DROP
-    policy is real without touching the host OUTPUT policy or the SSH session.
-    """
-    root_path = Path(root)
-    root_path.mkdir(parents=True, exist_ok=True)
-    report = {
-        "ok": False,
-        "created_at": time.time(),
-        "platform": platform.system(),
-        "is_root": os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-        "gvisor": _gvisor_probe(root_path, timeout_s=timeout_s),
-        "iptables": _iptables_namespace_probe(timeout_s=timeout_s),
-    }
-    report["ok"] = bool(
-        report["gvisor"].get("ok") is True
-        and report["iptables"].get("ok") is True
-    )
-    (root_path / "real_guardrails.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    return report
+def _cmd_text(cmd: list[str]) -> str:
+    if shutil.which(cmd[0]) is None:
+        return ""
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return (proc.stdout + proc.stderr).strip()
 
 
-def _gvisor_probe(root: Path, *, timeout_s: int) -> dict[str, Any]:
-    docker = shutil.which("docker")
-    runsc = shutil.which("runsc")
-    if platform.system().lower() != "linux":
-        return {"attempted": False, "ok": False, "reason": "not_linux"}
-    if docker is None:
-        return {"attempted": False, "ok": False, "reason": "docker_not_found"}
-    if runsc is None:
-        return {
-            "attempted": False,
-            "ok": False,
-            "reason": "runsc_not_found",
-            "docker": docker,
-        }
-
-    probe_dir = root / "gvisor_probe"
-    probe_dir.mkdir(parents=True, exist_ok=True)
-    marker = probe_dir / "host_marker.txt"
-    marker.write_text("HOST_MARKER_SHOULD_NOT_BE_VISIBLE\n", encoding="utf-8")
-
-    cmd = [
-        docker,
-        "run",
-        "--rm",
-        "--runtime=runsc",
-        "--network=none",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,noexec,nosuid,size=16m",
-        "busybox:1.36",
-        "sh",
-        "-c",
-        (
-            "echo ok >/tmp/probe && "
-            "(echo should_not_write >/root/forbidden) 2>/tmp/rootfs_err; "
-            "test $? -ne 0 && "
-            "test ! -e /host_marker.txt && "
-            "wget -T 1 -qO- http://1.1.1.1 >/tmp/net 2>/tmp/neterr; "
-            "test $? -ne 0 && "
-            "echo GVISOR_PROBE_OK"
-        ),
-    ]
-    proc = _run(cmd, timeout_s=timeout_s)
-    probe_ok = proc["returncode"] == 0 and "GVISOR_PROBE_OK" in proc["stdout"]
-    return {
-        "attempted": True,
-        "ok": probe_ok,
-        "docker": docker,
-        "runsc": runsc,
-        "runtime": "runsc",
-        "network": "none",
-        "read_only_rootfs": True,
-        "rootfs_write_probe_blocked": probe_ok,
-        "network_probe_blocked": probe_ok,
-        "tmpfs_tmp": True,
-        "host_marker_path": str(marker),
-        "command": _redact_cmd(cmd),
-        "returncode": proc["returncode"],
-        "stdout": proc["stdout"][-1000:],
-        "stderr": proc["stderr"][-1000:],
-    }
-
-
-def _iptables_namespace_probe(*, timeout_s: int) -> dict[str, Any]:
-    ip = shutil.which("ip")
-    iptables = shutil.which("iptables")
-    is_root = os.geteuid() == 0 if hasattr(os, "geteuid") else False
-    if platform.system().lower() != "linux":
-        return {"attempted": False, "ok": False, "reason": "not_linux"}
-    if ip is None:
-        return {"attempted": False, "ok": False, "reason": "ip_not_found"}
-    if iptables is None:
-        return {
-            "attempted": False,
-            "ok": False,
-            "reason": "iptables_not_found",
-            "ip": ip,
-        }
-    if not is_root:
-        return {
-            "attempted": False,
-            "ok": False,
-            "reason": "requires_root",
-            "ip": ip,
-            "iptables": iptables,
-        }
-
-    ns = f"dclawiso{os.getpid()}{int(time.time())}"
-    commands = [
-        [ip, "netns", "add", ns],
-        [ip, "netns", "exec", ns, iptables, "-P", "OUTPUT", "DROP"],
-        [ip, "netns", "exec", ns, iptables, "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
-        [ip, "netns", "exec", ns, iptables, "-S", "OUTPUT"],
-    ]
-    results = []
+def _json_cmd(cmd: list[str]) -> dict[str, Any]:
+    value = _cmd_text(cmd)
     try:
-        for cmd in commands:
-            results.append(_run(cmd, timeout_s=timeout_s))
-        rules = results[-1]["stdout"]
-        ok = (
-            all(item["returncode"] == 0 for item in results)
-            and "-P OUTPUT DROP" in rules
-            and "-A OUTPUT -o lo -j ACCEPT" in rules
-        )
-        return {
-            "attempted": True,
-            "ok": ok,
-            "namespace": ns,
-            "ip": ip,
-            "iptables": iptables,
-            "output_policy_drop": "-P OUTPUT DROP" in rules,
-            "loopback_allowed": "-A OUTPUT -o lo -j ACCEPT" in rules,
-            "rules": rules,
-            "commands": [_redact_cmd(cmd) for cmd in commands],
-            "results": results,
-        }
-    finally:
-        _run([ip, "netns", "delete", ns], timeout_s=timeout_s, check=False)
-
-
-def _run(cmd: list[str], *, timeout_s: int, check: bool = False) -> dict[str, Any]:
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=check,
-        )
-        return {
-            "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "returncode": 124,
-            "stdout": exc.stdout or "",
-            "stderr": f"timeout after {timeout_s}s: {exc.stderr or ''}",
-        }
-    except Exception as exc:
-        return {
-            "returncode": 1,
-            "stdout": "",
-            "stderr": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def _redact_cmd(cmd: list[str]) -> list[str]:
-    return [str(part) for part in cmd]
-
-
-def main() -> int:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run SQ3 gVisor and iptables guardrail probes.")
-    parser.add_argument("--root", required=True)
-    parser.add_argument("--timeout-s", type=int, default=120)
-    args = parser.parse_args()
-    report = run_real_guardrail_probe(args.root, timeout_s=args.timeout_s)
-    print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["ok"] else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        result = json.loads(value)
+        return result if isinstance(result, dict) else {}
+    except json.JSONDecodeError:
+        return {}
