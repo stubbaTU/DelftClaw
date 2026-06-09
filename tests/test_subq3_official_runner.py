@@ -7,6 +7,7 @@ import pytest
 from security.containment_layer.conditions import DEFAULT_CONDITIONS, get_condition, resolve_conditions
 from security.containment_layer.official_probe_suite import official_probe_battery, probe_spec_hash, write_probe_spec
 from security.containment_layer.official_runner import (
+    APPARMOR_PROFILE_SOURCE,
     ASSET_CATEGORIES,
     ProbeRecord,
     _main_table,
@@ -102,6 +103,13 @@ def test_official_preflight_aborts_when_requested_runsc_is_missing(monkeypatch) 
 
     with pytest.raises(RuntimeError, match="runsc"):
         official_preflight([get_condition("C1_vukzero_gvisor")], image="python:3.12-slim")
+
+
+def test_apparmor_profile_allows_python_runtime_libraries() -> None:
+    profile = APPARMOR_PROFILE_SOURCE.read_text(encoding="utf-8")
+    assert "/usr/local/lib/** mr," in profile
+    assert "deny /proc/sys/** w," in profile
+    assert "deny /sys/** w," in profile
 
 
 def test_network_probe_scoring_uses_sink_evidence() -> None:
