@@ -3,9 +3,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from security.containment_layer.network_guard import NetworkGuard
-from security.containment_layer.protected_resources import create_protected_fixture, destroy_fixture, verify_fixture_integrity
-from security.containment_layer.resource_proxies import (
+from security.containment_layer.infrastructure.network_guard import NetworkGuard
+from security.containment_layer.infrastructure.protected_resources import create_protected_fixture, destroy_fixture, verify_fixture_integrity
+from security.containment_layer.infrastructure.resource_proxies import (
     AppendOnlyLogProxy,
     IdentityProxy,
     NetworkProxy,

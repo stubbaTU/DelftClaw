@@ -4,23 +4,23 @@ import asyncio
 import json
 from pathlib import Path
 
-from security.accountability_layer.analysis_utils import (
+from security.accountability_layer.evaluation.analysis_utils import (
     aggregate_rescores,
     discover_c1_logs,
     read_log_entries,
     rescore_entries,
 )
-from security.accountability_layer.generate_live_scenarios import generate_scenarios
-from security.accountability_layer.live_orchestrator import run_live_measurement
-from security.accountability_layer.live_scenario_schema import (
+from security.accountability_layer.evaluation.generate_live_scenarios import generate_scenarios
+from security.accountability_layer.evaluation.live_orchestrator import run_live_measurement
+from security.accountability_layer.infrastructure.live_scenario_schema import (
     CONDITION_B1,
     CONDITION_B2,
     CONDITION_C1,
     write_scenarios,
 )
-from security.accountability_layer.mutable_log import ReplayLog
-from security.accountability_layer.sweep_thresholds import sweep
-from security.accountability_layer.trustworthy_estimator import TrustworthyEstimator
+from security.accountability_layer.infrastructure.mutable_log import ReplayLog
+from security.accountability_layer.evaluation.sweep_thresholds import sweep
+from security.accountability_layer.infrastructure.trustworthy_estimator import TrustworthyEstimator
 
 
 def _entry(index: int, actor: str, event_type: str, payload: dict) -> dict:

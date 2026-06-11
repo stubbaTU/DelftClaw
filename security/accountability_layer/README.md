@@ -16,7 +16,7 @@ Attacks. It is not a private-key exfiltration or prompt-injection ASR test.
 ## Generate Scenarios
 
 ```bash
-python -m security.accountability_layer.generate_live_scenarios \
+python -m security.accountability_layer.evaluation.generate_live_scenarios \
   --out security/datasets/sq2_live_reputation_trap_scenarios.jsonl
 ```
 
@@ -34,7 +34,7 @@ For a larger deterministic corpus, increase the number of seeds per
 family/intensity cell:
 
 ```bash
-python -m security.accountability_layer.generate_live_scenarios \
+python -m security.accountability_layer.evaluation.generate_live_scenarios \
   --seeds-per-cell 25 \
   --out security/datasets/sq2_live_reputation_trap_scenarios_large.jsonl
 ```
@@ -48,7 +48,7 @@ This produces:
 ## Run A Smoke Test
 
 ```bash
-python -m security.accountability_layer.live_orchestrator \
+python -m security.accountability_layer.evaluation.live_orchestrator \
   --mode deterministic \
   --conditions C0_naive_reputation C1_vukzero_accountability \
   --limit 2 \
@@ -58,7 +58,7 @@ python -m security.accountability_layer.live_orchestrator \
 ## Run The Live OpenClaw-Agent Experiment
 
 ```bash
-python -m security.accountability_layer.live_orchestrator \
+python -m security.accountability_layer.evaluation.live_orchestrator \
   --mode live-llm \
   --conditions C0_naive_reputation C1_vukzero_accountability \
   --out results/sq2_accountability_$(date -u +%Y%m%dT%H%M%SZ) \
@@ -113,9 +113,9 @@ nohup ./run_sq2_accountability_evaluation.sh > results/sq2_factorial_master.log 
 Post-hoc analysis does not invoke the model:
 
 ```bash
-python -m security.accountability_layer.rescore_logs --run-dir <run> --out <analysis>
-python -m security.accountability_layer.sweep_thresholds --run-dir <run> --out <analysis>
-python -m security.accountability_layer.sq2_statistics --trials <run>/sq2_trials.csv --out <analysis>
+python -m security.accountability_layer.evaluation.rescore_logs --run-dir <run> --out <analysis>
+python -m security.accountability_layer.evaluation.sweep_thresholds --run-dir <run> --out <analysis>
+python -m security.accountability_layer.evaluation.sq2_statistics --trials <run>/sq2_trials.csv --out <analysis>
 ```
 
 The threshold sweep emits the complete sweep, an ROC-style table, a

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from security.preventative_layer.permissions import (
+from security.preventative_layer.infrastructure.permissions import (
     Capability,
     CapabilityStore,
     EffectClass,

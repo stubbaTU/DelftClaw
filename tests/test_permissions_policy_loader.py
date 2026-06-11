@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from security.preventative_layer.permissions import default_validator_registry, load_default_policy
-from security.preventative_layer.permissions.policy_loader import PolicyLoadError, parse_policy
+from security.preventative_layer.infrastructure.permissions import default_validator_registry, load_default_policy
+from security.preventative_layer.infrastructure.permissions.policy_loader import PolicyLoadError, parse_policy
 
 
 def test_loads_valid_default_policy() -> None:

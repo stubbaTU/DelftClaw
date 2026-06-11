@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from types import ModuleType
 
-from security.preventative_layer.vukzero_tool_wrapper import (
+from security.preventative_layer.evaluation.vukzero_tool_wrapper import (
     _agentdojo_text_content_block,
     _replacement_message_content,
     wrap_functions_runtime,

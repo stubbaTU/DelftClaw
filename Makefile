@@ -146,7 +146,7 @@ sq3-containment-prepare: push ## Install/verify Docker, stable gVisor systrap, n
 
 sq3-containment-preflight: push ## Check VPS runtimes, nftables, seccomp, and AppArmor for SQ3
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
+		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.evaluation.official_runner \
 		--out results/sq3_factorial_preflight \
 		--timeout 10 \
 		--preflight-only \
@@ -154,7 +154,7 @@ sq3-containment-preflight: push ## Check VPS runtimes, nftables, seccomp, and Ap
 
 sq3-containment-smoke: push ## Run selected probes plus L1-L4 under all six SQ3 conditions
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.official_runner \
+		$(VPS_ROOT)/venv/bin/python -m security.containment_layer.evaluation.official_runner \
 		--out results/sq3_factorial_smoke \
 		--timeout 10 \
 		--repetitions 1 \

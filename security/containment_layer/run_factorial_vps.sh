@@ -20,14 +20,14 @@ REPETITIONS="${SQ3_REPETITIONS:-20}"
 TIMEOUT="${SQ3_TIMEOUT:-10}"
 SMOKE_PROBES="${SQ3_SMOKE_PROBES:-A1 D1 E5}"
 
-"$PYTHON_BIN" -m security.containment_layer.official_runner \
+"$PYTHON_BIN" -m security.containment_layer.evaluation.official_runner \
   --out "${OUT}_preflight" \
   --image "$IMAGE" \
   --preflight-only
 
 if [[ "${SQ3_SKIP_SMOKE:-false}" != "true" ]]; then
   # shellcheck disable=SC2086
-  "$PYTHON_BIN" -m security.containment_layer.official_runner \
+  "$PYTHON_BIN" -m security.containment_layer.evaluation.official_runner \
     --out "${OUT}_smoke" \
     --image "$IMAGE" \
     --timeout "$TIMEOUT" \
@@ -35,7 +35,7 @@ if [[ "${SQ3_SKIP_SMOKE:-false}" != "true" ]]; then
     --probe-ids $SMOKE_PROBES
 fi
 
-"$PYTHON_BIN" -m security.containment_layer.official_runner \
+"$PYTHON_BIN" -m security.containment_layer.evaluation.official_runner \
   --out "$OUT" \
   --image "$IMAGE" \
   --timeout "$TIMEOUT" \

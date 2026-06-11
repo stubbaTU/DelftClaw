@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from security.preventative_layer.capability_builder import build_capabilities_from_user_task
-from security.preventative_layer.permissions import ToolSecuritySpec
+from security.preventative_layer.infrastructure.capability_builder import build_capabilities_from_user_task
+from security.preventative_layer.infrastructure.permissions import ToolSecuritySpec
 
 
 TOOLS = [

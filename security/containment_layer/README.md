@@ -88,7 +88,7 @@ source .venv/bin/activate
 
 bash security/containment_layer/prepare_vps.sh
 
-python -m security.containment_layer.official_runner \
+python -m security.containment_layer.evaluation.official_runner \
   --out results/sq3_factorial_preflight \
   --preflight-only \
   --image python:3.12-slim
@@ -115,7 +115,7 @@ SQ3_RUNSC_VERSION='<recorded apt version>' \
 ## Official Run
 
 ```bash
-python -m security.containment_layer.official_runner \
+python -m security.containment_layer.evaluation.official_runner \
   --out results/sq3_factorial_containment \
   --image python:3.12-slim \
   --timeout 10 \
@@ -128,7 +128,7 @@ deterministic and the summary records any outcome instability.
 To smoke-test every condition and enforcement layer before the full run:
 
 ```bash
-python -m security.containment_layer.official_runner \
+python -m security.containment_layer.evaluation.official_runner \
   --out results/sq3_factorial_smoke \
   --probe-ids A1 D1 E5 \
   --repetitions 1 \

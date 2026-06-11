@@ -28,7 +28,7 @@ from fastmcp import FastMCP
 
 from agent.runtime import OpenClawAgent
 from agent.tools import _resolve_peer, build_tools  # type: ignore[attr-defined]
-from security.preventative_layer.permissions.openclaw_integration import authorize_openclaw_tool
+from security.preventative_layer.infrastructure.permissions.openclaw_integration import authorize_openclaw_tool
 
 
 SERVER_INSTRUCTIONS = """\

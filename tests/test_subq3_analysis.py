@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from security.containment_layer.analysis import factor_effects, latency_summary, pareto_rows
-from security.containment_layer.conditions import resolve_conditions
+from security.containment_layer.evaluation.analysis import factor_effects, latency_summary, pareto_rows
+from security.containment_layer.evaluation.conditions import resolve_conditions
 
 
 def test_latency_factor_effects_and_pareto_rows() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from security.preventative_layer.agentdojo_runner import (
+from security.preventative_layer.evaluation.agentdojo_runner import (
     C0_AGENTDOJO_BASELINE,
     C1_AGENTDOJO_VUKZERO,
     _OpenRouterChatLLM,
@@ -11,7 +11,7 @@ from security.preventative_layer.agentdojo_runner import (
     _verify_c1_secagent_disabled,
     run_agentdojo_vukzero,
 )
-from security.preventative_layer.export_results import suite_results_to_trial_rows
+from security.preventative_layer.evaluation.export_results import suite_results_to_trial_rows
 
 
 def test_runner_can_execute_tiny_mock_benchmark(tmp_path) -> None:

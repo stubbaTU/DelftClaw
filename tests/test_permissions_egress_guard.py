@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from security.preventative_layer.permissions import EgressGuard
+from security.preventative_layer.infrastructure.permissions import EgressGuard
 
 
 def test_egress_guard_allows_normal_text_and_denies_canaries() -> None:

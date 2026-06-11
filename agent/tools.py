@@ -25,7 +25,7 @@ from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
 from communication.community import overlay_id
-from security.preventative_layer.permissions.openclaw_integration import build_permissioned_registry, permissions_enabled
+from security.preventative_layer.infrastructure.permissions.openclaw_integration import build_permissioned_registry, permissions_enabled
 
 
 # Tool-dispatch logger — one line per LLM tool invocation, paired with

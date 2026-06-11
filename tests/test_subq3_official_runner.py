@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from security.containment_layer.conditions import DEFAULT_CONDITIONS, get_condition, resolve_conditions
-from security.containment_layer.official_probe_suite import official_probe_battery, probe_spec_hash, write_probe_spec
-from security.containment_layer.official_runner import (
+from security.containment_layer.evaluation.conditions import DEFAULT_CONDITIONS, get_condition, resolve_conditions
+from security.containment_layer.evaluation.official_probe_suite import official_probe_battery, probe_spec_hash, write_probe_spec
+from security.containment_layer.evaluation.official_runner import (
     APPARMOR_PROFILE_SOURCE,
     ASSET_CATEGORIES,
     ProbeRecord,
@@ -16,7 +16,7 @@ from security.containment_layer.official_runner import (
     build_docker_command,
     run_official_sq3,
 )
-from security.containment_layer.protected_resources import create_protected_fixture, destroy_fixture
+from security.containment_layer.infrastructure.protected_resources import create_protected_fixture, destroy_fixture
 
 
 def test_factorial_conditions_cover_complete_three_by_two_design() -> None:
@@ -88,17 +88,17 @@ def test_runtime_and_architecture_are_independent_in_docker_command(tmp_path: Pa
 
 
 def test_official_preflight_aborts_when_requested_runsc_is_missing(monkeypatch) -> None:
-    from security.containment_layer.official_runner import official_preflight
+    from security.containment_layer.evaluation.official_runner import official_preflight
 
-    monkeypatch.setattr("security.containment_layer.official_runner.platform.system", lambda: "Linux")
-    monkeypatch.setattr("security.containment_layer.official_runner.os.geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr("security.containment_layer.evaluation.official_runner.platform.system", lambda: "Linux")
+    monkeypatch.setattr("security.containment_layer.evaluation.official_runner.os.geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(
-        "security.containment_layer.official_runner.shutil.which",
+        "security.containment_layer.evaluation.official_runner.shutil.which",
         lambda name: "/usr/bin/docker" if name == "docker" else None,
     )
-    monkeypatch.setattr("security.containment_layer.official_runner._apparmor_profile_loaded", lambda: True)
+    monkeypatch.setattr("security.containment_layer.evaluation.official_runner._apparmor_profile_loaded", lambda: True)
     monkeypatch.setattr(
-        "security.containment_layer.official_runner.detect_firewall_backend",
+        "security.containment_layer.evaluation.official_runner.detect_firewall_backend",
         lambda: type("Backend", (), {"name": "native_nftables"})(),
     )
 

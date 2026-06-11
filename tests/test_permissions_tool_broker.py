@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from security.preventative_layer.permissions import (
+from security.preventative_layer.infrastructure.permissions import (
     Capability,
     CapabilityStore,
     DecisionLog,
@@ -14,7 +14,7 @@ from security.preventative_layer.permissions import (
     default_validator_registry,
     load_default_policy,
 )
-from security.preventative_layer.permissions.proxies import IdentityProxy
+from security.preventative_layer.infrastructure.permissions.proxies import IdentityProxy
 
 
 def _engine(*, capabilities: CapabilityStore) -> tuple[PermissionEngine, ResourceRegistry, DecisionLog]:

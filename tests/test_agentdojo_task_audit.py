@@ -1,4 +1,4 @@
-from security.preventative_layer.audit_agentdojo_tasks import audit_suite_tasks, classify_task_shape
+from security.preventative_layer.evaluation.audit_agentdojo_tasks import audit_suite_tasks, classify_task_shape
 
 
 def test_task_shape_audit_flags_multi_hop_effect() -> None:

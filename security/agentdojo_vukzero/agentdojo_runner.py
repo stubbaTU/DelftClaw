@@ -1,6 +1,6 @@
 """CLI compatibility wrapper for the preventative-layer AgentDojo runner."""
 
-from security.preventative_layer.agentdojo_runner import main
+from security.preventative_layer.evaluation.agentdojo_runner import main
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from security.containment_layer.firewall import FirewallBackend, NFT_TABLE, egress_filter
+from security.containment_layer.infrastructure.firewall import FirewallBackend, NFT_TABLE, egress_filter
 
 
 def test_native_nftables_filter_uses_dedicated_table_and_cleans_up(monkeypatch, tmp_path: Path) -> None:
@@ -17,7 +17,7 @@ def test_native_nftables_filter_uses_dedicated_table_and_cleans_up(monkeypatch, 
         commands.append((list(cmd), kwargs.get("input", "")))
         return Result()
 
-    monkeypatch.setattr("security.containment_layer.firewall.subprocess.run", fake_run)
+    monkeypatch.setattr("security.containment_layer.infrastructure.firewall.subprocess.run", fake_run)
     backend = FirewallBackend("native_nftables", "iptables", "", "nft 1.0", "")
 
     with egress_filter(

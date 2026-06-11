@@ -1,4 +1,4 @@
-from security.preventative_layer.vukzero_tool_wrapper import (
+from security.preventative_layer.evaluation.vukzero_tool_wrapper import (
     build_agentdojo_tool_broker,
     make_vukzero_final_output_guard,
     make_vukzero_pipeline_element,
