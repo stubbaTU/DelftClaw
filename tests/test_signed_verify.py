@@ -401,16 +401,16 @@ def test_truncated_last_line_exits_one(tmp_path: Path) -> None:
 def test_network_flag_used_for_binding(tmp_path: Path) -> None:
     """The --network flag controls the binding check.
 
-    A log produced under STAGING must verify under --network STAGING and
+    A log produced under TESTNET must verify under --network TESTNET and
     fail under --network MAINNET (because reporter_id is bound to the
     network at production time).
     """
-    identity = _make_identity(tmp_path, network="STAGING")
+    identity = _make_identity(tmp_path, network="TESTNET")
     log_path = tmp_path / "log.jsonl"
     _produce_log(identity, str(log_path), n=2)
 
     # Correct network → exit 0.
-    result_ok = _run_verify(str(log_path), "--network", "STAGING")
+    result_ok = _run_verify(str(log_path), "--network", "TESTNET")
     assert result_ok.returncode == 0, (
         f"expected 0 for matching network; got {result_ok.returncode}; "
         f"stdout={result_ok.stdout!r} stderr={result_ok.stderr!r}"

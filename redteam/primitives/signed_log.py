@@ -113,6 +113,11 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
     ) -> None:
         if identity is None:
             raise ValueError("identity must not be None")
+        from identity.agent_identity import AgentIdentity
+        from identity.openclaw_identity import OpenClawIdentity
+
+        if isinstance(identity, AgentIdentity):
+            identity = OpenClawIdentity.from_agent_identity(identity)
         # Accept str or pathlib.Path (or any os.PathLike). Coerce to str so
         # downstream I/O sites work uniformly. ``os.fspath`` may also return
         # bytes — reject that explicitly so log_path stays str everywhere.
