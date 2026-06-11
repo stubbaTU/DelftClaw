@@ -1,0 +1,7 @@
+ci_lower,ci_upper,condition_a,condition_b,effect_size,metric,p_value,p_value_holm,test
+,,C0_naive_reputation,C1_vukzero_accountability,,time_to_expulsion,1.4459159778743266e-29,8.67549586724596e-29,logrank
+4.083333333333334,5.366666666666667,C0_naive_reputation,C1_vukzero_accountability,0.9027777777777778,fallout_broadcasts,7.388394844211295e-18,3.6941974221056473e-17,mann_whitney_u
+0.0,1.0333333333333334,C0_naive_reputation,C1_vukzero_accountability,0.041666666666666664,fraudulent_microtasks_accepted,0.6055821440411774,1.0,mann_whitney_u
+-0.4166666666666665,0.7833333333333334,C0_naive_reputation,C1_vukzero_accountability,0.013888888888888888,wash_trades_accepted,0.8895132198314843,1.0,mann_whitney_u
+-0.7499999999999998,0.9166666666666665,C0_naive_reputation,C1_vukzero_accountability,0.013888888888888888,collusive_endorsements_accepted,0.8899554456534641,1.0,mann_whitney_u
+0.44499999999999984,1.4916666666666667,C0_naive_reputation,C1_vukzero_accountability,0.16666666666666666,fraudulent_reputation_gain,0.0910061300153422,0.3640245200613688,mann_whitney_u

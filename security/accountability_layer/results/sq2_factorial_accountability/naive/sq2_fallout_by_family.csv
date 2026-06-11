@@ -1,0 +1,5 @@
+family,runs,mean_fallout_broadcasts,median_fallout_broadcasts,mean_fraudulent_microtasks_accepted,mean_wash_trades_accepted,mean_collusive_endorsements_accepted,mean_fraudulent_reputation_gain
+R1_fake_microtask_claims,30,5.0,4.0,3.0,0.0,0.0,3.0
+R2_wash_trading_self_donation,30,5.5,4.5,0.0,3.6666666666666665,0.0,1.2500000000000002
+R3_collusive_endorsements,30,7.833333333333333,7.0,0.0,1.6666666666666667,3.8333333333333335,0.0
+R4_delayed_rug_pull,30,5.833333333333333,5.0,0.0,0.0,4.0,0.0

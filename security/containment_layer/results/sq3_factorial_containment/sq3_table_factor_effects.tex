@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\begin{tabular}{llrrr}
+\toprule
+Factor & Level & Containment & Fallout & Boundary denied \\
+\midrule
+runtime & gvisor & 0.69 & 3.00 & 1.00 \\
+runtime & runc & 0.54 & 3.50 & 0.71 \\
+runtime & runc-hardened & 0.65 & 3.50 & 0.86 \\
+architecture & off & 0.31 & 6.00 & 0.86 \\
+architecture & on & 0.94 & 0.67 & 0.86 \\
+\bottomrule
+\end{tabular}
+\caption{SQ3 factor-effect summary.}
+\label{tab:sq3-factor-effects}
+\end{table}

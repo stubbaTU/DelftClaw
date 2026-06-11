@@ -1,0 +1,11 @@
+condition,detection_rate,false_positive_rate,split,trials,trust_cutoff
+B3_beta_reputation,0.0,0.0,tuning,48,0.2
+B3_beta_reputation,0.0,0.0,heldout,12,0.2
+B3_beta_reputation,0.0,0.0,tuning,48,0.3
+B3_beta_reputation,0.0,0.0,heldout,12,0.3
+B3_beta_reputation,0.0,0.0,tuning,48,0.35
+B3_beta_reputation,0.0,0.0,heldout,12,0.35
+B3_beta_reputation,0.0,0.0,tuning,48,0.4
+B3_beta_reputation,0.0,0.0,heldout,12,0.4
+B3_beta_reputation,0.0,0.0,tuning,48,0.5
+B3_beta_reputation,0.0,0.0,heldout,12,0.5

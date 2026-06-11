@@ -1,0 +1,8 @@
+ROOT=results/sq2_accountability_factorial_20260609T225417Z
+started=2026-06-09T22:54:17+00:00
+model=openai/gpt-4o-mini-2024-07-18
+base_url=https://openrouter.ai/api/v1
+seeds_per_cell=5
+request_timeout_s=300
+strategies=naive threshold_aware sybil_split honest_dilution
+finished=2026-06-10T03:40:28+00:00

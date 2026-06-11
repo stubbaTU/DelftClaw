@@ -1,0 +1,9 @@
+name=sq3_vukzero_298329
+subnet=172.31.77.0/24
+gateway=172.31.77.1
+C0_uncontained=172.31.77.10
+B1_runc_hardened=172.31.77.11
+B2_gvisor_naive=172.31.77.12
+A1_arch_only_runc=172.31.77.13
+A2_vukzero_no_gvisor=172.31.77.14
+C1_vukzero_gvisor=172.31.77.15

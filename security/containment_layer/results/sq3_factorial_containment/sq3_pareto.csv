@@ -1,0 +1,7 @@
+condition,factor_runtime,factor_architecture,median_latency_ms,containment_rate,fallout_radius,closed_categories
+C0_uncontained,runc,off,742.7545940736309,0.20833333333333334,6,0
+B1_runc_hardened,runc-hardened,off,721.6549590229988,0.3333333333333333,6,0
+B2_gvisor_naive,gvisor,off,843.8190490705892,0.375,6,0
+A1_arch_only_runc,runc,on,715.2668315684423,0.875,1,5
+A2_vukzero_no_gvisor,runc-hardened,on,687.6134645426646,0.9583333333333334,1,5
+C1_vukzero_gvisor,gvisor,on,915.4865690506995,1.0,0,6

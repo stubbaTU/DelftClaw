@@ -1,0 +1,7 @@
+ci_lower,ci_upper,condition,median_time_to_expulsion,survival_probability,time
+1.0,1.0,B1_rules_mutable,inf,1.0,0.0
+1.0,1.0,B1_rules_mutable,inf,1.0,7.0
+1.0,1.0,B2_signed_nopattern,inf,1.0,0.0
+1.0,1.0,B2_signed_nopattern,inf,1.0,7.0
+1.0,1.0,C1_vukzero_accountability,inf,1.0,0.0
+1.0,1.0,C1_vukzero_accountability,inf,1.0,7.0

@@ -1,0 +1,201 @@
+table ip filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		counter packets 1603301 bytes 565574579 jump ts-input
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 0 bytes 0 jump DOCKER-USER
+		counter packets 0 bytes 0 jump DOCKER-FORWARD
+		counter packets 0 bytes 0 jump ts-forward
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 0 bytes 0 jump DOCKER-CT
+		counter packets 0 bytes 0 jump DOCKER-INTERNAL
+		counter packets 0 bytes 0 jump DOCKER-BRIDGE
+		iifname "docker0" counter packets 0 bytes 0 accept
+		iifname "br-8ec85ce56790" counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER-USER {
+	}
+
+	chain ts-input {
+		ip saddr 100.116.114.28 iifname "lo" counter packets 0 bytes 0 accept
+		iifname "tailscale0" counter packets 3361 bytes 902439 accept
+		udp dport 41641 counter packets 8701 bytes 1707126 accept
+		ip saddr 100.115.92.0/23 iifname != "tailscale0" counter packets 0 bytes 0 return
+		ip saddr 100.64.0.0/10 iifname != "tailscale0" counter packets 0 bytes 0 drop
+	}
+
+	chain ts-forward {
+		iifname "tailscale0" counter packets 0 bytes 0 meta mark set mark and 0xff00ffff xor 0x40000
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 accept
+		ip saddr 100.64.0.0/10 oifname "tailscale0" counter packets 0 bytes 0 drop
+		oifname "tailscale0" counter packets 0 bytes 0 accept
+	}
+
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+	}
+
+	chain DOCKER {
+		iifname != "docker0" oifname "docker0" counter packets 0 bytes 0 drop
+		iifname != "br-8ec85ce56790" oifname "br-8ec85ce56790" counter packets 0 bytes 0 drop
+	}
+
+	chain DOCKER-BRIDGE {
+		oifname "docker0" counter packets 0 bytes 0 jump DOCKER
+		oifname "br-8ec85ce56790" counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain DOCKER-CT {
+		oifname "docker0" ct state related,established counter packets 0 bytes 0 accept
+		oifname "br-8ec85ce56790" ct state related,established counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+}
+table ip nat {
+	chain POSTROUTING {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 172.31.77.0/24 oifname != "br-8ec85ce56790" counter packets 0 bytes 0 masquerade
+		ip saddr 172.17.0.0/16 oifname != "docker0" counter packets 0 bytes 0 masquerade
+		counter packets 8514 bytes 569989 jump ts-postrouting
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 651 bytes 33776 jump DOCKER
+	}
+
+	chain OUTPUT {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain ts-postrouting {
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 masquerade
+	}
+
+	chain DOCKER {
+	}
+}
+table ip6 filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		counter packets 399736 bytes 581849338 jump ts-input
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy accept;
+		counter packets 0 bytes 0 jump DOCKER-USER
+		counter packets 0 bytes 0 jump DOCKER-FORWARD
+		counter packets 0 bytes 0 jump ts-forward
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 0 bytes 0 jump DOCKER-CT
+		counter packets 0 bytes 0 jump DOCKER-INTERNAL
+		counter packets 0 bytes 0 jump DOCKER-BRIDGE
+	}
+
+	chain DOCKER-USER {
+	}
+
+	chain ts-input {
+		ip6 saddr fd7a:115c:a1e0::5a36:721c iifname "lo" counter packets 0 bytes 0 accept
+		iifname "tailscale0" counter packets 0 bytes 0 accept
+		udp dport 41641 counter packets 3006 bytes 276552 accept
+	}
+
+	chain ts-forward {
+		iifname "tailscale0" counter packets 0 bytes 0 meta mark set mark and 0xff00ffff xor 0x40000
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 accept
+		oifname "tailscale0" counter packets 0 bytes 0 accept
+	}
+
+	chain DOCKER {
+	}
+
+	chain DOCKER-BRIDGE {
+	}
+
+	chain DOCKER-CT {
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+}
+table ip6 nat {
+	chain POSTROUTING {
+		type nat hook postrouting priority srcnat; policy accept;
+		counter packets 2522 bytes 207608 jump ts-postrouting
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 1 bytes 56 jump DOCKER
+	}
+
+	chain OUTPUT {
+		type nat hook output priority dstnat; policy accept;
+		ip6 daddr != ::1 fib daddr type local counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain ts-postrouting {
+		meta mark & 0x00ff0000 == 0x00040000 counter packets 0 bytes 0 xt target "MASQUERADE"
+	}
+
+	chain DOCKER {
+	}
+}
+table ip mangle {
+	chain PREROUTING {
+		type filter hook prerouting priority mangle; policy accept;
+		ct state related,established counter packets 1298037 bytes 540970859 meta mark set ct mark and 0xff0000
+	}
+
+	chain OUTPUT {
+		type route hook output priority mangle; policy accept;
+		ct state new meta mark & 0x00ff0000 != 0x00000000 counter packets 988 bytes 89536 ct mark set mark and 0xff0000
+	}
+}
+table ip6 mangle {
+	chain PREROUTING {
+		type filter hook prerouting priority mangle; policy accept;
+		ct state related,established counter packets 342802 bytes 578047064 meta mark set ct mark and 0xff0000
+	}
+
+	chain OUTPUT {
+		type route hook output priority mangle; policy accept;
+		ct state new meta mark & 0x00ff0000 != 0x00000000 counter packets 772 bytes 68968 ct mark set mark and 0xff0000
+	}
+}
+table ip raw {
+	chain PREROUTING {
+		type filter hook prerouting priority raw; policy accept;
+	}
+}
+table inet vukzero_sq3 {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		ip saddr 172.31.77.13 ip daddr 172.31.77.1 tcp dport 44021 accept
+		ip saddr 172.31.77.13 ip daddr 172.31.77.1 reject with icmp port-unreachable
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		ip saddr 172.31.77.13 reject with icmp port-unreachable
+	}
+}
+# Warning: table ip filter is managed by iptables-nft, do not touch!
+# Warning: table ip nat is managed by iptables-nft, do not touch!
+# Warning: table ip6 filter is managed by iptables-nft, do not touch!
+# Warning: table ip6 nat is managed by iptables-nft, do not touch!
+# Warning: XT target MASQUERADE not found
+# Warning: table ip mangle is managed by iptables-nft, do not touch!
+# Warning: table ip6 mangle is managed by iptables-nft, do not touch!

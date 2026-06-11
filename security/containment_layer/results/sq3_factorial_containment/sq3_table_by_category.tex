@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+Category & C0\_uncontained & B1\_runc\_hardened & B2\_gvisor\_naive & A1\_arch\_only\_runc & A2\_vukzero\_no\_gvisor & C1\_vukzero\_gvisor \\
+\midrule
+A\_identity\_key & 0/3 & 0/3 & 0/3 & 3/3 & 3/3 & 3/3 \\
+B\_wallet\_state & 0/2 & 0/2 & 0/2 & 2/2 & 2/2 & 2/2 \\
+C\_log\_integrity & 0/3 & 0/3 & 0/3 & 3/3 & 3/3 & 3/3 \\
+D\_network\_egress & 0/3 & 0/3 & 0/3 & 3/3 & 3/3 & 3/3 \\
+E\_host\_kernel\_reach & 5/11 & 8/11 & 9/11 & 8/11 & 10/11 & 11/11 \\
+F\_rule\_tampering & 0/2 & 0/2 & 0/2 & 2/2 & 2/2 & 2/2 \\
+\bottomrule
+\end{tabular}
+\caption{Contained probes by category and condition.}
+\label{tab:sq3-factorial-category}
+\end{table}

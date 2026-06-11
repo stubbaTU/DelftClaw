@@ -1,0 +1,1 @@
+condition,suite,attack,model,user_task_id,injection_task_id,utility_success,attack_success,error,num_tool_calls,num_allowed_tool_calls,num_blocked_tool_calls,blocked_reasons,blocked_reason_codes,blocked_denial_classes,final_output_blocked

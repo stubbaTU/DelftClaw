@@ -1,0 +1,68 @@
+[
+  {
+    "condition": "C0_uncontained",
+    "factor_architecture": "off",
+    "factor_runtime": "runc",
+    "hardening": "weak",
+    "returncode": 0,
+    "runtime": "runc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"docker-default (enforce)\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": true, \"namespaces\": {\"cgroup\": \"/proc/298804/ns/cgroup:[4026532348]\", \"ipc\": \"/proc/298804/ns/ipc:[4026532347]\", \"mnt\": \"/proc/298804/ns/mnt:[4026532345]\", \"net\": \"/proc/298804/ns/net:[4026532349]\", \"pid\": \"/proc/298804/ns/pid:[4026531836]\", \"pid_for_children\": \"/proc/298804/ns/pid:[4026531836]\", \"time\": \"/proc/298804/ns/time:[4026531834]\", \"time_for_children\": \"/proc/298804/ns/time:[4026531834]\", \"user\": \"/proc/298804/ns/user:[4026531837]\", \"uts\": \"/proc/298804/ns/uts:[4026532346]\"}, \"proc_1_cmdline\": \"/usr/lib/systemd/systemd\\u0000--system\\u0000--deserialize=51\\u0000\", \"proc_status\": {\"CapEff\": \"00000000a80425fb\", \"CapPrm\": \"00000000a80425fb\", \"NoNewPrivs\": \"0\", \"Seccomp\": \"2\", \"Seccomp_filters\": \"1\"}}\n",
+    "timeout": false
+  },
+  {
+    "condition": "B1_runc_hardened",
+    "factor_architecture": "off",
+    "factor_runtime": "runc-hardened",
+    "hardening": "hardened",
+    "returncode": 0,
+    "runtime": "runc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"vukzero_sq3 (enforce)\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": true, \"namespaces\": {\"cgroup\": \"/proc/1/ns/cgroup:[4026532349]\", \"ipc\": \"/proc/1/ns/ipc:[4026532347]\", \"mnt\": \"/proc/1/ns/mnt:[4026532345]\", \"net\": \"/proc/1/ns/net:[4026532350]\", \"pid\": \"/proc/1/ns/pid:[4026532348]\", \"pid_for_children\": \"/proc/1/ns/pid:[4026532348]\", \"time\": \"/proc/1/ns/time:[4026531834]\", \"time_for_children\": \"/proc/1/ns/time:[4026531834]\", \"user\": \"/proc/1/ns/user:[4026531837]\", \"uts\": \"/proc/1/ns/uts:[4026532346]\"}, \"proc_1_cmdline\": \"python\\u0000/workspace/characterization.py\\u0000\", \"proc_status\": {\"CapEff\": \"0000000000000000\", \"CapPrm\": \"0000000000000000\", \"NoNewPrivs\": \"1\", \"Seccomp\": \"2\", \"Seccomp_filters\": \"1\"}}\n",
+    "timeout": false
+  },
+  {
+    "condition": "B2_gvisor_naive",
+    "factor_architecture": "off",
+    "factor_runtime": "gvisor",
+    "hardening": "hardened",
+    "returncode": 0,
+    "runtime": "runsc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": true, \"namespaces\": {\"ipc\": \"/proc/1/ns/ipc:[2]\", \"mnt\": \"/proc/1/ns/mnt:[5]\", \"net\": \"/proc/1/ns/net:[1]\", \"pid\": \"/proc/1/ns/pid:[4]\", \"user\": \"/proc/1/ns/user:[134]\", \"uts\": \"/proc/1/ns/uts:[3]\"}, \"proc_1_cmdline\": \"python\\u0000/workspace/characterization.py\\u0000\", \"proc_status\": {\"CapEff\": \"0000000000000000\", \"CapPrm\": \"0000000000000000\", \"Seccomp\": \"0\"}}\n",
+    "timeout": false
+  },
+  {
+    "condition": "A1_arch_only_runc",
+    "factor_architecture": "on",
+    "factor_runtime": "runc",
+    "hardening": "weak",
+    "returncode": 0,
+    "runtime": "runc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"docker-default (enforce)\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": false, \"namespaces\": {\"cgroup\": \"/proc/485018/ns/cgroup:[4026532348]\", \"ipc\": \"/proc/485018/ns/ipc:[4026532347]\", \"mnt\": \"/proc/485018/ns/mnt:[4026532345]\", \"net\": \"/proc/485018/ns/net:[4026532349]\", \"pid\": \"/proc/485018/ns/pid:[4026531836]\", \"pid_for_children\": \"/proc/485018/ns/pid:[4026531836]\", \"time\": \"/proc/485018/ns/time:[4026531834]\", \"time_for_children\": \"/proc/485018/ns/time:[4026531834]\", \"user\": \"/proc/485018/ns/user:[4026531837]\", \"uts\": \"/proc/485018/ns/uts:[4026532346]\"}, \"proc_1_cmdline\": \"/usr/lib/systemd/systemd\\u0000--system\\u0000--deserialize=51\\u0000\", \"proc_status\": {\"CapEff\": \"00000000a80425fb\", \"CapPrm\": \"00000000a80425fb\", \"NoNewPrivs\": \"0\", \"Seccomp\": \"2\", \"Seccomp_filters\": \"1\"}}\n",
+    "timeout": false
+  },
+  {
+    "condition": "A2_vukzero_no_gvisor",
+    "factor_architecture": "on",
+    "factor_runtime": "runc-hardened",
+    "hardening": "hardened",
+    "returncode": 0,
+    "runtime": "runc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"vukzero_sq3 (enforce)\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": false, \"namespaces\": {\"cgroup\": \"/proc/1/ns/cgroup:[4026532349]\", \"ipc\": \"/proc/1/ns/ipc:[4026532347]\", \"mnt\": \"/proc/1/ns/mnt:[4026532345]\", \"net\": \"/proc/1/ns/net:[4026532350]\", \"pid\": \"/proc/1/ns/pid:[4026532348]\", \"pid_for_children\": \"/proc/1/ns/pid:[4026532348]\", \"time\": \"/proc/1/ns/time:[4026531834]\", \"time_for_children\": \"/proc/1/ns/time:[4026531834]\", \"user\": \"/proc/1/ns/user:[4026531837]\", \"uts\": \"/proc/1/ns/uts:[4026532346]\"}, \"proc_1_cmdline\": \"python\\u0000/workspace/tmp/characterization.py\\u0000\", \"proc_status\": {\"CapEff\": \"0000000000000000\", \"CapPrm\": \"0000000000000000\", \"NoNewPrivs\": \"1\", \"Seccomp\": \"2\", \"Seccomp_filters\": \"1\"}}\n",
+    "timeout": false
+  },
+  {
+    "condition": "C1_vukzero_gvisor",
+    "factor_architecture": "on",
+    "factor_runtime": "gvisor",
+    "hardening": "hardened",
+    "returncode": 0,
+    "runtime": "runsc",
+    "stderr": "",
+    "stdout": "{\"apparmor_current\": \"\", \"capsh_print\": \"capsh unavailable in image\", \"host_protected_visible\": false, \"namespaces\": {\"ipc\": \"/proc/1/ns/ipc:[2]\", \"mnt\": \"/proc/1/ns/mnt:[5]\", \"net\": \"/proc/1/ns/net:[1]\", \"pid\": \"/proc/1/ns/pid:[4]\", \"user\": \"/proc/1/ns/user:[134]\", \"uts\": \"/proc/1/ns/uts:[3]\"}, \"proc_1_cmdline\": \"python\\u0000/workspace/tmp/characterization.py\\u0000\", \"proc_status\": {\"CapEff\": \"0000000000000000\", \"CapPrm\": \"0000000000000000\", \"Seccomp\": \"0\"}}\n",
+    "timeout": false
+  }
+]

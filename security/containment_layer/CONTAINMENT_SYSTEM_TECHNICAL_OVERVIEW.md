@@ -309,16 +309,13 @@ categories for a Pareto plot.
 ### Evaluation Instance
 
 The redesigned official experiment was completed on June 9, 2026 inside the
-disposable Ubuntu VPS. The completed result directory was:
+disposable Ubuntu VPS. The completed VPS result directory was
+`results/sq3_factorial_containment_20260609_145203` (the run timestamp is
+also recorded in `sq3_run_metadata.json`). Its complete contents are shipped
+in the repository at:
 
 ```text
-results/sq3_factorial_containment_20260609_145203
-```
-
-The archived export was:
-
-```text
-results/sq3_factorial_containment_20260609_145203.tar.gz
+security/containment_layer/results/sq3_factorial_containment/
 ```
 
 The evaluated container image was:
@@ -599,11 +596,27 @@ sq3_table_factor_effects.tex
 run.log
 ```
 
-The official VPS result artifacts behind the reported tables are shipped in
-the repository under:
+The official VPS result artifacts behind the reported numbers are shipped in
+the repository under `security/containment_layer/results/`, mapped to the
+paper as follows:
 
 ```text
-security/containment_layer/results/
+sq3_factorial_containment/
+  sq3_official_summary.json          per-condition results (paper Figure 3)
+  sq3_factor_effects.json            factor means (paper Table 5)
+  sq3_pareto.csv                     latency/containment trade-off (Sec. 5.3)
+  sq3_table_main.tex                 generated source of the main table
+  sq3_table_by_category.tex          per-category breakdown table
+  sq3_table_factor_effects.tex       generated source of paper Table 5
+  records.csv / records.jsonl        all 2,904 raw per-trial records
+  sq3_run_metadata.json              pinned environment (paper Sec. 6.2)
+  sq3_condition_characterization.json  per-condition posture evidence
+  sq3_probe_battery.jsonl            the exact 24-probe battery
+  sq3_nft_ruleset_*.txt              per-condition egress rulesets
+  sq3_seccomp_profile.json           seccomp profile as run
+  sq3_apparmor_profile               AppArmor profile as run
+  sq3_docker_network.txt             Docker network configuration
+  run.log / master.log               execution logs
 ```
 
 ## VPS Workflow

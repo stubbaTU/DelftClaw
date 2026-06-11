@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "agentdojo_expected_package": "/root/progent/agentdojo/src/agentdojo",
+    "agentdojo_module_file": "/root/progent/agentdojo/src/agentdojo/__init__.py",
+    "attack": "tool_knowledge",
+    "benchmark_version": "v1.1.2",
+    "conditions": [
+      "C1_agentdojo_vukzero"
+    ],
+    "dry_run": false,
+    "model": "gpt-4o-mini-2024-07-18",
+    "openai_base_url": "http://127.0.0.1:8001/v1",
+    "secagent_configuration_present": false,
+    "secagent_disabled": true,
+    "suite": "banking"
+  },
+  "metrics_by_condition": [
+    {
+      "attack": "tool_knowledge",
+      "attack_success_rate": 0.0,
+      "blocked_tool_call_rate": 0.3471698113207547,
+      "condition": "C1_agentdojo_vukzero",
+      "error_count": 0,
+      "false_deny_count": 0,
+      "false_deny_rate": 0.0,
+      "mean_blocked_tool_calls": 1.2777777777777777,
+      "model": "gpt-4o-mini-2024-07-18",
+      "num_trials": 144,
+      "security_denial_count": 176,
+      "suite": "banking",
+      "utility_ceiling_denial_count": 8,
+      "utility_success_rate": 0.3263888888888889
+    }
+  ]
+}

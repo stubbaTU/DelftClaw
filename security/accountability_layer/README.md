@@ -2,8 +2,8 @@
 
 This package implements the SQ2 live OpenClaw-agent measurement harness.
 
-For the full implementation, evaluation methodology, clean merged live
-results, retry provenance, and interpretation, see:
+For the full implementation, evaluation methodology, results, and
+interpretation, see:
 
 ```text
 security/accountability_layer/ACCOUNTABILITY_SYSTEM_TECHNICAL_OVERVIEW.md

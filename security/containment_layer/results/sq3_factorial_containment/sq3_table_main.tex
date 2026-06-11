@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\begin{tabular}{lllrrrr}
+\toprule
+Condition & Runtime & Arch & Contained & Fallout & FP rate & Median ms \\
+\midrule
+C0\_uncontained & runc & off & 5/24 & 6 & 0.00 & 742.8 \\
+B1\_runc\_hardened & runc-hardened & off & 8/24 & 6 & 0.00 & 721.7 \\
+B2\_gvisor\_naive & gvisor & off & 9/24 & 6 & 0.00 & 843.8 \\
+A1\_arch\_only\_runc & runc & on & 21/24 & 1 & 0.00 & 715.3 \\
+A2\_vukzero\_no\_gvisor & runc-hardened & on & 23/24 & 1 & 0.00 & 687.6 \\
+C1\_vukzero\_gvisor & gvisor & on & 24/24 & 0 & 0.00 & 915.5 \\
+\bottomrule
+\end{tabular}
+\caption{SQ3 factorial containment results.}
+\label{tab:sq3-factorial-main}
+\end{table}

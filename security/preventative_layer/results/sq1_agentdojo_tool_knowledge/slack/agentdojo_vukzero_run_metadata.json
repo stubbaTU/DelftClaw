@@ -1,0 +1,15 @@
+{
+  "agentdojo_expected_package": "/root/progent/agentdojo/src/agentdojo",
+  "agentdojo_module_file": "/root/progent/agentdojo/src/agentdojo/__init__.py",
+  "attack": "tool_knowledge",
+  "benchmark_version": "v1.1.2",
+  "conditions": [
+    "C1_agentdojo_vukzero"
+  ],
+  "dry_run": false,
+  "model": "gpt-4o-mini-2024-07-18",
+  "openai_base_url": "http://127.0.0.1:8001/v1",
+  "secagent_configuration_present": false,
+  "secagent_disabled": true,
+  "suite": "slack"
+}

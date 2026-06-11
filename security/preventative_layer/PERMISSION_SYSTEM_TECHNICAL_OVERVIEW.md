@@ -442,36 +442,11 @@ non-injected trials, while this experiment scores injected task pairs.
 Utility-ceiling denials and the measured utility success rate provide the more
 useful indication of conservative enforcement.
 
-### Valid Result Sources
-
-The original all-suite run completed Slack, Travel, and Banking without
-errors. Its first Workspace execution encountered a compatibility error
-between the newer VukZero final-output representation and the older Progent
-fork. That failed Workspace output contained one synthetic error row and is
-excluded.
-
-After the adapter was changed to preserve the Progent fork's plain-string
-message-content representation, Workspace was rerun separately. The valid
-Workspace retry completed 240 trials with zero errors. This compatibility fix
-changed only the representation of a guarded final assistant message; it did
-not change capability derivation, policy rules, provenance checks, or tool-call
-allow/deny decisions. Consequently, the reported result set consists of:
-
-```text
-Workspace: successful compatibility-fixed retry
-Slack:     original completed all-suite run
-Travel:    original completed all-suite run
-Banking:   original completed all-suite run
-```
-
-A later Slack repeatability run is not included in the results below until its
-complete exported metrics and error status are verified. The reported Slack
-result is the first valid completed run rather than a selectively chosen
-repeat.
+### Comparison Baselines
 
 The C0 and C2 comparison values below are the previously completed same-fork
-evaluation results supplied for the same four suites, `tool_knowledge` attack,
-and `gpt-4o-mini-2024-07-18` agent-visible model.
+evaluation results for the same four suites, `tool_knowledge` attack, and
+`gpt-4o-mini-2024-07-18` agent-visible model.
 
 ### Results by Suite
 
@@ -716,9 +691,19 @@ agentdojo_vukzero_false_denies.csv
 run.log
 ```
 
-The official VPS result artifacts behind the reported tables are shipped in
-the repository under:
+The official VPS result artifacts behind the reported numbers are shipped in
+the repository under `security/preventative_layer/results/`, mapped to the
+paper as follows:
 
 ```text
-security/preventative_layer/results/
+sq1_agentdojo_tool_knowledge/
+  workspace/                         per-suite C1 exports (paper Figure 2,
+  slack/                             Tables 2 and 6 derive from these four
+  travel/                            suites' metrics, trials, and decision
+  banking/                           logs)
 ```
+
+Each suite directory contains the complete export set listed above plus the
+AgentDojo per-trial output tree. The per-suite
+`agentdojo_vukzero_metrics_by_condition.csv` files contain the exact utility,
+ASR, and denial-class numbers reported in the paper.

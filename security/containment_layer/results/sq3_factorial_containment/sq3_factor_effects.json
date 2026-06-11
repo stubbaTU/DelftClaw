@@ -1,0 +1,51 @@
+{
+  "by_architecture": [
+    {
+      "conditions": 3,
+      "factor": "architecture",
+      "level": "off",
+      "mean_boundary_denied_rate": 0.8571428571428571,
+      "mean_containment_rate": 0.3055555555555555,
+      "mean_fallout_radius": 6.0,
+      "mean_false_positive_rate": 0.0
+    },
+    {
+      "conditions": 3,
+      "factor": "architecture",
+      "level": "on",
+      "mean_boundary_denied_rate": 0.8571428571428571,
+      "mean_containment_rate": 0.9444444444444445,
+      "mean_fallout_radius": 0.6666666666666666,
+      "mean_false_positive_rate": 0.0
+    }
+  ],
+  "by_runtime": [
+    {
+      "conditions": 2,
+      "factor": "runtime",
+      "level": "gvisor",
+      "mean_boundary_denied_rate": 1.0,
+      "mean_containment_rate": 0.6875,
+      "mean_fallout_radius": 3.0,
+      "mean_false_positive_rate": 0.0
+    },
+    {
+      "conditions": 2,
+      "factor": "runtime",
+      "level": "runc",
+      "mean_boundary_denied_rate": 0.7142857142857143,
+      "mean_containment_rate": 0.5416666666666666,
+      "mean_fallout_radius": 3.5,
+      "mean_false_positive_rate": 0.0
+    },
+    {
+      "conditions": 2,
+      "factor": "runtime",
+      "level": "runc-hardened",
+      "mean_boundary_denied_rate": 0.8571428571428571,
+      "mean_containment_rate": 0.6458333333333334,
+      "mean_fallout_radius": 3.5,
+      "mean_false_positive_rate": 0.0
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+attacker_strategy,condition,detected,detection_rate,false_positive_rate,mean_collusive_endorsements_accepted,mean_fallout_broadcasts,mean_fraudulent_microtasks_accepted,mean_fraudulent_reputation_gain,mean_wash_trades_accepted,median_detected_lag_events,threshold,trials
+threshold_aware,B2_signed_nopattern,15,0.375,0.0,0.5,2.875,0.25,0.425,0.25,0.0,1,40
+threshold_aware,B2_signed_nopattern,15,0.375,0.0,0.5,2.875,0.25,0.425,0.25,0.0,2,40
+threshold_aware,B2_signed_nopattern,15,0.375,0.0,0.5,2.875,0.25,0.425,0.25,0.0,3,40
+threshold_aware,C1_vukzero_accountability,15,0.375,0.18181818181818182,0.5,2.875,0.25,0.425,0.25,0.0,3,40
+threshold_aware,C1_vukzero_accountability,0,0.0,0.0,0.5,4.0,0.25,0.425,0.25,,6,40
+threshold_aware,C1_vukzero_accountability,0,0.0,0.0,0.5,4.0,0.25,0.425,0.25,,7,40
+threshold_aware,C1_vukzero_accountability,0,0.0,0.0,0.5,4.0,0.25,0.425,0.25,,8,40
+threshold_aware,C1_vukzero_accountability,0,0.0,0.0,0.5,4.0,0.25,0.425,0.25,,9,40
+threshold_aware,C1_vukzero_accountability,0,0.0,0.0,0.5,4.0,0.25,0.425,0.25,,10,40

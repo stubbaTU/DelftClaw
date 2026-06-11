@@ -1,0 +1,4 @@
+attacker_strategy,condition,detected,detection_rate,false_positive_rate,mean_collusive_endorsements_accepted,mean_fallout_broadcasts,mean_fraudulent_microtasks_accepted,mean_fraudulent_reputation_gain,mean_wash_trades_accepted,median_detected_lag_events,threshold,trials
+naive,B1_rules_mutable,60,1.0,0.0,1.9166666666666667,3.6666666666666665,0.5,1.0333333333333334,1.25,2.0,5,60
+naive,B2_signed_nopattern,15,0.25,0.0,2.0,6.916666666666667,0.5,1.1166666666666667,1.4166666666666667,1.0,5,60
+naive,C1_vukzero_accountability,60,1.0,0.0,1.9166666666666667,3.6666666666666665,0.5,1.0333333333333334,1.25,2.0,5,60

@@ -1,0 +1,51 @@
+{
+  "by_condition": [
+    {
+      "censored_runs": 60,
+      "condition": "C0_naive_reputation",
+      "expelled_runs": 0,
+      "expulsion_rate": 0.0,
+      "mean_reputation_lag_events": 7.416666666666667,
+      "mean_reputation_lag_rounds": 8.75,
+      "median_reputation_lag_events": 7.0,
+      "median_reputation_lag_rounds": 9.0,
+      "runs": 60
+    },
+    {
+      "censored_runs": 0,
+      "condition": "C1_vukzero_accountability",
+      "expelled_runs": 60,
+      "expulsion_rate": 1.0,
+      "mean_reputation_lag_events": 2.6666666666666665,
+      "mean_reputation_lag_rounds": 3.3333333333333335,
+      "median_reputation_lag_events": 2.0,
+      "median_reputation_lag_rounds": 3.0,
+      "runs": 60
+    }
+  ],
+  "error_trial_count": 0,
+  "fallout_by_condition": [
+    {
+      "condition": "C0_naive_reputation",
+      "mean_collusive_endorsements_accepted": 2.0,
+      "mean_fallout_broadcasts": 8.416666666666666,
+      "mean_fraudulent_microtasks_accepted": 1.0,
+      "mean_fraudulent_reputation_gain": 1.5416666666666667,
+      "mean_wash_trades_accepted": 1.4166666666666667,
+      "median_fallout_broadcasts": 8.0,
+      "runs": 60
+    },
+    {
+      "condition": "C1_vukzero_accountability",
+      "mean_collusive_endorsements_accepted": 1.9166666666666667,
+      "mean_fallout_broadcasts": 3.6666666666666665,
+      "mean_fraudulent_microtasks_accepted": 0.5,
+      "mean_fraudulent_reputation_gain": 0.5833333333333335,
+      "mean_wash_trades_accepted": 1.25,
+      "median_fallout_broadcasts": 3.0,
+      "runs": 60
+    }
+  ],
+  "successful_trial_count": 120,
+  "trial_count": 120
+}

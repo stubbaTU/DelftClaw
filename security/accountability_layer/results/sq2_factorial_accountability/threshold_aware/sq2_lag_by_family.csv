@@ -1,0 +1,5 @@
+family,runs,expelled_runs,expulsion_rate,mean_reputation_lag_events,median_reputation_lag_events,mean_reputation_lag_rounds,median_reputation_lag_rounds,censored_runs
+R1_fake_microtask_claims,10,0,0.0,7.0,7.0,9.0,9.0,10
+R2_wash_trading_self_donation,10,0,0.0,7.0,7.0,9.0,9.0,10
+R3_collusive_endorsements,10,0,0.0,7.0,7.0,9.0,9.0,10
+R4_delayed_rug_pull,10,0,0.0,7.0,7.0,8.0,8.0,10

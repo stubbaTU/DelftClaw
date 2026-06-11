@@ -1,0 +1,3 @@
+condition,runs,mean_fallout_broadcasts,median_fallout_broadcasts,mean_fraudulent_microtasks_accepted,mean_wash_trades_accepted,mean_collusive_endorsements_accepted,mean_fraudulent_reputation_gain
+B1_rules_mutable,60,8.416666666666666,8.0,1.0,1.4166666666666667,2.0,0.0
+C1_vukzero_accountability,60,8.416666666666666,8.0,1.0,1.4166666666666667,2.0,0.0

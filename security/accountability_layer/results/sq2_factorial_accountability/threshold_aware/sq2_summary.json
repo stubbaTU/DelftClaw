@@ -1,0 +1,30 @@
+{
+  "by_condition": [
+    {
+      "censored_runs": 40,
+      "condition": "C1_vukzero_accountability",
+      "expelled_runs": 0,
+      "expulsion_rate": 0.0,
+      "mean_reputation_lag_events": 7.0,
+      "mean_reputation_lag_rounds": 8.75,
+      "median_reputation_lag_events": 7.0,
+      "median_reputation_lag_rounds": 9.0,
+      "runs": 40
+    }
+  ],
+  "error_trial_count": 0,
+  "fallout_by_condition": [
+    {
+      "condition": "C1_vukzero_accountability",
+      "mean_collusive_endorsements_accepted": 0.5,
+      "mean_fallout_broadcasts": 4.0,
+      "mean_fraudulent_microtasks_accepted": 0.25,
+      "mean_fraudulent_reputation_gain": 0.32500000000000007,
+      "mean_wash_trades_accepted": 0.25,
+      "median_fallout_broadcasts": 4.0,
+      "runs": 40
+    }
+  ],
+  "successful_trial_count": 40,
+  "trial_count": 40
+}

@@ -1,0 +1,6 @@
+OUT=results/sq2_tamper_20260610T034028Z
+started=2026-06-10T03:40:28+00:00
+model=openai/gpt-4o-mini-2024-07-18
+base_url=https://openrouter.ai/api/v1
+request_timeout_s=300
+finished=2026-06-10T06:25:00+00:00

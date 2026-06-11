@@ -1,0 +1,3 @@
+condition,count,detection_reason,family
+C1_vukzero_accountability,10,fake_microtask_claim,R1_fake_microtask_claims
+C1_vukzero_accountability,5,self_donation,R2_wash_trading_self_donation

@@ -863,12 +863,28 @@ analysis/ablation_stats/sq2_significance.csv
 analysis/ablation_stats/sq2_survival.csv
 ```
 
-The official VPS result artifacts behind the reported tables are shipped in
-the repository under:
+The official VPS result artifacts behind the reported numbers are shipped in
+the repository under `security/accountability_layer/results/`, mapped to the
+paper as follows:
 
 ```text
-security/accountability_layer/results/
+sq2_factorial_accountability/        the 240-trial live factorial run
+  naive/                             C0-vs-C1 naive corpus (paper Table 3)
+  threshold_aware/                   adaptive strategy (paper Table 4)
+  sybil_split/                       adaptive strategy (paper Table 4)
+  honest_dilution/                   adaptive strategy (paper Table 4)
+  scenarios_<strategy>.jsonl         frozen scenario corpora as executed
+  RUN_ROOT.txt                       run configuration and timestamp
+
+sq2_tamper_experiment/               the 120-trial measured tamper run
+  sq2_log_integrity.csv              B1 suppression / C1 detection per trial
+  (plus the standard per-run exports listed above)
 ```
+
+Each strategy directory contains the complete per-run export set listed
+above, including `analysis/` (threshold sweeps, operating points, ablations)
+and `trials/` with the per-scenario Ed25519-signed `accountability.log`
+evidence chains.
 
 ## Reproducibility Metadata
 

@@ -1,0 +1,33 @@
+{
+  "agent_specs": {
+    "auditor": "/root/DelftClaw/security/accountability_layer/agent_specs/auditor_agent.md",
+    "honest": "/root/DelftClaw/security/accountability_layer/agent_specs/honest_agent.md",
+    "primary_attacker": "/root/DelftClaw/security/accountability_layer/agent_specs/primary_attacker.md",
+    "sybil": "/root/DelftClaw/security/accountability_layer/agent_specs/sybil_agent.md"
+  },
+  "attacker_strategies": [
+    "sybil_split"
+  ],
+  "base_url": "https://openrouter.ai/api/v1",
+  "conditions": [
+    "C1_vukzero_accountability"
+  ],
+  "created_at_unix": 1781059495.5065951,
+  "estimator_interval": 1,
+  "expulsion_threshold": 5,
+  "inject_tamper": false,
+  "max_iterations": 5,
+  "mode": "live-llm",
+  "model": "openai/gpt-4o-mini-2024-07-18",
+  "platform": "Linux-6.8.0-59-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]",
+  "request_timeout_s": 300.0,
+  "run_id": "sq2_openclaw_accountability_1781056500",
+  "runtime": "openclaw-agent",
+  "scenario_count": 40,
+  "scenarios": "results/sq2_accountability_factorial_20260609T225417Z/scenarios_sybil_split.jsonl",
+  "start_openclaw_runtime": false,
+  "temperature": 0.0,
+  "threshold_selection_rule": "lowest threshold with ambiguous-honest FP <= 5%",
+  "trial_count": 40
+}
