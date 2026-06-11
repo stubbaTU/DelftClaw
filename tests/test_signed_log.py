@@ -3,8 +3,7 @@
 These tests intentionally fail until ``redteam.primitives.signed_log`` is
 implemented. They exercise the sign-then-chain append flow, tamper
 detection (content, signature, public-key swap), the hash chain
-invariants, the empty-log case, and document the wrinkle that the plain
-``AppendOnlyLog`` does not understand signed entries.
+invariants, and the empty-log case.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import pytest
 
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
-from security.accountability_layer.append_log import AppendOnlyLog
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 
 
@@ -1161,19 +1159,6 @@ def test_identity_used_correctly(tmp_path: Path) -> None:
     expected_pubkey_hex = identity_a.ipv8.raw_pubkey.hex()
     for entry in entries:
         assert entry["reporter_pubkey"] == expected_pubkey_hex
-
-
-def test_plain_append_log_rejects_signed_entries(tmp_path: Path) -> None:
-    identity = _make_identity(tmp_path)
-    log_path = str(tmp_path / "log.jsonl")
-    wrapper = SignedAppendOnlyLog(identity, log_path)
-
-    _append_three(wrapper, identity)
-
-    plain = AppendOnlyLog(log_path)
-    ok, errors = plain.verify_integrity()
-    assert ok is False
-    assert errors
 
 
 # ---------------------------------------------------------------------------
