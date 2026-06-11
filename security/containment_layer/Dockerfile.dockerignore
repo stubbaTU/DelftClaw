@@ -1,0 +1,16 @@
+# BuildKit per-Dockerfile ignore for the SQ3 harness image (used when
+# building with -f security/containment_layer/Dockerfile). Keeps version
+# control, caches, scratch logs, and shipped result artifacts out of the
+# image; the experiment regenerates everything it needs.
+.git
+.idea
+.pytest_cache
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+logs
+results
+security/**/results
+*.log
+node_modules

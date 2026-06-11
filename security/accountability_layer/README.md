@@ -97,17 +97,15 @@ detection contribution of cross-agent pattern analysis.
 
 The reviewer-oriented SQ2 redesign adds adaptive attackers, ambiguous-honest
 agents, ablations, a measured tamper attack, threshold sweeps, survival
-analysis, effect sizes, and confidence intervals. The complete VPS procedure is:
-
-```text
-security/accountability_layer/SQ2_EVALUATION_RUNBOOK.md
-```
+analysis, effect sizes, and confidence intervals. The complete VPS procedure
+is documented in the "VPS Workflow" section of
+`ACCOUNTABILITY_SYSTEM_TECHNICAL_OVERVIEW.md`.
 
 The full live runner defaults to the GPT-4o-mini alias used by the current
 AgentDojo evaluation:
 
 ```bash
-nohup ./run_sq2_accountability_evaluation.sh > results/sq2_factorial_master.log 2>&1 &
+nohup security/accountability_layer/run_sq2_accountability_evaluation.sh > results/sq2_factorial_master.log 2>&1 &
 ```
 
 Post-hoc analysis does not invoke the model:

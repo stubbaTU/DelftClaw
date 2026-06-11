@@ -57,3 +57,10 @@ configs/host.env
 # inspection; regenerated on every run
 examples/pull_sync_artifacts/
 /results/
+
+# Track the curated official result artifacts shipped for paper
+# reproducibility (security/<layer>/results/), overriding the generic
+# results/ and *.log ignores above. Scratch results/ at the repo root
+# stays ignored.
+!security/**/results/
+!security/**/results/**
