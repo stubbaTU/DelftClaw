@@ -23,7 +23,7 @@ table ip filter {
 	}
 
 	chain ts-input {
-		ip saddr 100.116.114.28 iifname "lo" counter packets 0 bytes 0 accept
+		ip saddr 100.0.0.0 iifname "lo" counter packets 0 bytes 0 accept
 		iifname "tailscale0" counter packets 3361 bytes 902439 accept
 		udp dport 41641 counter packets 9546 bytes 1757826 accept
 		ip saddr 100.115.92.0/23 iifname != "tailscale0" counter packets 0 bytes 0 return
