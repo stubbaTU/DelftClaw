@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redteam-ablation"
+version = "0.0.1"
+description = "Phase A redteam-ablation harness (offline framework) for the CSE3000 Blockchain-for-AI-Agents paper"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography",
+    "pyyaml",
+]
+
+[tool.setuptools]
+packages = [
+    "redteam_ablation",
+    "redteam_ablation.primitives",
+    "redteam_ablation.interceptors",
+    "redteam_ablation.runtime",
+    "redteam_ablation.catalogue",
+    "redteam_ablation.metrics",
+    "redteam_ablation.substrates",
+    "redteam_ablation.substrates.agentdojo_native",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

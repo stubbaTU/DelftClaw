@@ -1,0 +1,26 @@
+# Pinned to the versions installed into .venv during the scaffold phase.
+# Regenerate the full transitive set with:
+#   .venv/Scripts/python.exe -m pip freeze
+cryptography==48.0.0
+PyYAML==6.0.3
+pytest==9.0.3
+# Direct dependency of the CLI (repo-root .env loading in main()); was already
+# present transitively via agentdojo.
+python-dotenv==1.2.2
+
+# Substrate 2 ONLY (redteam_ablation.substrates.agentdojo_native): the AgentDojo
+# benchmark harness. Core modules stay stdlib + cryptography + PyYAML and must
+# never import it. Pulls provider SDKs (anthropic/openai/...) as transitive
+# deps; none are constructed without explicit backend wiring.
+agentdojo==0.1.35
+
+# Substrate 1 live path ONLY (redteam_ablation.live.server.build_app): the
+# FastMCP harness server. Lazy-imported -- the offline core (live.trace /
+# live.provision / runtime.openclaw / cli --fake) never imports it, so core
+# modules stay stdlib + cryptography + PyYAML. Only the --live CLI path and the
+# importorskip-guarded server test pull it.
+fastmcp==3.4.2
+
+# Phase 2 (real LLM judge / OpenClaw runtime) will add the Anthropic SDK
+# explicitly for the OpenClaw substrate.
+# anthropic==<pin-at-phase-2>
