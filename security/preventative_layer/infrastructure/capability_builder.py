@@ -25,7 +25,7 @@ def build_capabilities_from_user_task(
     tool_specs: Iterable[ToolSecuritySpec],
     explicit_tools: Iterable[str] | None = None,
 ) -> list[Capability]:
-    """Build capabilities from a trusted task and its actual tool catalog."""
+    """Build capabilities from a trusted task and its actual tool catalog by calling the trusted planner."""
 
     specs = list(tool_specs)
     classifications = {spec.name: classify_tool(spec) for spec in specs}

@@ -17,7 +17,7 @@ class EffectClass(str, Enum):
 
 @dataclass(frozen=True)
 class ToolSecuritySpec:
-    """Trusted metadata used to classify and authorize a tool."""
+    """Trusted metadata used to classify and authorize a tool (comes from deployment catalog, never runtime content)."""
 
     name: str
     description: str = ""
@@ -27,6 +27,9 @@ class ToolSecuritySpec:
 
 @dataclass(frozen=True)
 class ToolClassification:
+    """
+    Dataclass representing the result of a tool classification.
+    """
     name: str
     effect_class: EffectClass
     action: str
@@ -104,8 +107,17 @@ SENSITIVE_TERMS = {
     "token",
     "wallet",
 }
+
+
 def classify_tool(spec: ToolSecuritySpec) -> ToolClassification:
-    """Classify a tool from trusted metadata, failing ambiguous cases closed."""
+    """
+    Precedence Ladder that fails closed!
+    1. Explicit annotation wins (but if READ_AUTHORITATIVE uses a mutable source, it's downgraded to READ_CONTENT)
+    2. If any SENSITIVE_TERMS are present, classify as EFFECT.
+    3. If any EFFECT_PREFIXES are present, classify as EFFECT.
+    4. If any READ_PREFIXES are present, classify as READ_CONTENT (to be safe).
+    5. Otherwise, classify as EFFECT.
+    """
 
     explicit = _explicit_effect(spec.annotations)
     if explicit is not None:
@@ -142,7 +154,9 @@ def tool_security_spec(
     fallback_name: str | None = None,
     annotation_overrides: Mapping[str, Any] | None = None,
 ) -> ToolSecuritySpec:
-    """Extract security metadata from common OpenAI/MCP/tool wrapper shapes."""
+    """
+    Pull the tool specification out of whatever shape the tool object has and auto-mark tools with typed return annotations.
+    """
 
     name = str(getattr(tool, "name", fallback_name or "") or fallback_name or "")
     description = str(getattr(tool, "description", "") or "")

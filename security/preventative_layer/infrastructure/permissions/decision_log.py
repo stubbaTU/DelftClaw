@@ -10,6 +10,9 @@ from security.preventative_layer.infrastructure.permissions.models import Capabi
 
 
 class DecisionLog:
+    """
+    Builds a log of permission requests and decisions, which can be exported to a JSONL file for auditing and analysis (for devs).
+    """
     def __init__(self) -> None:
         self._entries: list[dict[str, Any]] = []
 

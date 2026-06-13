@@ -17,7 +17,12 @@ PROVENANCE_RESOURCE_LABELS = {
 
 
 def build_provenance_policy() -> Policy:
-    """Build the generic SQ1 provenance policy."""
+    """
+    Returns the three-rule Policy:
+    1. Allow read access to authoritative sources (trusted provenance)
+    2. Allow read access to content sources (untrusted provenance)
+    3. Allow effects (state-changing operations) only if the task has trusted provenance and the agent has the required capabilities, validated by specific validators.
+    """
 
     labels = dict(PROVENANCE_RESOURCE_LABELS)
     rules = [

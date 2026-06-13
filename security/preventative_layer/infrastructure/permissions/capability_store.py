@@ -4,6 +4,9 @@ from security.preventative_layer.infrastructure.permissions.models import Capabi
 
 
 class CapabilityStore:
+    """
+    Holds issued capabilities, a revoked set, and a use counter.
+    """
     def __init__(self) -> None:
         self._capabilities: dict[str, Capability] = {}
         self._revoked: set[str] = set()

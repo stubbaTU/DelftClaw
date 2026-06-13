@@ -60,10 +60,9 @@ def build_task_capabilities(
     task_id: str,
     explicit_tools: Iterable[str] | None = None,
 ) -> list[Capability]:
-    """Build effect capabilities from trusted task text and trusted tool metadata.
-
-    `explicit_tools` is the preferred production path for a signed/approved
-    capability manifest. When absent, a deterministic metadata planner is used.
+    """Deterministic + build effect capabilities from trusted task text and trusted tool metadata.
+        - if explicit_tools is given, authorize those directly
+        - otherwise check the tool's action verb and the tool's object to construct the capability.
     """
 
     explicit = set(explicit_tools or ())

@@ -9,12 +9,18 @@ DecisionEffect = Literal["allow", "deny", "allow_via_proxy"]
 
 @dataclass(frozen=True)
 class Subject:
+    """
+    Who is acting and in what role (the role is what policy rules match on e.g normal agent.)
+    """
     subject_id: str
     role: str
 
 
 @dataclass(frozen=True)
 class Resource:
+    """
+    Thing that the subject is acting on (wallet, message...).
+    """
     resource_id: str
     label: str
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -22,6 +28,9 @@ class Resource:
 
 @dataclass(frozen=True)
 class Capability:
+    """
+    Dataclass saying "this subject may do this action on this resource for this task", with optional constraints and expiration.
+    """
     capability_id: str
     subject_id: str
     allowed_action: str
@@ -34,6 +43,9 @@ class Capability:
 
 @dataclass(frozen=True)
 class PermissionRequest:
+    """
+    Dataclass representing a permission request for a tool-call: provides everything the permission engine needs to decide.
+    """
     request_id: str
     subject: Subject
     tool_name: str
@@ -53,6 +65,9 @@ class PermissionRequest:
 
 @dataclass(frozen=True)
 class PermissionDecision:
+    """
+    Verdict of permission request: allow, deny, or allow_via_proxy with accompanying reason and metadata.
+    """
     request_id: str
     decision: DecisionEffect
     reason: str
@@ -66,6 +81,9 @@ class PermissionDecision:
 
 @dataclass(frozen=True)
 class ValidationResult:
+    """
+    Validation of arguments through checking provenance.
+    """
     ok: bool
     reason: str
     sanitized_args: dict[str, Any] | None = None
@@ -75,6 +93,9 @@ class ValidationResult:
 
 @dataclass(frozen=True)
 class PolicyRule:
+    """
+    A single allow/deny rule of a tool call
+    """
     id: str
     role: str
     action: str
@@ -88,6 +109,9 @@ class PolicyRule:
 
 @dataclass(frozen=True)
 class Policy:
+    """
+    Full set of policy rules for a tool call.
+    """
     version: int
     default_effect: Literal["deny"]
     roles: dict[str, dict[str, Any]]

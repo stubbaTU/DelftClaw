@@ -27,6 +27,9 @@ class RegisteredTool:
 
 
 class ToolBroker:
+    """
+    Provides a unified interface for registering and calling tools (most importantly, denied calls never touch the actual implementation).
+    """
     def __init__(self, permission_engine: PermissionEngine) -> None:
         self.permission_engine = permission_engine
         self._tools: dict[str, RegisteredTool] = {}

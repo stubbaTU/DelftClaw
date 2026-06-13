@@ -34,7 +34,7 @@ IDENTIFIER_KEYS = {
 
 
 class Origin(IntEnum):
-    """Trust origin. Higher-trust origins take precedence for equal values."""
+    """Trust origin. Higher-trust origins take precedence when the same value appears twice."""
 
     UNTRUSTED = 1
     AUTH_READ = 2
@@ -77,7 +77,11 @@ def extract_task_vocabulary(text: str) -> set[str]:
 
 @dataclass
 class ProvenanceStore:
-    """Tracks value origins without granting effect authority to loose vocabulary."""
+    """
+    It is a per-task store seeded from the trusted task text.
+    - On init, it extracts task literals and marks them TASK-trusted, and looser task vocab is stored separately.
+      -> loose vocab can authorize lookup keys, but not effect arguments.
+    """
 
     trusted_task_text: str
     provenance: dict[str, Origin] = field(default_factory=dict)
@@ -102,6 +106,7 @@ class ProvenanceStore:
         return any(origin == Origin.UNTRUSTED for origin in self.provenance.values())
 
     def observe(self, value: Any, origin: Origin) -> None:
+        # records a value's trust
         for candidate in canonical_values(value):
             self.provenance[candidate] = max(origin, self.provenance.get(candidate, origin))
 
@@ -114,6 +119,9 @@ class ProvenanceStore:
         tool_name: str = "",
         authoritative_lookup_args: tuple[str, ...] | None = None,
     ) -> None:
+        # for a READ_AUTHORITATIVE tool, only returned typed id fields are promoted to AUTH_READ (if the lookup inputs themselves were trusted).
+        # everything else is UNTRUSTED, including all outputs of non-authoritative reads, and authoritative reads with untrusted inputs or that return untyped content.
+        # purpose -> don't blindly trust authoritative reads.
         args = call_args or {}
         if effect_class is EffectClass.READ_AUTHORITATIVE and args and authoritative_lookup_args is None:
             inputs_trusted = False
@@ -165,6 +173,7 @@ class ProvenanceStore:
         return bool(candidate_words) and candidate_words.issubset(self.task_vocabulary)
 
     def is_trusted(self, value: Any, capability: Capability | None = None) -> bool:
+        # only if the value is >=AUTH_READ or if it matches the capability's authorized literals.
         candidates = canonical_values(value)
         if not candidates:
             return True
@@ -180,6 +189,7 @@ class ProvenanceStore:
         return bool(candidates.intersection(authorized))
 
     def untrusted_influence(self, value: Any) -> str | None:
+        # checks if the argument itself contains a known untrusted string (as a substring).
         candidate = normalize(value)
         for untrusted in sorted(self.untrusted_values, key=len, reverse=True):
             if len(untrusted) >= 3 and untrusted in candidate:
@@ -192,7 +202,16 @@ def validate_effect_provenance(
     provenance: ProvenanceStore,
     capabilities: Iterable[Capability],
 ) -> ValidationResult:
-    """Require trusted provenance for every effect argument by default."""
+    """
+    1. if no matching capability, deny as a capability mismatch.
+    2. if the tool broadcasts after an untrusted read, deny (its the strict anti-exfiltration guard).
+    3. for each arg:
+        - if declared neutral, allow unless has untrusted influence.
+        - if capability binds a literal to the arg, it must match the bound literal.
+        - else it must be trusted to be authorized.
+
+    DENIAL CLASSES: confirmed blocks vs. conservative blocks (could not prove an argument is trusted)
+    """
 
     capability = matching_capability(request, capabilities)
     if capability is None:

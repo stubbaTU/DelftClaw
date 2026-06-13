@@ -46,6 +46,7 @@ def parse_policy(
     known_validators: set[str] | None = None,
     known_proxies: set[str] | None = None,
 ) -> Policy:
+    """Validate an in-memory policy mapping and return a typed ``Policy``."""
     version = data.get("version")
     if not isinstance(version, int):
         raise PolicyLoadError("policy.version must be an integer")

@@ -13,6 +13,9 @@ ValidatorFn = Callable[[PermissionRequest], ValidationResult]
 
 
 class ValidatorRegistry:
+    """
+    Maps validator names to validator functions.
+    """
     def __init__(self) -> None:
         self._validators: dict[str, ValidatorFn] = {}
 
@@ -33,6 +36,9 @@ class ValidatorRegistry:
 
 
 def default_validator_registry(egress_guard: EgressGuard | None = None) -> ValidatorRegistry:
+    """
+    Encode proxies/validators to allow X, but not Y at the argument level.
+    """
     guard = egress_guard or EgressGuard()
     registry = ValidatorRegistry()
     registry.register("nonce_only", nonce_only)

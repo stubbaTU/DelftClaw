@@ -16,6 +16,9 @@ DEFAULT_SECRET_PATTERNS = [
 
 
 class EgressGuard:
+    """
+    Last line of defense checking that no outgoing payload contains sensitive information.
+    """
     def __init__(self, secret_patterns: list[str] | None = None) -> None:
         self.secret_patterns = secret_patterns or list(DEFAULT_SECRET_PATTERNS)
 

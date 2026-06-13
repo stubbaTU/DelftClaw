@@ -1,10 +1,3 @@
-"""Policy schema helpers for VukZero permission policies.
-
-The project uses dataclasses for runtime policy objects. This module provides
-the schema-facing names and validation entry point so callers do not have to
-import the YAML loader directly when they already have an in-memory mapping.
-"""
-
 from typing import Any
 
 from security.preventative_layer.infrastructure.permissions.models import Policy, PolicyRule

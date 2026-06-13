@@ -17,6 +17,9 @@ PROTECTED_PATH_MARKERS = (
 
 
 class ResourceRegistry:
+    """
+    Maps resource IDs to resources and paths to resource IDs.
+    """
     def __init__(self) -> None:
         self._resources: dict[str, Resource] = {}
         self._path_map: dict[Path, str] = {}

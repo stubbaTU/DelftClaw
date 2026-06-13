@@ -1,3 +1,6 @@
+"""
+How VukZERO inserts itself at AgentDojo's tool-execution boundary.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +31,9 @@ def build_agentdojo_tool_broker(
     tool_specs: list[ToolSecuritySpec] | None = None,
     explicit_capability_tools: list[str] | None = None,
 ) -> tuple[ToolBroker, list[Any], DecisionLog, ProvenanceStore]:
+    """
+    Constructs a ToolBroker for AgentDojo with security instrumentation.
+    """
     subject = subject or Subject("agentdojo_agent", "normal_agent")
     specs = list(tool_specs or [])
     classifications = {spec.name: classify_tool(spec) for spec in specs}

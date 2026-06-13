@@ -10,6 +10,10 @@ from security.preventative_layer.infrastructure.permissions.validators import Va
 
 
 class PermissionEngine:
+    """
+    Reference monitor that decides whether a request is allowed or denied.
+    It resolves resources, finds matching rules, looks for capabilities, runs validators, and applies proxies.
+    """
     def __init__(
         self,
         policy: Policy,
