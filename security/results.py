@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 def write_json(path: str | Path, data: Any):
+    """
+    Export helper for writing JSON data (used in the security/results directory).
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:
@@ -12,6 +15,9 @@ def write_json(path: str | Path, data: Any):
 
 
 def write_csv(path: str | Path, rows: Iterable[dict[str, Any]]):
+    """
+    Export helper for writing CSV data (used in the security/results directory).
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     rows = list(rows)
@@ -28,6 +34,9 @@ def write_csv(path: str | Path, rows: Iterable[dict[str, Any]]):
 
 
 def _to_jsonable(value: Any) -> Any:
+    """
+    Helper for converting dataclasses to JSON-serializable dictionaries.
+    """
     if is_dataclass(value):
         return _to_jsonable(asdict(value))
     if isinstance(value, dict):

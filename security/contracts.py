@@ -4,6 +4,9 @@ from typing import Any
 
 
 class SecurityAction(StrEnum):
+    """
+    Closed Set of Event Types that can happen
+    """
     LLM_DECISION = "llm_decision"
     TOOL_EXECUTION_SUCCESS = "tool_execution_success"
     UNAUTHORIZED_TOOL_REQUEST = "unauthorized_tool_request"
@@ -28,6 +31,9 @@ class SecurityAction(StrEnum):
 
 @dataclass
 class AccountabilityMetrics:
+    """
+    The per-subject scorecard for accountability experiments.
+    """
     subject_id: str
     accountability_enabled: bool
     attempted_actions: int
@@ -58,6 +64,9 @@ class AccountabilityMetrics:
 
 @dataclass
 class SeedboxDonationEvidence:
+    """
+    Typed record for donation evidence.
+    """
     donation_id: str
     seedbox_id: str
     donor_id: str
@@ -72,6 +81,9 @@ class SeedboxDonationEvidence:
 
 @dataclass
 class AtomicMicrotaskEvidence:
+    """
+    Typed record for (verifiable) atomic microtask evidence.
+    """
     task_id: str
     seedbox_id: str
     prover_id: str
