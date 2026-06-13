@@ -193,9 +193,7 @@ rejected if they contain observed untrusted content.
 
 Public or broadcast effects receive an additional coarse guard: after any
 untrusted read, they cannot carry non-neutral content unless the trusted tool
-metadata explicitly approves that flow. This closes simple paraphrase-based
-exfiltration at the cost of rejecting some legitimate summarize-and-publish
-workflows.
+metadata explicitly approves that flow.
 
 Task literals can also be bound to individual capability argument positions
 using trusted `bind_task_literals` metadata. Numeric task literals are not

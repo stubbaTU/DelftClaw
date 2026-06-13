@@ -7,7 +7,7 @@ from identity.agent_identity import AgentIdentity
 
 
 class OpenClawIdentity:
-    """Compatibility adapter backed by the canonical AgentIdentity bundle."""
+    """Compatibility adapter backed by AgentIdentity."""
 
     def __init__(self, network: str = "MAINNET", key_path: str | Path | None = None):
         self.network = network.upper()

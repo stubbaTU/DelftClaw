@@ -28,12 +28,6 @@ class SecurityAction(StrEnum):
 
 @dataclass
 class AccountabilityMetrics:
-    """
-    Quantitative output for the reputation-lag and fallout-radius experiment.
-
-    fallout_radius is the accepted harmful impact before detection or expulsion.
-    """
-
     subject_id: str
     accountability_enabled: bool
     attempted_actions: int
