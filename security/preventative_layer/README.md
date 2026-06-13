@@ -32,9 +32,8 @@ security/preventative_layer/
   run_c1_vukzero_all4_toolknowledge.sh  all-four-suite C1 run script
 ```
 
-The documented CLI entry point `python -m
-security.agentdojo_vukzero.agentdojo_runner` is a thin wrapper around
-`evaluation/agentdojo_runner.py`.
+The SQ1 entry point is `python -m
+security.preventative_layer.evaluation.agentdojo_runner`.
 
 ## Generic Tool Classification
 
@@ -663,7 +662,7 @@ export AGENTDOJO_PATH="$HOME/progent/agentdojo"
 export SECAGENT_DISABLE="True"
 unset SECAGENT_POLICY_MODEL SECAGENT_UPDATE SECAGENT_IGNORE_UPDATE_ERROR SECAGENT_SUITE
 
-python -m security.agentdojo_vukzero.agentdojo_runner \
+python -m security.preventative_layer.evaluation.agentdojo_runner \
   --condition C1_agentdojo_vukzero \
   --suite SUITE_NAME \
   --benchmark-version v1.1.2 \

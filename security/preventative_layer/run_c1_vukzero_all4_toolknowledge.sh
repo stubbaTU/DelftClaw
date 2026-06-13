@@ -44,7 +44,7 @@ mkdir -p "$RUN_ROOT"
 for SUITE in workspace slack travel banking; do
   echo "START suite=$SUITE attack=tool_knowledge time=$(date -Is)"
 
-  python -m security.agentdojo_vukzero.agentdojo_runner \
+  python -m security.preventative_layer.evaluation.agentdojo_runner \
     --condition C1_agentdojo_vukzero \
     --suite "$SUITE" \
     --benchmark-version v1.1.2 \
