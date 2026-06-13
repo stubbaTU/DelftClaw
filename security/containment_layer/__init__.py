@@ -1,9 +1,4 @@
-"""SQ3 system-level containment evaluation.
-
-This package evaluates the fallout radius of a compromised agent process
-against local mock protected resources. It is intentionally deterministic:
-attacks are direct shell/Python/proxy/network attempts, not LLM refusals.
-"""
+"""SQ3 system-level containment evaluation."""
 
 from security.containment_layer.evaluation.conditions import DEFAULT_CONDITIONS
 

@@ -6,7 +6,9 @@ from typing import Any
 
 
 class MutableJSONLog:
-    """Plain mutable JSONL substrate used by the B1 accountability ablation."""
+    """
+    Plain JSONL log with no cryptohgraphy (so mutable hashes, exposes functions to manipulate log)
+    """
 
     def __init__(self, log_path: str | Path) -> None:
         self.log_path = str(log_path)
@@ -65,7 +67,7 @@ class MutableJSONLog:
 
 
 class ReplayLog:
-    """In-memory append/scan adapter for post-hoc estimator replay."""
+    """In-memory append/scan adapter for post-hoc estimator replay to save money on API Costs (no need to run B1/B2)."""
 
     def __init__(self, entries: list[dict[str, Any]]) -> None:
         self._source = list(entries)

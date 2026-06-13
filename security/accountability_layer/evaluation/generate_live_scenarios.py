@@ -40,6 +40,9 @@ def generate_scenarios(
     attacker_strategy: str = "naive",
     intensities: list[str] | None = None,
 ) -> list[SQ2LiveScenario]:
+    """
+    Produces corpus of attacks
+    """
     if seeds_per_cell < 1:
         raise ValueError("seeds_per_cell must be >= 1")
     if attacker_strategy not in ATTACKER_STRATEGIES:
@@ -60,6 +63,9 @@ def generate_scenarios(
 
 
 def _build_scenario(family: str, intensity: str, seed: int, attacker_strategy: str) -> SQ2LiveScenario:
+    """
+    Assembles single scenario: seeds a believable history of honest work, then injects a burst of family-specific malicious events, followed by a defection attempt and some post-defection activity to create a meaningful robustness boundary for C0's decision.
+    """
     rng = random.Random(f"{family}:{intensity}:{seed}:{attacker_strategy}")
     events: list[SQ2LiveEvent] = []
 

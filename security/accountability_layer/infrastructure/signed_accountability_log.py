@@ -9,10 +9,8 @@ from redteam.primitives.signed_log import SignedAppendOnlyLog
 
 
 class SQ2SignedAccountabilityLog:
-    """SQ2 adapter around the project-wide SignedAppendOnlyLog.
-
-    This keeps SQ2 from creating a second signed-log implementation while
-    exposing the compact append/verify/export interface described in SQ2.md.
+    """
+    SQ2 adapter around the redteam SignedAppendOnlyLog.
     """
 
     def __init__(self, identity: OpenClawIdentity, log_path: str | Path) -> None:

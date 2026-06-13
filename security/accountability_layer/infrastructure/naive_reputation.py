@@ -36,6 +36,7 @@ class NaiveReputationState:
     fraudulent_reputation_gain: float = 0.0
 
     def process_event(self, event: SQ2LiveEvent) -> NaiveEventDecision:
+        # accepts essentially everything, applies reputation by blindly trusting claims, and onl expels after 5 direct defections
         actor = event.actor_id
         if actor in self.expelled_agents:
             return NaiveEventDecision(accepted=False, blocked=True, reason="actor already expelled")

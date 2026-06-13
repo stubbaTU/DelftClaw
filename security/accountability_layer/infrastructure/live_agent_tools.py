@@ -1,3 +1,6 @@
+"""
+Exposes the OpenClaw tool surface, but offers a local fallback.
+"""
 from __future__ import annotations
 
 import json

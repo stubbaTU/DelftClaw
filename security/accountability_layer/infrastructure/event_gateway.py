@@ -9,7 +9,7 @@ from security.accountability_layer.infrastructure.live_scenario_schema import (
     sanitized_event_for_agent,
 )
 
-
+# maps event types to corresponding tools
 EVENT_TYPE_TO_TOOL = {
     "microtask_assigned": "record_microtask_assigned",
     "microtask_reported": "claim_microtask_completed",
@@ -39,12 +39,7 @@ def normalize_reputation_tool_call(
     tool_args: dict[str, Any],
     source: str = "live_openclaw_tool_call",
 ) -> GatewayResult:
-    """Convert a live SQ2 tool call into the canonical evaluator event.
-
-    The frozen scenario remains the source of truth for event identity and
-    payload. Live tool arguments are preserved as metadata and checked for
-    obvious actor/tool mismatches, but hidden fields such as ground truth are
-    never copied into the canonical event.
+    """Convert an SQ2 call into the canonical format expected by the reputation gateway.
     """
     expected_tool = EVENT_TYPE_TO_TOOL.get(event.event_type)
     reasons: list[str] = []

@@ -1,1 +1,1 @@
-"""SQ accountability_layer infrastructure components."""
+"""SQ2 accountability_layer infrastructure components."""

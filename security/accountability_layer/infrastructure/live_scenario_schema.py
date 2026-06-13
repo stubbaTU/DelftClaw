@@ -40,6 +40,9 @@ EVENT_TYPES = {
 
 @dataclass(frozen=True)
 class SQ2LiveEvent:
+    """
+    A single event (scenario step) in a live scenario.
+    """
     index: int
     round: int
     timestamp: str
@@ -56,6 +59,9 @@ class SQ2LiveEvent:
 
 @dataclass(frozen=True)
 class SQ2LiveScenario:
+    """
+    A live scenario, including all events and metadata.
+    """
     scenario_id: str
     family: str
     intensity: str
@@ -109,6 +115,9 @@ def write_scenarios(path: str | Path, scenarios: list[SQ2LiveScenario]) -> None:
 
 
 def validate_scenarios(scenarios: list[SQ2LiveScenario]) -> list[str]:
+    """
+    Checks that the given scenarios are valid. Returns a list of error messages.
+    """
     errors: list[str] = []
     seen_ids: set[str] = set()
     for scenario in scenarios:
@@ -148,7 +157,7 @@ def validate_scenarios(scenarios: list[SQ2LiveScenario]) -> list[str]:
 
 
 def sanitized_event_for_agent(event: SQ2LiveEvent) -> dict[str, Any]:
-    """Return event instructions without evaluator-only labels."""
+    """Return event instructions without evaluator-only labels (ground truth firewall)."""
     return {
         "index": event.index,
         "round": event.round,
@@ -161,6 +170,9 @@ def sanitized_event_for_agent(event: SQ2LiveEvent) -> dict[str, Any]:
 
 
 def normalize_condition(condition: str) -> str:
+    """
+    Maps legacy condition names to the new names.
+    """
     if condition == LEGACY_CONDITION_C0:
         return CONDITION_C0
     if condition == LEGACY_CONDITION_C1:

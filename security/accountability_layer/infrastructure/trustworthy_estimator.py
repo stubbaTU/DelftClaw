@@ -1,3 +1,6 @@
+"""
+This reputation engine/trustworthy estimator reconstructs behavior inrementally from the log and maintains separate reputation/suspicion scores depending on the microtask done.
+"""
 from __future__ import annotations
 
 import itertools
@@ -53,6 +56,7 @@ class TrustworthyEstimator:
     _endorsements: list[dict[str, Any]] = field(default_factory=list)
 
     def scan(self) -> list[dict[str, Any]]:
+        # entry point
         appended: list[dict[str, Any]] = []
         for entry in self.log.read_entries():
             entry_hash = str(entry.get("entry_hash") or "")

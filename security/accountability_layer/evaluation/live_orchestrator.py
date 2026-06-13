@@ -26,7 +26,7 @@ from security.accountability_layer.infrastructure.live_agent_tools import (
     build_sq2_live_tools,
     event_tool_for_type,
     scripted_tool_message,
-    tool_args_for_event,
+    tool_args_for_event, ToolRegistry,
 )
 from security.accountability_layer.infrastructure.live_scenario_schema import (
     ACCOUNTABILITY_CONDITIONS,
