@@ -76,6 +76,9 @@ def build_agent_docker_command(fixture: Any, network_name: str, image: str, gate
             "-e", f"OPENAI_BASE_URL=http://{DOCKER_GATEWAY_IP}:{gateway_port}/v1",
             "-e", f"PROXY_BASE=http://{DOCKER_GATEWAY_IP}:{gateway_port}/proxy",
             "-e", "PYTHONPATH=/repo",
+            "-e", "HOME=/tmp",
+            "-e", "BCL_DATABASE_DIR=/tmp/.bitcoinlib",
+            "-e", "XDG_CACHE_HOME=/tmp/.cache",
         ],
     )
     if command[-3:] != [image, "python", "/repo/security/integration/agent_in_container.py"]:
