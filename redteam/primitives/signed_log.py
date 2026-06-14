@@ -113,11 +113,19 @@ class SignedAppendOnlyLog(_LegacyAppendOnlyBase):
     ) -> None:
         if identity is None:
             raise ValueError("identity must not be None")
-        from identity.agent_identity import AgentIdentity
-        from identity.openclaw_identity import OpenClawIdentity
+        # The AgentIdentity adapter is only needed when a caller passes an
+        # in-memory AgentIdentity (test/dev paths). It pulls in the optional
+        # ipv8/identity stack; when that backend is unavailable, SQ2/SQ3 and
+        # other production callers already pass a compatible signing identity,
+        # so fall back to using it as-is rather than failing log construction.
+        try:
+            from identity.agent_identity import AgentIdentity
+            from identity.openclaw_identity import OpenClawIdentity
 
-        if isinstance(identity, AgentIdentity):
-            identity = OpenClawIdentity.from_agent_identity(identity)
+            if isinstance(identity, AgentIdentity):
+                identity = OpenClawIdentity.from_agent_identity(identity)
+        except ImportError:
+            pass
         # Accept str or pathlib.Path (or any os.PathLike). Coerce to str so
         # downstream I/O sites work uniformly. ``os.fspath`` may also return
         # bytes — reject that explicitly so log_path stays str everywhere.
