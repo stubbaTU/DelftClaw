@@ -133,7 +133,8 @@ def _render_transcript(result: dict[str, Any]) -> str:
     denied = _find_l1(l1, "attempt_reward_redirect") or {}
     allowed = _find_l1(l1, "broadcast_donation") or {}
     per_agent = est["per_agent"]
-    honest = sorted(scenario.HONEST_SET)
+    honest = sorted(scenario.HONEST_AGENTS)
+    ambiguous = sorted(scenario.AMBIGUOUS_HONEST_AGENTS)
     expelled = est["expelled"]
 
     def _agent_line(agent_id: str) -> str:
@@ -146,7 +147,7 @@ def _render_transcript(result: dict[str, Any]) -> str:
         "VukZERO single-process multi-agent full-stack end-to-end demo (illustrative; not main results).",
         f"One container process inside C1_vukzero_gvisor (runtime=runsc, table=inet {NFT_TABLE}, image {result['image_digest']}).",
         f"Sole permitted egress = host gateway on port {result['gateway_port']}, relaying {MODEL} and mediated resource proxies.",
-        f"Roster: honest {honest}, ambiguous-honest {sorted(scenario.AMBIGUOUS_HONEST_AGENTS)}, "
+        f"Roster: honest {honest}, ambiguous-honest {ambiguous}, "
         f"attacker {scenario.PRIMARY_ATTACKER}, sybils {sorted(scenario.SYBIL_AGENTS)}.",
         "",
         "=== Multi-agent seedbox accountability episode (one process, several roles) ===",
@@ -154,10 +155,10 @@ def _render_transcript(result: dict[str, Any]) -> str:
         f"-> {'ALLOWED (submitted via proxy)' if allowed.get('result', {}).get('ok') else 'FAILED'}",
         f"[L1 in-container] model -> {denied.get('actor', 'M0')} {denied.get('tool', 'attempt_reward_redirect')} "
         f"-> {'DENIED' if denied.get('result', {}).get('blocked') else 'UNEXPECTED'} ({denied.get('result', {}).get('reason_code', '')})",
-        f"[L2 host est.] expelled = {expelled}; honest/ambiguous not expelled = {honest + sorted(scenario.AMBIGUOUS_HONEST_AGENTS)}",
+        f"[L2 host est.] expelled = {expelled}; honest/ambiguous not expelled = {honest + ambiguous}",
         f"[L2 host est.] cross-agent detection reasons = {est['reasons']}",
     ]
-    for agent_id in [scenario.PRIMARY_ATTACKER, *sorted(scenario.SYBIL_AGENTS), *honest, *sorted(scenario.AMBIGUOUS_HONEST_AGENTS)]:
+    for agent_id in [scenario.PRIMARY_ATTACKER, *sorted(scenario.SYBIL_AGENTS), *honest, *ambiguous]:
         lines.append(_agent_line(agent_id))
     lines.extend([
         f"[L2 host est.] false positives (honest expelled) = {est['false_positive_count']}",
