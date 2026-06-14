@@ -7,6 +7,7 @@ from pathlib import Path
 from redteam.primitives.signed_log import SignedAppendOnlyLog
 from security.accountability_layer.infrastructure.trustworthy_estimator import TrustworthyEstimator
 from security.containment_layer.infrastructure.protected_resources import create_protected_fixture, destroy_fixture, verify_fixture_integrity
+from security.integration import scenario
 from security.integration.e2e_fullstack import _accept_expected_log_growth, _tamper_and_restore, build_agent_docker_command
 from security.integration.gateway import AllowedPeerGateway, GatewayState
 
@@ -47,6 +48,34 @@ def test_gateway_log_appends_feed_real_estimator(tmp_path: Path) -> None:
         estimator.scan()
         assert estimator.is_expelled("M0") is True
         assert estimator.get_suspicion("M0") == 6
+    finally:
+        destroy_fixture(fixture)
+
+
+def test_multi_agent_scenario_expels_attacker_cluster_without_false_positives(tmp_path: Path) -> None:
+    fixture = create_protected_fixture("e2e_multi_agent", tmp_path)
+    state = GatewayState(fixture, "")
+    try:
+        for event in scenario.logged_events():
+            response = state.dispatch_proxy("log", "append_event", scenario.append_body(event))
+            assert response["ok"] is True
+        log = SignedAppendOnlyLog(fixture.signing_identity, fixture.paths["accountability_log"])
+        estimator = TrustworthyEstimator(
+            log,
+            fixture.signing_identity.identity_hash,
+            pattern_detection=True,
+            expulsion_threshold=5,
+            honest_agents=set(scenario.HONEST_SET),
+        )
+        estimator.scan()
+        assert scenario.EXPECTED_EXPELLED.issubset(estimator.expelled_agents)
+        assert not (scenario.HONEST_SET & estimator.expelled_agents)
+        assert estimator.is_expelled("HA0") is False
+        assert estimator.false_positive_count == 0
+        all_reasons = {reason for reasons in estimator.detection_reasons.values() for reason in reasons}
+        assert scenario.EXPECTED_REASONS.issubset(all_reasons)
+        assert "two_node_wash_trade" in estimator.detection_reasons.get("M0", [])
+        assert "collusive_endorsement_cluster" in estimator.detection_reasons.get("M0", [])
     finally:
         destroy_fixture(fixture)
 
