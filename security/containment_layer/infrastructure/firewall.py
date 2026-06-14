@@ -13,6 +13,9 @@ NFT_TABLE = "vukzero_sq3"
 
 @dataclass(frozen=True)
 class FirewallBackend:
+    """
+    Which firewall backend is in use. (nftables vs iptables backed by nf_tables vs none)
+    """
     name: str
     docker_backend: str
     iptables_version: str
@@ -30,6 +33,9 @@ class FirewallBackend:
 
 
 def detect_firewall_backend() -> FirewallBackend:
+    """
+    Sets precedence: nftables > iptables-nf_tables > unavailable
+    """
     docker_backend = _cmd_text(["docker", "info", "--format", "{{.FirewallBackend}}"])
     iptables_version = _cmd_text(["iptables", "--version"]) if shutil.which("iptables") else ""
     nft_version = _cmd_text(["nft", "--version"]) if shutil.which("nft") else ""
@@ -68,6 +74,10 @@ def egress_filter(
     out_dir: Path,
     artifact_label: str = "",
 ) -> Iterator[None]:
+    """
+    Accepts container traffic to allowed peer port, but rejects everything else
+    """
+
     if backend.name == "native_nftables":
         with _native_nft_filter(
             container_ip=container_ip,

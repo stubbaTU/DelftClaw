@@ -32,6 +32,9 @@ def characterize_condition(
     condition: Condition,
     run_container: Callable[[Condition, str], dict[str, Any]],
 ) -> dict[str, Any]:
+    """
+    Runs independent container and records the actual security posture (exported as JSON).
+    """
     result = run_container(condition, CHARACTERIZATION_SCRIPT)
     return {
         "condition": condition.id,

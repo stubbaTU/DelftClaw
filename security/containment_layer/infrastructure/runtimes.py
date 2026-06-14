@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Runtime:
+    """
+    Frozen dataclass representing a container runtime.
+    """
     name: str
     docker_runtime_flag: str
     notes: str
@@ -19,7 +22,9 @@ class Runtime:
             return []
         return [f"--runtime={self.docker_runtime_flag}"]
 
-
+"""
+Normal docker contianer vs gvisor runtimes.
+"""
 RUNTIMES = {
     "runc": Runtime(
         name="runc",

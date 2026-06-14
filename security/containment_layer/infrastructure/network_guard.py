@@ -22,6 +22,9 @@ class _ReusableTCPServer(socketserver.ThreadingTCPServer):
 
 @dataclass
 class MockEndpoint:
+    """
+    Mock TCP endpoint that can be used to communicate with the network guard.
+    """
     name: str
     server: _ReusableTCPServer
     thread: threading.Thread
@@ -46,6 +49,9 @@ class MockEndpoint:
 
 @dataclass
 class NetworkGuard:
+    """
+    Used to simulate a network guard that enforces egress restrictions for testing purposes.
+    """
     allowed_peer_endpoint: MockEndpoint
     unauthorized_exfil_endpoint: MockEndpoint
     uses_iptables: bool = False

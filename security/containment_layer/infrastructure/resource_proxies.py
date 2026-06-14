@@ -13,6 +13,9 @@ from security.containment_layer.infrastructure.protected_resources import Protec
 
 @dataclass
 class ProxyResponse:
+    """
+    Says whether a proxy call was successful and, if so, what data it returned.
+    """
     ok: bool
     data: dict[str, Any] | None = None
     error: str = ""

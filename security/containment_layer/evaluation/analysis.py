@@ -1,3 +1,6 @@
+"""
+Math and analysis functions for the containment layer evaluation.
+"""
 from __future__ import annotations
 
 import math

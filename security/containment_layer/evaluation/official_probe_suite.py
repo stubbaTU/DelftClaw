@@ -12,6 +12,9 @@ ProbeKind = Literal["probe", "legitimate"]
 
 @dataclass(frozen=True)
 class OfficialProbe:
+    """
+    One deterministic hostile probe dataclass.
+    """
     id: str
     category: str
     asset_category: str
@@ -26,7 +29,7 @@ class OfficialProbe:
 
 
 def official_probe_battery() -> list[OfficialProbe]:
-    """Return the deterministic SQ3 paper probe battery.
+    """Return the deterministic probe battery.
 
     The probes are grouped into A-F protected-asset categories. E5-E11 are
     non-weaponized runtime-boundary characterization probes. Legitimate

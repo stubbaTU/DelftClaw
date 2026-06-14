@@ -1,3 +1,6 @@
+"""
+Orchestration file for the containment evaluation.
+"""
 from __future__ import annotations
 
 import argparse

@@ -7,6 +7,9 @@ from security.containment_layer.infrastructure.runtimes import Runtime, get_runt
 
 @dataclass(frozen=True)
 class Condition:
+    """
+    Creates one of six conditions that can be evaluated.
+    """
     id: str
     runtime_name: str
     hardening: str

@@ -47,6 +47,9 @@ class LocalSignedIdentity:
 
 @dataclass
 class ProtectedFixture:
+    """
+    Mock world state for a single trial.
+    """
     trial_id: str
     root: Path
     host_protected: Path
@@ -61,6 +64,9 @@ class ProtectedFixture:
 
 @dataclass
 class IntegrityResult:
+    """
+    After-run integrity check result.
+    """
     ok: bool
     modified_files: list[str] = field(default_factory=list)
     deleted_files: list[str] = field(default_factory=list)
@@ -80,6 +86,9 @@ class IntegrityResult:
 
 
 def create_protected_fixture(trial_id: str, base_dir: Path) -> ProtectedFixture:
+    """
+    Builds a fresh world state for a single trial using mock canaries and a minimal identity.
+    """
     safe_trial_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in trial_id)
     root = Path(base_dir) / f"vukzero_sq3_{safe_trial_id}"
     if root.exists():

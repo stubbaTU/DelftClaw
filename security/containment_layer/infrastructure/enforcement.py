@@ -13,6 +13,9 @@ from security.containment_layer.infrastructure.runtimes import RUNTIMES
 
 
 def detect_enforcement_support() -> dict[str, Any]:
+    """
+    Probe the system for the presence of various enforcement mechanisms.
+    """
     firewall = detect_firewall_backend()
     return {
         "platform": platform.system(),
@@ -43,6 +46,9 @@ def detect_enforcement_support() -> dict[str, Any]:
 
 
 def write_enforcement_inventory(out_dir: str | Path) -> dict[str, Any]:
+    """
+    Dump the results of the enforcement probe to a JSON file.
+    """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     report = detect_enforcement_support()
