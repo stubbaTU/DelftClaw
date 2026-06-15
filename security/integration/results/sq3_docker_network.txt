@@ -1,0 +1,4 @@
+name=sq3_vukzero_1132556
+subnet=172.31.77.0/24
+gateway=172.31.77.1
+C1_vukzero_gvisor=172.31.77.15
