@@ -13,7 +13,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from identity.app_key import AppSigningKey
-from identity.mls_key import MLSSigningKey
 from identity.ipv8_key import IPv8KeyPair
 from identity.seed import Seed
 from identity.wallet import Wallet
@@ -40,38 +39,23 @@ def _fernet_key(passphrase: str, salt: bytes) -> bytes:
 
 
 class AgentIdentity:
-    """Identity bundle containing IPv8, MLS/app signing, and wallet keys."""
+    """Identity bundle containing IPv8, app-signing, and wallet keys."""
 
     def __init__(
         self,
         network: str = "TESTNET",
         agent_index: int = 0,
         mnemonic: str | None = None,
-        *,
-        ipv8: IPv8KeyPair | None = None,
-        app: AppSigningKey | None = None,
-        wallet: Wallet | None = None,
-        mls: MLSSigningKey | None = None,
     ) -> None:
         self._network = _normalize_network(network)
         self._agent_index = int(agent_index)
         if self._agent_index < 0:
             raise ValueError("agent_index must be non-negative")
 
-        # Backward-compatible branch for old constructor usage.
-        if ipv8 is not None and app is not None and wallet is not None:
-            self._mnemonic = mnemonic or ""
-            self._ipv8 = ipv8
-            self._app = app
-            self._wallet = wallet
-            self._mls = mls or MLSSigningKey.generate()
-            return
-
         self._mnemonic = mnemonic or Seed.generate_mnemonic(128)
         seed = Seed.from_mnemonic(self._mnemonic)
         self._ipv8 = IPv8KeyPair.from_seed(seed)
         self._app = AppSigningKey.from_seed(seed)
-        self._mls = MLSSigningKey.from_seed(seed)
         self._wallet = Wallet.from_seed(seed, network=self._network, agent_index=self._agent_index)
 
     @classmethod
@@ -103,11 +87,6 @@ class AgentIdentity:
     def app(self) -> AppSigningKey:
         """Application signing key used by communication layer."""
         return self._app
-
-    @property
-    def mls(self) -> MLSSigningKey:
-        """MLS signing key wrapper."""
-        return self._mls
 
     @property
     def wallet(self) -> Wallet:
@@ -149,7 +128,6 @@ class AgentIdentity:
         return {
             "agent_id": self.identity_hash,
             "ipv8_pubkey": self._ipv8.public_key_bytes.hex(),
-            "mls_pubkey": self._mls.public_key_bytes.hex(),
             "wallet_address": self._wallet.address(),
             "wallet_xpub": self._wallet.xpub,
             "network": self._network,

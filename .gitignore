@@ -45,6 +45,9 @@ logs/
 # Runtime logs (signed audit logs, agent action logs, harness output)
 *.log
 
+# Generated experiment run artifacts
+results/runs/
+
 # Local per-agent DelftClaw/OpenClaw configs
 configs/*.local.env
 # Per-host overrides (Tailscale IPs, QWEN_BASE_URL/MODEL, BTC_NETWORK).

@@ -1,8 +1,9 @@
 """Opt-in secure deAI lineage primitives.
 
 The package is intentionally inert unless callers import and use it.
-Runtime admission, IPv8 handshakes, and regtest anchoring remain deferred
-until the core proof format is stable.
+Runtime admission and IPv8 handshake integration remain opt-in through
+the agent/runtime and communication layers; regtest anchoring is still
+out of this package-local surface.
 """
 
 from identity.lineage.models import (
