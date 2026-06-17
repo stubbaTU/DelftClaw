@@ -1,9 +1,9 @@
-# VukZERO Integration — End-to-End Demo
+# VukZero Integration — End-to-End Demo
 
 ## Summary
 
 This is an **illustrative end-to-end demo, not a main experiment**. Each of the
-three VukZERO layers is measured on its own elsewhere (`preventative_layer/`,
+three VukZero layers is measured on its own elsewhere (`preventative_layer/`,
 `accountability_layer/`, `containment_layer/`); this package wires all three into
 **one container process** and shows them enforcing together on a single
 multi-agent episode.

@@ -1,4 +1,4 @@
-# VukZERO Preventative Layer — Agent Permission System
+# VukZero Preventative Layer — Agent Permission System
 
 ## Summary
 
@@ -116,7 +116,7 @@ The evaluation uses three conditions over the `workspace`, `slack`, `travel`, an
 `banking` suites under the `tool_knowledge` attack with `gpt-4o-mini`:
 
 - **C0** — the same fork, undefended (raw tools);
-- **C1** — VukZERO mediates every tool call;
+- **C1** — VukZero mediates every tool call;
 - **C2** — Progent, a recent privilege-control defense, as a like-for-like
   baseline.
 
@@ -126,7 +126,7 @@ trials where the injection task succeeded (lower is better). Utility under attac
 
 ## Results
 
-Across 589 valid injected trials, VukZERO gave the lowest attack success rate of
+Across 589 valid injected trials, VukZero gave the lowest attack success rate of
 the three conditions and reached zero measured injection success in three of the
 four suites.
 
@@ -138,7 +138,7 @@ four suites.
 | Banking | 32.64% | **0.00%** | 27.08% | 0.00% |
 | **Macro avg** | **26.87%** | **3.81%** | **29.47%** | **8.66%** |
 
-- VukZERO reduced ASR in every suite relative to undefended, and beat Progent on
+- VukZero reduced ASR in every suite relative to undefended, and beat Progent on
   macro-average ASR (3.81% vs 8.66%).
 - The cost is utility under attack: macro utility 26.87% vs ~48% (undefended) and
   ~47% (Progent). This is the deliberate trade-off of strict value-provenance —

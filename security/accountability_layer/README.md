@@ -1,8 +1,8 @@
-# VukZERO Accountability Layer — Tamper-Evident Behavioral Recording
+# VukZero Accountability Layer — Tamper-Evident Behavioral Recording
 
 ## Summary
 
-The accountability layer is what VukZERO relies on *after* a compromise begins.
+The accountability layer is what VukZero relies on *after* a compromise begins.
 It assumes prevention has already failed and a malicious agent is acting, and
 asks a different question: can the network **record** that behavior in a way that
 can't be quietly rewritten, **detect** it from history, and **expel** the

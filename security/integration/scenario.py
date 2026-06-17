@@ -1,5 +1,5 @@
 """
-Multi-agent seedbox scenario to test E2E integration of VukZERO
+Multi-agent seedbox scenario to test E2E integration of VukZero
 """
 from __future__ import annotations
 

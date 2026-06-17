@@ -1,5 +1,5 @@
 """
-How VukZERO inserts itself at AgentDojo's tool-execution boundary.
+How VukZero inserts itself at AgentDojo's tool-execution boundary.
 """
 from __future__ import annotations
 

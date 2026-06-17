@@ -1,1 +1,1 @@
-"""Single-process full-stack VukZERO integration demo."""
+"""Single-process full-stack VukZero integration demo."""

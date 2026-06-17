@@ -1,5 +1,5 @@
 """
-Host orchestration for the VukZERO single-process full-stack demo.
+Host orchestration for the VukZero single-process full-stack demo.
 """
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def _render_transcript(result: dict[str, Any]) -> str:
         return f"    {agent_id}: {verdict} (suspicion {info.get('suspicion', 0)}; {reasons})"
 
     lines = [
-        "VukZERO single-process multi-agent full-stack end-to-end demo (illustrative; not main results).",
+        "VukZero single-process multi-agent full-stack end-to-end demo (illustrative; not main results).",
         f"One container process inside C1_vukzero_gvisor (runtime=runsc, table=inet {NFT_TABLE}, image {result['image_digest']}).",
         f"Sole permitted egress = host gateway on port {result['gateway_port']}, relaying {MODEL} and mediated resource proxies.",
         f"Roster: honest {honest}, ambiguous-honest {ambiguous}, "
@@ -304,7 +304,7 @@ def run_e2e(*, out_dir: Path, image: str, gateway_port: int, timeout_s: int = 24
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the VukZERO single-process full-stack demo.")
+    parser = argparse.ArgumentParser(description="Run the VukZero single-process full-stack demo.")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--image", default=os.getenv("E2E_IMAGE", DEFAULT_IMAGE))
     parser.add_argument("--gateway-port", type=int, default=int(os.getenv("E2E_GATEWAY_PORT", DEFAULT_PORT)))

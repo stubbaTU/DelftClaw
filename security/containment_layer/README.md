@@ -1,8 +1,8 @@
-# VukZERO Containment Layer — System-Level Least Exposure
+# VukZero Containment Layer — System-Level Least Exposure
 
 ## Summary
 
-The containment layer is VukZERO's last line of defense: it assumes the agent
+The containment layer is VukZero's last line of defense: it assumes the agent
 process is **already compromised** and asks how much damage hostile code running
 *inside* the agent container can actually do. It is not about whether an LLM
 refuses a malicious instruction — the attacker here is deterministic hostile code,
@@ -89,7 +89,7 @@ Crossing them gives six conditions:
 | B1 runc hardened | runc-hardened | off |
 | B2 gVisor naive | gVisor | off |
 | A1 arch-only runc | runc | on |
-| A2 VukZERO no gVisor | runc-hardened | on |
+| A2 VukZero no gVisor | runc-hardened | on |
 | C1 full stack | gVisor | on |
 
 Every condition shares the same image digest, fixture generation, probe code,
@@ -129,7 +129,7 @@ condition (no legitimate action was ever blocked).
 | B1 runc hardened | runc-hardened | off | 33.33% | 6 / 6 |
 | B2 gVisor naive | gVisor | off | 37.50% | 6 / 6 |
 | A1 arch-only runc | runc | on | 87.50% | 1 / 6 |
-| A2 VukZERO no gVisor | runc-hardened | on | 95.83% | 1 / 6 |
+| A2 VukZero no gVisor | runc-hardened | on | 95.83% | 1 / 6 |
 | C1 full stack | gVisor | on | 100.00% | 0 / 6 |
 
 The factor breakdown makes the headline explicit:
