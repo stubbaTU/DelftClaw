@@ -19,20 +19,17 @@ from ipv8.keyvault.crypto import default_eccrypto
 from ipv8_service import IPv8
 
 from communication.community import SeedboxCommunity, overlay_id
-from protocol import OverlayRegistry, StubLLMClient, community_id_from_md, compile_overlay
-from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
+from protocol import OverlayRegistry, community_id_from_md, compile_overlay
+from _live_llm import live_compiler_llm, requires_live_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTENT_MD = (REPO_ROOT / "protocol" / "examples" / "content_community.md").read_text()
 CONTENT_HASH = overlay_id(CONTENT_MD)
 
-
-def _stub_llm() -> StubLLMClient:
-    return StubLLMClient(sources={
-        community_id_from_md(CONTENT_MD).hex():
-            "```python\n" + CONTENT_COMMUNITY_SOURCE + "```",
-    })
+# Every test here compiles content_community via a real LLM (stubs removed), so
+# the whole module skips without a configured endpoint.
+pytestmark = requires_live_llm
 
 
 def _build_node(port: int, key_path: Path) -> IPv8:
@@ -70,7 +67,7 @@ async def two_nodes(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_content_community_compiles_and_passes_test_vectors():
-    compiled = compile_overlay(CONTENT_MD, _stub_llm())
+    compiled = compile_overlay(CONTENT_MD, live_compiler_llm())
     assert compiled.community_id == CONTENT_HASH
     assert set(compiled.payload_classes) == {"SEARCH_REQUEST", "SEARCH_RESPONSE"}
 
@@ -83,8 +80,8 @@ def test_content_community_compiles_and_passes_test_vectors():
 async def test_search_round_trip(two_nodes):
     svc_a, svc_b, sb_a, sb_b, addr_a, addr_b = two_nodes
 
-    reg_a = OverlayRegistry(svc_a, _stub_llm())
-    reg_b = OverlayRegistry(svc_b, _stub_llm())
+    reg_a = OverlayRegistry(svc_a, live_compiler_llm())
+    reg_b = OverlayRegistry(svc_b, live_compiler_llm())
     content_a = reg_a.load(CONTENT_MD)
     content_b = reg_b.load(CONTENT_MD)
 
@@ -137,8 +134,8 @@ async def test_search_round_trip(two_nodes):
 @pytest.mark.asyncio
 async def test_empty_query_returns_full_index(two_nodes):
     svc_a, svc_b, sb_a, sb_b, addr_a, addr_b = two_nodes
-    reg_a = OverlayRegistry(svc_a, _stub_llm())
-    reg_b = OverlayRegistry(svc_b, _stub_llm())
+    reg_a = OverlayRegistry(svc_a, live_compiler_llm())
+    reg_b = OverlayRegistry(svc_b, live_compiler_llm())
     content_a = reg_a.load(CONTENT_MD)
     content_b = reg_b.load(CONTENT_MD)
 

@@ -20,8 +20,8 @@ import importlib.util
 # (test-file basename, module-it-imports) pairs. If the module can't be
 # imported, the test file is skipped at collection time.
 _RED_STEP_TESTS: list[tuple[str, str]] = [
-    ("test_server_layer3.py", "redteam.integration.server"),
-    ("test_signed_server.py", "redteam.integration.server"),
+    ("test_server_layer3.py", "signed_log.integration.server"),
+    ("test_signed_server.py", "signed_log.integration.server"),
 ]
 
 # Tests known to be stale against master's identity refactor.

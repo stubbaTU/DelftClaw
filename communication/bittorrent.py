@@ -1,25 +1,21 @@
-"""BitTorrent service: magnet-link fetch + seed for the content overlay.
+"""Content-addressed fetch + seed surface for the content overlay.
 
-The service is exposed through the abstract :class:`BitTorrentService`
-Protocol. ``LibTorrentService`` is the real implementation — it lazy-imports
-``libtorrent`` so the rest of the project keeps importing cleanly even on
-machines where the native binding isn't installed. ``StubBitTorrentService``
-is an in-memory fake the test suite + the agent runtime fall back to when
-libtorrent is unavailable.
+Files are addressed by a magnet URI whose btih hex is the content_id
+(``sha1(bytes)``). The actual bytes move over IPv8 (``SeedboxCommunity``
+CONTENT_REQUEST / the file_transfer overlay), not a BitTorrent swarm — this
+module is the content-addressing + completed-download bookkeeping the agent's
+``torrent_*`` tools and the ``torrent_progress_gte_1`` stop predicate read.
 
-Install for real BitTorrent traffic::
-
-    pip install libtorrent          # pure-Python wheel where available
-    # or via your distro: e.g. apt install python3-libtorrent
-
-The agent's tool surface only ever holds a ``BitTorrentService`` reference,
-so swapping implementations is constructor-only — no calling code changes.
+``StubBitTorrentService`` is the implementation; the agent holds it behind the
+``BitTorrentService`` Protocol, so a real libtorrent backend could be slotted
+in later constructor-only, without touching calling code.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +36,83 @@ class TorrentInfo:
     peers: int = 0
 
 
+# ---------------------------------------------------------------------------
+# Cross-process completed-download ledger
+# ---------------------------------------------------------------------------
+#
+# In the deployed scenario the MCP service process performs the download
+# (``content_search_and_fetch`` -> ``record_download``) but the *watchdog*
+# process builds the state snapshot the LLM sees — and they run separate
+# ``BitTorrentService`` instances. In-memory ``record_download`` is therefore
+# invisible to the snapshot, so ``has_completed_torrent`` / the
+# ``torrent_progress_gte_1`` predicate never fire and the agent loops forever.
+#
+# Both processes share ``save_dir`` on disk (systemd units set HOME identically
+# and pass ``--save-dir ${HOME}/torrents``), so a tiny append-only ledger file
+# in ``save_dir`` makes a completed download visible across the process
+# boundary. ``stats()`` merges it with in-memory torrents (in-memory wins).
+
+_DOWNLOAD_LEDGER_NAME = ".download_ledger.jsonl"
+
+
+def _append_download_ledger(save_dir: Path, info: "TorrentInfo") -> None:
+    """Record a completed download to ``<save_dir>/.download_ledger.jsonl``.
+
+    Best-effort: a failed write never breaks the download itself — the
+    in-memory entry still exists for the recording process.
+    """
+    try:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({
+            "magnet": info.magnet,
+            "name": info.name,
+            "save_path": str(info.save_path) if info.save_path else None,
+            "bytes_total": int(info.bytes_total),
+        })
+        with open(save_dir / _DOWNLOAD_LEDGER_NAME, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _read_download_ledger(save_dir: Path) -> dict[str, "TorrentInfo"]:
+    """Return completed downloads recorded in ``save_dir`` keyed by magnet.
+
+    Reconstructs ``TorrentInfo(progress=1.0, ...)`` for each ledger entry — the
+    cross-process view of "this file is fully downloaded." Malformed lines are
+    skipped; a missing ledger returns an empty dict.
+    """
+    path = save_dir / _DOWNLOAD_LEDGER_NAME
+    out: dict[str, TorrentInfo] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        magnet = rec.get("magnet")
+        if not magnet:
+            continue
+        sp = rec.get("save_path")
+        out[magnet] = TorrentInfo(
+            magnet=magnet,
+            name=rec.get("name", ""),
+            progress=1.0,
+            seeding=False,
+            save_path=Path(sp) if sp else None,
+            bytes_total=int(rec.get("bytes_total", 0)),
+            bytes_downloaded=int(rec.get("bytes_total", 0)),
+            peers=1,
+        )
+    return out
+
+
 @runtime_checkable
 class BitTorrentService(Protocol):
     """Minimal magnet-fetch / seed surface the rest of the codebase consumes."""
@@ -56,6 +129,19 @@ class BitTorrentService(Protocol):
 
     def stats(self) -> list[TorrentInfo]:
         """Snapshot of all active torrents."""
+        ...
+
+    def record_download(
+        self, magnet: str, path: Path, total_bytes: int,
+    ) -> TorrentInfo:
+        """Register an externally-completed download.
+
+        The IPv8 ``CONTENT_DELIVERY`` path verifies the bytes against the
+        advertised ``content_id`` (= magnet btih) before writing them, so the
+        download is complete by the time this is called. ``stats()`` /
+        ``torrent_progress_gte_1`` then report ``progress=1.0`` for a *real*
+        file — closing the false-green where the stub fabricated completion.
+        """
         ...
 
     def stop(self) -> None:
@@ -126,7 +212,39 @@ class StubBitTorrentService:
         return magnet
 
     def stats(self) -> list[TorrentInfo]:
-        return list(self._torrents.values())
+        # Merge in-memory torrents with the on-disk completed-download ledger so
+        # a download recorded by ANOTHER process sharing this save_dir (the MCP
+        # service vs the watchdog snapshot agent) is visible here. In-memory
+        # entries win on magnet collision.
+        merged = _read_download_ledger(self.save_dir)
+        merged.update(self._torrents)
+        return list(merged.values())
+
+    def record_download(
+        self, magnet: str, path: Path, total_bytes: int,
+    ) -> TorrentInfo:
+        """Register an externally-completed download under ``magnet``.
+
+        Used by the IPv8 CONTENT_DELIVERY path in ``content_search_and_fetch``
+        after sha1/size verification, so a successful real transfer shows up
+        in ``stats()`` exactly the same way a seeded file does — and the
+        ``torrent_progress_gte_1`` stop predicate fires on real bytes only.
+        Also appends to the shared on-disk ledger so a separate process
+        reading the same ``save_dir`` (the watchdog snapshot agent) sees it.
+        """
+        info = TorrentInfo(
+            magnet=magnet,
+            name=path.name,
+            progress=1.0,
+            seeding=False,
+            save_path=path,
+            bytes_total=int(total_bytes),
+            bytes_downloaded=int(total_bytes),
+            peers=1,
+        )
+        self._torrents[magnet] = info
+        _append_download_ledger(self.save_dir, info)
+        return info
 
     def stop(self) -> None:
         self._torrents.clear()
@@ -154,108 +272,9 @@ def _stub_magnet_for(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Real libtorrent wrapper (lazy-imported)
-# ---------------------------------------------------------------------------
-
-class LibTorrentService:
-    """Real libtorrent.session-backed BitTorrentService.
-
-    The libtorrent module is imported at construction so the rest of
-    ``communication.bittorrent`` is loadable on machines without the
-    binding. Construction raises ``RuntimeError`` if libtorrent is missing.
-    """
-
-    DEFAULT_SETTINGS = {
-        "alert_mask": 0xFFFFFFFF,
-        "listen_interfaces": "0.0.0.0:6881",
-        "enable_dht": True,
-        "enable_lsd": True,
-        "enable_upnp": True,
-    }
-
-    def __init__(self, save_dir: Path, *, settings: dict | None = None) -> None:
-        try:
-            import libtorrent as lt  # noqa: F401  (presence check only)
-        except ImportError as exc:
-            raise RuntimeError(
-                "libtorrent is not installed; install it (apt: python3-libtorrent, "
-                "pip: libtorrent) or use StubBitTorrentService."
-            ) from exc
-
-        self._lt = __import__("libtorrent")
-        self.save_dir = Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        self._session = self._lt.session({**self.DEFAULT_SETTINGS, **(settings or {})})
-        # magnet-uri -> (libtorrent.torrent_handle, asyncio.Future[Path])
-        self._handles: dict[str, tuple] = {}
-        self._poll_task: asyncio.Task | None = None
-
-    def add_magnet(self, magnet_uri: str) -> "asyncio.Future[Path]":
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[Path] = loop.create_future()
-        params = self._lt.parse_magnet_uri(magnet_uri)
-        params.save_path = str(self.save_dir)
-        handle = self._session.add_torrent(params)
-        self._handles[magnet_uri] = (handle, future)
-        if self._poll_task is None:
-            self._poll_task = loop.create_task(self._poll_loop())
-        return future
-
-    def seed(self, path: Path) -> str:
-        path = Path(path).resolve()
-        info = self._lt.create_torrent(self._lt.file_storage())
-        # Real seeding requires building a `torrent_info` from the file. The
-        # full implementation belongs in a follow-up; for the demo, callers
-        # using LibTorrentService should add via magnet (download path) and
-        # use StubBitTorrentService.seed(...) when generating magnets in tests.
-        raise NotImplementedError(
-            "LibTorrentService.seed: build torrent_info from path; not yet implemented"
-        )
-
-    def stats(self) -> list[TorrentInfo]:
-        out: list[TorrentInfo] = []
-        for magnet, (handle, _fut) in self._handles.items():
-            status = handle.status()
-            out.append(TorrentInfo(
-                magnet=magnet,
-                name=status.name or "",
-                progress=float(status.progress),
-                seeding=bool(status.is_seeding),
-                save_path=Path(status.save_path) / (status.name or ""),
-                bytes_total=int(status.total_wanted),
-                bytes_downloaded=int(status.total_wanted_done),
-                peers=int(status.num_peers),
-            ))
-        return out
-
-    def stop(self) -> None:
-        if self._poll_task is not None:
-            self._poll_task.cancel()
-            self._poll_task = None
-        self._session = None
-        self._handles.clear()
-
-    async def _poll_loop(self) -> None:
-        """Drive libtorrent's alert pump and resolve futures on completion."""
-        while True:
-            for magnet, (handle, fut) in list(self._handles.items()):
-                if fut.done():
-                    continue
-                status = handle.status()
-                if status.is_seeding or status.progress >= 1.0:
-                    save_path = Path(status.save_path) / (status.name or "")
-                    fut.set_result(save_path)
-            await asyncio.sleep(1.0)
-
-
-# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 def build_default_service(save_dir: Path) -> BitTorrentService:
-    """Return ``LibTorrentService`` if libtorrent is available, else a stub."""
-    try:
-        import libtorrent  # noqa: F401
-    except ImportError:
-        return StubBitTorrentService(save_dir=save_dir)
-    return LibTorrentService(save_dir=save_dir)
+    """The content-addressing service the agent runtime uses."""
+    return StubBitTorrentService(save_dir=save_dir)

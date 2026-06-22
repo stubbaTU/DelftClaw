@@ -21,13 +21,12 @@ natural-language messaging on the bootstrap community, Agora-style.
 from __future__ import annotations
 
 import ast
-import binascii
 import hashlib
 import json
 import re
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional, Type
+from typing import Any, Optional, Type
 
 
 def struct_error():
@@ -87,6 +86,15 @@ ALLOWED_ENCODINGS: dict[str, str] = {
     "varlenH-msgpack": "varlenH",
     "bytes20":         "20s",
     "bytes32":         "32s",
+    # Schema v1.1 semantic encodings — wire-identical to the row above but
+    # carry intent. The synthesizer's sample-coercion path knows to call
+    # ``bytes.fromhex`` on string samples for hash20/hash32, so LLM authors
+    # can describe hashes the way humans naturally do (40/64 hex chars)
+    # instead of having to think in raw bytes. ``timestamp_unix`` is a pure
+    # naming alias of ``uint64-be``; samples are integers.
+    "hash20":          "20s",
+    "hash32":          "32s",
+    "timestamp_unix":  "Q",
 }
 
 
@@ -231,6 +239,9 @@ def _parse_kv_list(body: str) -> dict[str, str]:
     return out
 
 
+_SUPERSEDES_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 def _parse_identity(body: str) -> dict[str, str]:
     kv = _parse_kv_list(body)
     for required in ("name", "version", "description"):
@@ -240,6 +251,20 @@ def _parse_identity(body: str) -> dict[str, str]:
         raise ProtocolCompileError(
             f"# Identity lifecycle must be one of {ALLOWED_LIFECYCLES}, "
             f"got {kv['lifecycle']!r}"
+        )
+    # Optional evolution-provenance keys (v5.3). Carried in-band so that
+    # ``community_id = sha1(canonical_md)`` stays content-pure while still
+    # binding authorship + lineage into the spec bytes. All optional — a
+    # spec with none of them is a fresh, anonymously-authored overlay.
+    #   supersedes      — 40-char lowercase hex of the predecessor's
+    #                     community_id (same overlay name, older version).
+    #   author_id       — the authoring agent's wallet address (free-form
+    #                     here; the wallet layer validates its own format).
+    #   change_summary  — 1-2 sentence human description of what changed.
+    if "supersedes" in kv and not _SUPERSEDES_RE.match(kv["supersedes"]):
+        raise ProtocolCompileError(
+            f"# Identity supersedes must be 40-char lowercase hex "
+            f"(a community_id); got {kv['supersedes']!r}"
         )
     return kv
 
@@ -626,38 +651,72 @@ SYSTEM_PROMPT = """\
 You are a strict Python code generator. Given a parsed IPv8 overlay
 descriptor, you emit ONE Python module that defines:
 
-  * One ``VariablePayload`` subclass per message (name = the message
-    SCREAMING_SNAKE_CASE name + "Payload").
+  * One ``VariablePayload`` subclass per message. Name it by converting the
+    message's SCREAMING_SNAKE_CASE name to CamelCase and appending "Payload":
+    SEARCH_REQUEST -> SearchRequestPayload, ECHO_RESPONSE -> EchoResponsePayload.
+    Drop the underscores — ``SEARCH_REQUESTPayload`` (keeping them) is WRONG and
+    will fail to compile.
   * One ``GeneratedCommunity`` subclass.
 
 Constraints:
 
   * Emit Python source ONLY, with no commentary. Wrap the source in a
     triple-backtick fenced ```python ... ``` block.
-  * Use exactly these imports (no others):
+  * Use ONLY these imports from ipv8:
         from ipv8.community import Community, CommunitySettings
         from ipv8.lazy_community import lazy_wrapper
         from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
         from ipv8.peer import Peer
         from ipv8.peerdiscovery.network import PeerObserver
+    You MAY additionally ``import msgpack``, ``import struct``, ``import
+    hashlib``, and/or ``import time`` when a handler needs them. In particular,
+    ``import msgpack`` whenever the descriptor declares any ``varlenH-msgpack``
+    field, ``import hashlib`` whenever a handler must compute or verify a hash
+    (e.g. ``hashlib.sha256(data).digest()`` or ``hashlib.sha1(md).digest()[:20]``),
+    and ``import time`` when a handler needs a current timestamp
+    (e.g. ``int(time.time())``). No other imports are permitted by the sandbox.
   * Do NOT call eval/exec/open/__import__/subprocess/os.* and do NOT
     access __class__/__bases__/__dict__/__globals__/__builtins__.
   * The generated class MUST declare:
         community_id = bytes.fromhex("<the community_id_hex value given to you>")
   * For each message the user describes, emit a ``@vp_compile``-decorated
-    ``VariablePayload`` subclass with the documented msg_id and a
-    ``format_list`` derived from the field encodings using this map:
+    ``VariablePayload`` subclass declaring EXACTLY these three class
+    attributes — and do NOT write an ``__init__`` (``@vp_compile`` generates
+    the constructor from ``names``; a hand-written ``__init__`` breaks it):
+        msg_id      = <the documented msg_id>
+        format_list = [<one entry per field, in declared order>]
+        names       = [<the field-name strings, same order, same length
+                        as format_list>]
+    Map each field's encoding to its ``format_list`` entry using this map:
         uint8 -> "B", uint16-be -> "H", uint32-be -> "I", uint64-be -> "Q",
         bool -> "?", varlenH -> "varlenH", varlenH-utf8 -> "varlenH",
-        varlenH-msgpack -> "varlenH", bytes20 -> "20s", bytes32 -> "32s".
+        varlenH-msgpack -> "varlenH", bytes20 -> "20s", bytes32 -> "32s",
+        hash20 -> "20s", hash32 -> "32s", timestamp_unix -> "Q".
+    Notes on the semantic encodings (wire-identical to a primitive above
+    but carry intent for handler-prose generation):
+      * hash20 / hash32 are 20-/32-byte raw hashes on the wire; samples for
+        these are HEX STRINGS (40 / 64 chars), which the synthesizer converts.
+      * timestamp_unix is a uint64 holding seconds since 1970-01-01 UTC;
+        samples are integers (e.g. ``int(time.time())`` values).
+    ``names`` MUST have exactly as many entries as ``format_list``; omitting
+    it (or leaving it short) makes ``@vp_compile`` raise IndexError at
+    import time. Construct instances positionally, e.g.
+    ``SearchResponsePayload(results_bytes)``.
   * For ``varlenH-utf8`` and ``varlenH-msgpack`` fields the wire
-    representation is bytes; the handler is responsible for utf-8 / msgpack
-    encoding at the boundary.
+    representation is bytes; the handler does the boundary conversion:
+    ``value.encode("utf-8")`` / ``payload_bytes.decode("utf-8")`` for utf-8,
+    and ``msgpack.packb(value, use_bin_type=True)`` /
+    ``msgpack.unpackb(payload_bytes, raw=False)`` for msgpack.
   * Register every message handler in ``__init__`` via
     ``self.add_message_handler(<PayloadCls>, self.<handler_name>)``.
   * For each message described, define a handler method
     ``on_<lowercase_msg_name>`` decorated with ``@lazy_wrapper(<PayloadCls>)``
     that implements the operational semantics from the descriptor.
+  * To SEND a message to a peer, call
+    ``self.ez_send(peer, <PayloadCls>(...))`` — construct the payload inline.
+    This is the ONLY send primitive; it is provided by ``Community``. Do NOT
+    call ``ez_send_to``, ``send_message``, ``self.send`` or any other name —
+    they do not exist and will raise ``AttributeError`` at runtime.
 
 Lifecycle (driven by the descriptor's ``lifecycle`` key in ``# Identity``):
 
@@ -773,23 +832,71 @@ def strip_code_fences(text: str) -> str:
 # Test-vector execution
 # ---------------------------------------------------------------------------
 
-def _payload_class_for(message_name: str, namespace: dict) -> Type:
-    """Locate ``<MessageName>Payload`` (SCREAMING_SNAKE -> CamelCase)."""
-    parts = message_name.split("_")
-    camel = "".join(p.capitalize() for p in parts) + "Payload"
-    if camel not in namespace:
-        raise ProtocolCompileError(f"generated module is missing class {camel!r}")
-    return namespace[camel]
+def _payload_class_for(message: MessageDef, namespace: dict) -> Type:
+    """Locate the generated ``VariablePayload`` subclass for ``message``.
+
+    Matches by ``msg_id`` first — the canonical wire identifier, which the
+    descriptor's test vectors independently validate — so the lookup is robust
+    to however the LLM named the class (``SearchRequestPayload`` vs the literal
+    ``SEARCH_REQUESTPayload`` some models emit). Falls back to the documented
+    CamelCase name (``SEARCH_REQUEST`` -> ``SearchRequestPayload``) when no
+    msg_id match is found.
+    """
+    from ipv8.messaging.lazy_payload import VariablePayload
+
+    by_id = [
+        v for v in namespace.values()
+        if isinstance(v, type)
+        and issubclass(v, VariablePayload)
+        and v is not VariablePayload
+        and getattr(v, "msg_id", None) == message.msg_id
+    ]
+    if len(by_id) == 1:
+        return by_id[0]
+
+    camel = "".join(p.capitalize() for p in message.name.split("_")) + "Payload"
+    if camel in namespace:
+        return namespace[camel]
+
+    if len(by_id) > 1:
+        raise ProtocolCompileError(
+            f"message {message.name}: {len(by_id)} payload classes declare "
+            f"msg_id {message.msg_id}; cannot disambiguate"
+        )
+    raise ProtocolCompileError(
+        f"message {message.name}: generated module has no VariablePayload "
+        f"subclass with msg_id {message.msg_id}, and no class named {camel!r}"
+    )
 
 
-def _coerce_field_value(value: Any) -> Any:
+def _coerce_field_value(value: Any, encoding: str | None = None) -> Any:
     """JSON test-vector values into the bytes/int the wire-format expects.
 
     `varlenH-utf8` declares Python type ``str`` but is wire-encoded as
     bytes (utf-8); `varlenH-msgpack` declares ``list``/``dict`` but is
     wire-encoded as msgpack. The `.md` test-vector lines write the human
     form (string, list, dict); the test harness coerces them here.
+
+    ``encoding`` (optional, schema v1.1+) tells the coercer the field's
+    declared encoding so it can branch on the ergonomic semantic encodings
+    that share a wire format with a primitive one. Currently:
+
+      * ``hash20`` / ``hash32`` — string input is treated as hex
+        (``bytes.fromhex(value)``) so LLM-authored samples can be 40/64-char
+        hex strings the way humans describe hashes. Wire-identical to
+        ``bytes20`` / ``bytes32``.
+
+    Pre-v1.1 callers (no ``encoding`` arg) keep the original behaviour —
+    strings become utf-8 bytes, exactly as before.
     """
+    if encoding in ("hash20", "hash32") and isinstance(value, str):
+        try:
+            return bytes.fromhex(value)
+        except ValueError as exc:
+            raise ProtocolCompileError(
+                f"{encoding} sample must be a hex string "
+                f"({'40' if encoding == 'hash20' else '64'} chars); got {value!r} ({exc})"
+            ) from exc
     if isinstance(value, str):
         return value.encode("utf-8")
     if isinstance(value, (list, dict)):
@@ -800,11 +907,18 @@ def _coerce_field_value(value: Any) -> Any:
     return value
 
 
-def _run_test_vector(payload_cls: Type, tv: TestVector) -> None:
+def _run_test_vector(payload_cls: Type, tv: TestVector, encodings: list[str] | None = None) -> None:
     from ipv8.messaging.serialization import default_serializer, PackError
 
     expected = bytes.fromhex(tv.bytes_hex)
-    coerced = [_coerce_field_value(v) for v in tv.fields.values()]
+    # ``encodings`` aligns with tv.fields.values() by position; when the
+    # caller passes it (the v1.1 compile path always does) we route the
+    # ergonomic encodings through the hex-aware coercion branch.
+    field_values = list(tv.fields.values())
+    if encodings is not None and len(encodings) == len(field_values):
+        coerced = [_coerce_field_value(v, enc) for v, enc in zip(field_values, encodings)]
+    else:
+        coerced = [_coerce_field_value(v) for v in field_values]
     try:
         instance = payload_cls(*coerced)
         actual = default_serializer.pack_serializable(instance)
@@ -988,8 +1102,16 @@ def _check_structural_contract(
     parsed: ParsedOverlay,
     community_cls: type,
     source: str,
+    *,
+    class_name: str = "GeneratedCommunity",
 ) -> None:
-    """Enforce the schema's `# Constants` / `# Runtime State` / lifecycle clauses."""
+    """Enforce the schema's `# Constants` / `# Runtime State` / lifecycle clauses.
+
+    ``class_name`` is the actual community class name in ``source`` (which may
+    differ from the documented ``GeneratedCommunity`` — the name carries no
+    wire significance), so the AST-introspection helpers locate the right
+    ``ClassDef``.
+    """
 
     # Parse the AST once and reuse across the three structural helpers.
     # Each helper used to call ``ast.parse(source)`` independently — that
@@ -1015,7 +1137,7 @@ def _check_structural_contract(
 
     # 2. Runtime state — every slot must be assigned in __init__.
     if parsed.runtime_state:
-        assigned = _init_self_assignments(source, tree=tree)
+        assigned = _init_self_assignments(source, class_name, tree=tree)
         missing = [s.name for s in parsed.runtime_state if s.name not in assigned]
         if missing:
             raise ProtocolCompileError(
@@ -1027,7 +1149,7 @@ def _check_structural_contract(
     # `self.register_task("name", self.handler, interval=N)` in __init__,
     # and the handler method must exist on the class.
     if parsed.tasks:
-        registered = _init_register_task_calls(source, tree=tree)
+        registered = _init_register_task_calls(source, class_name, tree=tree)
         for task in parsed.tasks:
             match = next(
                 (
@@ -1052,7 +1174,7 @@ def _check_structural_contract(
 
     # 4. Lifecycle — peer-observer must subclass PeerObserver and define
     # the three hooks; passive must NOT subclass PeerObserver.
-    bases = _class_bases(source, tree=tree)
+    bases = _class_bases(source, class_name, tree=tree)
     if parsed.lifecycle == "peer-observer":
         if "PeerObserver" not in bases:
             raise ProtocolCompileError(
@@ -1100,6 +1222,11 @@ class CompiledOverlay:
     payload_classes: dict[str, Type]
     source: str
     origin: str = "markdown"
+    # Populated only when compile_overlay runs with defer_vector_check=True
+    # (the SQ3 measurement path). ``None`` means vectors were enforced inline
+    # and a failure would have raised — the default, deployed behavior.
+    test_vectors_passed: Optional[bool] = None
+    test_vector_error: Optional[str] = None
 
 
 def compile_overlay(
@@ -1107,6 +1234,7 @@ def compile_overlay(
     llm: LLMClient,
     *,
     llm_source: str | None = None,
+    defer_vector_check: bool = False,
 ) -> CompiledOverlay:
     """End-to-end compile of an overlay descriptor `.md` to an importable Community class.
 
@@ -1115,6 +1243,15 @@ def compile_overlay(
     its place. All downstream safety gates (sandbox AST whitelist,
     structural-contract check, test vectors) still run unchanged —
     those are the wire-safety boundary, not the cache.
+
+    When ``defer_vector_check`` is True (the SQ3 measurement path), a
+    test-vector failure is recorded on the returned ``CompiledOverlay``
+    (``test_vectors_passed`` / ``test_vector_error``) instead of raising.
+    This lets a caller measure "code loaded and validated" separately from
+    "test vectors passed". The default (False) preserves the deployed
+    behavior: a vector mismatch raises ``ProtocolCompileError`` before any
+    overlay is returned. The earlier gates (sandbox, structural contract,
+    community_id match) always raise regardless of this flag.
     """
     parsed = parse_md(md_text)
     validate_schema(parsed)
@@ -1133,9 +1270,30 @@ def compile_overlay(
     except SandboxError as exc:
         raise ProtocolCompileError(f"sandbox rejected generated source: {exc}") from exc
 
-    if "GeneratedCommunity" not in ns:
-        raise ProtocolCompileError("generated module is missing GeneratedCommunity")
-    community_cls = ns["GeneratedCommunity"]
+    # Locate the community class. Its name is a convention with no wire
+    # significance --- P6 identity is the community_id --- so prefer the
+    # documented ``GeneratedCommunity`` but accept any class declaring the
+    # expected community_id (some models name it after the protocol, e.g.
+    # ``ContentCommunity``). The community_id itself stays strictly enforced.
+    community_cls = ns.get("GeneratedCommunity")
+    if community_cls is None:
+        candidates = [
+            v for v in ns.values()
+            if isinstance(v, type) and getattr(v, "community_id", None) == community_id
+        ]
+        if len(candidates) == 1:
+            community_cls = candidates[0]
+        elif len(candidates) > 1:
+            names = ", ".join(sorted(c.__name__ for c in candidates))
+            raise ProtocolCompileError(
+                f"ambiguous community class: multiple classes declare "
+                f"community_id {community_id.hex()} ({names})"
+            )
+        else:
+            raise ProtocolCompileError(
+                "generated module defines no class named GeneratedCommunity "
+                f"nor any class declaring community_id {community_id.hex()}"
+            )
 
     declared = getattr(community_cls, "community_id", None)
     if declared != community_id:
@@ -1144,14 +1302,43 @@ def compile_overlay(
             f"generated class says {(declared or b'').hex()}"
         )
 
-    _check_structural_contract(parsed, community_cls, source)
+    _check_structural_contract(
+        parsed, community_cls, source, class_name=community_cls.__name__,
+    )
 
     payload_classes: dict[str, Type] = {
-        m.name: _payload_class_for(m.name, ns) for m in parsed.messages
+        m.name: _payload_class_for(m, ns) for m in parsed.messages
+    }
+    # Map each message to the ordered list of its field encodings so the
+    # test-vector runner can apply the v1.1 semantic-encoding coercions
+    # (e.g. hash20 hex-string -> raw bytes).
+    field_encodings_by_msg: dict[str, list[str]] = {
+        m.name: [f.encoding for f in m.fields] for m in parsed.messages
     }
 
-    for tv in parsed.test_vectors:
-        _run_test_vector(payload_classes[tv.message], tv)
+    tv_passed: Optional[bool] = None
+    tv_error: Optional[str] = None
+    if defer_vector_check:
+        # SQ3 path: record conformance as an observation rather than raising,
+        # so the caller can separate "code loaded" from "test vectors passed".
+        tv_passed = True
+        for tv in parsed.test_vectors:
+            try:
+                _run_test_vector(
+                    payload_classes[tv.message], tv,
+                    field_encodings_by_msg.get(tv.message),
+                )
+            except Exception as exc:  # noqa: BLE001
+                tv_passed = False
+                tv_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                break
+    else:
+        # Default, deployed path: a vector mismatch is a hard compile error.
+        for tv in parsed.test_vectors:
+            _run_test_vector(
+                payload_classes[tv.message], tv,
+                field_encodings_by_msg.get(tv.message),
+            )
 
     return CompiledOverlay(
         community_id=community_id,
@@ -1160,4 +1347,6 @@ def compile_overlay(
         community_class=community_cls,
         payload_classes=payload_classes,
         source=source,
+        test_vectors_passed=tv_passed,
+        test_vector_error=tv_error,
     )

@@ -43,6 +43,64 @@ def _torrent_progress_gte_1(snapshot: StateSnapshot) -> bool:
     return False
 
 
+def _download_done_and_overlay_authored_and_announce_sent(snapshot: StateSnapshot) -> bool:
+    """Compound: the file is downloaded, a protocol is authored, AND at least
+    one message has been sent on it.
+
+    Used by fetcher_1 in v4: it must close the loop with an ANNOUNCE so that
+    fetcher_2 has something to OBSERVE before designing a successor protocol.
+    Without the ``announce_sent`` clause fetcher_1 would stop right after
+    authoring, fetcher_2 would never receive an ANNOUNCE, and the
+    autonomous-evolution branch of next_objective would never fire.
+
+    Implementation key: ``self_authored_announces_sent`` in the snapshot is the
+    cross-process counter the ``overlay_invoke`` tool flips
+    (state_snapshot._announce_sent_count).
+    """
+    if not _download_done_and_overlay_authored(snapshot):
+        return False
+    return int(snapshot.get("self_authored_announces_sent") or 0) > 0
+
+
+def _download_done_and_overlay_authored(snapshot: StateSnapshot) -> bool:
+    """True once this agent has BOTH retrieved a file AND authored an overlay.
+
+    The compound stop condition for the protocol-evolution demo: fetcher_1
+    completes the normal content fetch (``torrent_progress_gte_1``) and then
+    authors a new overlay (an entry in ``overlays`` whose ``author_id`` equals
+    this agent's own wallet address). Only fires when the agent has personally
+    introduced a protocol version — proving the authoring act, not just
+    holding a spec someone else made.
+    """
+    if not _torrent_progress_gte_1(snapshot):
+        return False
+    # ``authored_overlay_ids`` is derived from the shared overlay archive, so it
+    # reflects an overlay this agent authored in the MCP process even though the
+    # snapshot is built by the separate watchdog process (the in-memory
+    # ``overlays`` list would miss it). Non-empty => this agent has published a
+    # spec => the authoring half of the compound condition is satisfied.
+    return bool(snapshot.get("authored_overlay_ids"))
+
+
+def _paid_and_overlay_authored(snapshot: StateSnapshot) -> bool:
+    """Payment-demo analog of ``_download_done_and_overlay_authored``: this
+    agent has BEEN PAID (net-positive replayed ledger balance) AND authored
+    an overlay. The payment-demo successor's stop condition."""
+    community = snapshot.get("community") or {}
+    if int(community.get("my_balance_sats") or 0) <= 0:
+        return False
+    return bool(snapshot.get("authored_overlay_ids"))
+
+
+def _paid_and_overlay_authored_and_announce_sent(snapshot: StateSnapshot) -> bool:
+    """Payment-demo analog of the genesis author's compound stop: paid +
+    authored + at least one message sent on the authored overlay (so the
+    successor has something to observe)."""
+    if not _paid_and_overlay_authored(snapshot):
+        return False
+    return int(snapshot.get("self_authored_announces_sent") or 0) > 0
+
+
 def _peer_count_gte_N(n: int = 1) -> Predicate:
     def pred(snapshot: StateSnapshot) -> bool:
         return len(snapshot.get("peers", [])) >= n
@@ -62,15 +120,6 @@ def _wallet_received_sats(min_sats: int = 1) -> Predicate:
     return pred
 
 
-def _community_seedbox_count_gte_N(n: int = 1) -> Predicate:
-    def pred(snapshot: StateSnapshot) -> bool:
-        community = snapshot.get("community") or {}
-        seedbox_count = community.get("seedbox_count")
-        return isinstance(seedbox_count, int) and seedbox_count >= n
-    pred.__name__ = f"community_seedbox_count_gte_{n}"
-    return pred
-
-
 def _community_member_count_gte_N(n: int = 1) -> Predicate:
     def pred(snapshot: StateSnapshot) -> bool:
         community = snapshot.get("community") or {}
@@ -78,36 +127,6 @@ def _community_member_count_gte_N(n: int = 1) -> Predicate:
         return isinstance(member_count, int) and member_count >= n
     pred.__name__ = f"community_member_count_gte_{n}"
     return pred
-
-
-def _security_layer_done(layer: str | int = "") -> Predicate:
-    key = {
-        "1": "layer1",
-        "2": "layer2",
-        "3": "layer3",
-        "preventative": "layer1",
-        "accountability": "layer2",
-        "impact": "layer3",
-    }.get(str(layer), str(layer))
-
-    def pred(snapshot: StateSnapshot) -> bool:
-        security = snapshot.get("security") or {}
-        checklist = security.get("checklist") or {}
-        return bool(checklist.get(key))
-
-    pred.__name__ = f"security_layer_done_{key}"
-    return pred
-
-
-def _security_all_done(snapshot: StateSnapshot) -> bool:
-    security = snapshot.get("security") or {}
-    return bool(security.get("ok"))
-
-
-def _integrated_security_done(snapshot: StateSnapshot) -> bool:
-    security = snapshot.get("security") or {}
-    checklist = security.get("checklist") or {}
-    return bool(checklist.get("integrated"))
 
 
 # ---------------------------------------------------------------------------
@@ -119,13 +138,13 @@ def _integrated_security_done(snapshot: StateSnapshot) -> bool:
 _REGISTRY: dict[str, Predicate | Callable[..., Predicate]] = {
     "never": _never,
     "torrent_progress_gte_1": _torrent_progress_gte_1,
+    "download_done_and_overlay_authored": _download_done_and_overlay_authored,
+    "download_done_and_overlay_authored_and_announce_sent": _download_done_and_overlay_authored_and_announce_sent,
+    "paid_and_overlay_authored": _paid_and_overlay_authored,
+    "paid_and_overlay_authored_and_announce_sent": _paid_and_overlay_authored_and_announce_sent,
     "peer_count_gte_N": _peer_count_gte_N,
     "wallet_received_sats": _wallet_received_sats,
-    "community_seedbox_count_gte_N": _community_seedbox_count_gte_N,
     "community_member_count_gte_N": _community_member_count_gte_N,
-    "security_layer_done": _security_layer_done,
-    "security_all_done": _security_all_done,
-    "integrated_security_done": _integrated_security_done,
 }
 
 
@@ -182,9 +201,7 @@ def _looks_like_factory(obj: Any) -> bool:
     return (
         name.startswith("_peer_count_gte_N")
         or name.startswith("_wallet_received_sats")
-        or name.startswith("_community_seedbox_count_gte_N")
         or name.startswith("_community_member_count_gte_N")
-        or name.startswith("_security_layer_done")
     )
 
 

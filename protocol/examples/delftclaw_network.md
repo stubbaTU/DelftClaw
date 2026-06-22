@@ -1,8 +1,8 @@
 # Identity
 
-- name: delftclaw_seek_cc
+- name: delftclaw_payment
 - version: 1.0.0
-- description: A two-agent demo network — Alice serves Creative Commons content; Bob seeks.
+- description: A demo network — Alice founds the community; joiners donate to be admitted.
 
 # Admission
 
@@ -10,8 +10,6 @@
 - min_sats: 10000
 - min_confirmations: 0
 - bootstrap_cap_sats: 100000
-- max_agents_per_seedbox: 3
-- seedbox_cost_sats: 50000
 
 # Genesis Peers
 

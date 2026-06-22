@@ -19,7 +19,6 @@ import pytest
 from protocol import (
     ProtocolCompileError,
     SandboxError,
-    StubLLMClient,
     canonicalize_md,
     community_id_from_md,
     compile_overlay,
@@ -27,17 +26,12 @@ from protocol import (
     safe_exec,
     validate_ast,
 )
-from protocol.examples.echo_overlay_stub import ECHO_OVERLAY_SOURCE
+from _live_llm import compile_source, noop_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ECHO_MD = (REPO_ROOT / "protocol" / "examples" / "echo_overlay.md").read_text(encoding="utf-8")
 ECHO_CID = community_id_from_md(ECHO_MD).hex()
-
-
-def _stub_for_echo() -> StubLLMClient:
-    fenced = "```python\n" + ECHO_OVERLAY_SOURCE + "```"
-    return StubLLMClient(sources={ECHO_CID: fenced})
 
 
 # ---------------------------------------------------------------------------
@@ -136,28 +130,30 @@ def test_sandbox_allows_ipv8_imports():
 # ---------------------------------------------------------------------------
 
 def test_compile_echo_overlay_produces_working_community_class():
-    compiled = compile_overlay(ECHO_MD, _stub_for_echo())
+    # Real end-to-end compile via the live LLM (skips without an endpoint).
+    source = compile_source(ECHO_MD)
+    compiled = compile_overlay(ECHO_MD, noop_llm(), llm_source=source)
     assert compiled.community_id.hex() == ECHO_CID
     assert compiled.community_class.__name__ == "GeneratedCommunity"
     assert set(compiled.payload_classes) == {"ECHO_REQUEST", "ECHO_RESPONSE"}
 
 
 def test_compile_rejects_when_generated_class_has_wrong_id():
-    bad_source = ECHO_OVERLAY_SOURCE.replace(ECHO_CID, "00" * 20)
-    stub = StubLLMClient(sources={ECHO_CID: "```python\n" + bad_source + "```"})
+    # Feed a source declaring the WRONG community_id via llm_source (no LLM):
+    # the heartbeat fixture declares cid="00"*20, which cannot match _HEARTBEAT_MD.
+    bad_source = _heartbeat_source("00" * 20)
     with pytest.raises(ProtocolCompileError, match="community_id mismatch"):
-        compile_overlay(ECHO_MD, stub)
+        compile_overlay(_HEARTBEAT_MD, noop_llm(), llm_source=bad_source)
 
 
 def test_compile_rejects_when_test_vector_fails():
-    # Inject a wrong msg_id into the generated source so the payload
-    # class encodes differently than the descriptor's vectors expect.
-    # The simplest way: corrupt the format_list to produce different bytes.
-    bad = ECHO_OVERLAY_SOURCE.replace('format_list = ["varlenH"]',
-                                       'format_list = ["B"]')
-    stub = StubLLMClient(sources={ECHO_CID: "```python\n" + bad + "```"})
+    # Corrupt the generated payload's format_list so it encodes differently
+    # than the descriptor's vectors expect; fed via llm_source (no LLM).
+    cid_hex = community_id_from_md(_HEARTBEAT_MD).hex()
+    bad = _heartbeat_source(cid_hex).replace('format_list = ["I"]',
+                                             'format_list = ["B"]')
     with pytest.raises(ProtocolCompileError):
-        compile_overlay(ECHO_MD, stub)
+        compile_overlay(_HEARTBEAT_MD, noop_llm(), llm_source=bad)
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +295,10 @@ def test_parse_tasks_rejects_duplicate_handler():
 
 
 def test_compile_heartbeat_overlay_with_tasks_succeeds():
+    # The post-LLM compile path is exercised offline by feeding a known-good
+    # source via llm_source (no live model, no stub client).
     cid_hex = community_id_from_md(_HEARTBEAT_MD).hex()
-    stub = StubLLMClient(sources={cid_hex: _heartbeat_source(cid_hex)})
-    compiled = compile_overlay(_HEARTBEAT_MD, stub)
+    compiled = compile_overlay(_HEARTBEAT_MD, noop_llm(), llm_source=_heartbeat_source(cid_hex))
     assert compiled.parsed is not None
     assert len(compiled.parsed.tasks) == 1
 
@@ -312,17 +309,17 @@ def test_compile_rejects_when_register_task_call_is_missing():
         'self.register_task("heartbeat_tick", self._send_heartbeat, interval=30)',
         "",
     )
-    stub = StubLLMClient(sources={cid_hex: _heartbeat_source(cid_hex, bad_source)})
     with pytest.raises(ProtocolCompileError, match="heartbeat_tick"):
-        compile_overlay(_HEARTBEAT_MD, stub)
+        compile_overlay(_HEARTBEAT_MD, noop_llm(),
+                        llm_source=_heartbeat_source(cid_hex, bad_source))
 
 
 def test_compile_rejects_when_register_task_interval_disagrees_with_descriptor():
     cid_hex = community_id_from_md(_HEARTBEAT_MD).hex()
     bad_source = _HEARTBEAT_SOURCE_OK.replace("interval=30", "interval=15")
-    stub = StubLLMClient(sources={cid_hex: _heartbeat_source(cid_hex, bad_source)})
     with pytest.raises(ProtocolCompileError, match="heartbeat_tick"):
-        compile_overlay(_HEARTBEAT_MD, stub)
+        compile_overlay(_HEARTBEAT_MD, noop_llm(),
+                        llm_source=_heartbeat_source(cid_hex, bad_source))
 
 
 def test_compile_rejects_when_task_handler_method_is_missing():
@@ -335,6 +332,74 @@ def test_compile_rejects_when_task_handler_method_is_missing():
         "    def _send_heartbeat(self) -> None:\n        pass  # body intentionally empty for the test\n\n",
         "",
     )
-    stub = StubLLMClient(sources={cid_hex: _heartbeat_source(cid_hex, bad_source)})
     with pytest.raises(ProtocolCompileError, match="_send_heartbeat"):
-        compile_overlay(_HEARTBEAT_MD, stub)
+        compile_overlay(_HEARTBEAT_MD, noop_llm(),
+                        llm_source=_heartbeat_source(cid_hex, bad_source))
+
+
+# ---------------------------------------------------------------------------
+# Schema v1.1 semantic encodings: hash20 / hash32 / timestamp_unix
+# ---------------------------------------------------------------------------
+
+def test_v1_1_encodings_registered_in_allowlist():
+    """The three v1.1 ergonomic aliases are wire-identical to their primitives
+    but distinct names in ALLOWED_ENCODINGS so they round-trip parsing."""
+    from protocol.compiler import ALLOWED_ENCODINGS
+    assert ALLOWED_ENCODINGS["hash20"] == "20s"
+    assert ALLOWED_ENCODINGS["hash32"] == "32s"
+    assert ALLOWED_ENCODINGS["timestamp_unix"] == "Q"
+
+
+def test_coerce_hash20_hex_string_becomes_raw_bytes():
+    """The load-bearing v1.1 behaviour: passing a 40-char hex string for a
+    hash20 field is treated as raw bytes (bytes.fromhex), not utf-8. This is
+    what eliminates the bytes-encoding boundary trip-up observed in deployed
+    fetcher_2 v1.1 attempts."""
+    from protocol.compiler import _coerce_field_value
+    hex_str = "a3" * 20  # 40 hex chars
+    out = _coerce_field_value(hex_str, encoding="hash20")
+    assert isinstance(out, bytes)
+    assert out == bytes.fromhex(hex_str)
+    assert len(out) == 20
+
+
+def test_coerce_hash32_hex_string_becomes_raw_bytes():
+    from protocol.compiler import _coerce_field_value
+    hex_str = "4b" * 32  # 64 hex chars
+    out = _coerce_field_value(hex_str, encoding="hash32")
+    assert out == bytes.fromhex(hex_str)
+    assert len(out) == 32
+
+
+def test_coerce_hash20_non_hex_string_raises_clean_compile_error():
+    """A garbled sample produces a readable ProtocolCompileError that names
+    the encoding and the expected hex-string shape."""
+    from protocol.compiler import _coerce_field_value
+    with pytest.raises(ProtocolCompileError, match="hash20.*hex"):
+        _coerce_field_value("not-a-hash", encoding="hash20")
+
+
+def test_coerce_without_encoding_preserves_pre_v1_1_string_utf8():
+    """Backwards-compat: a string passed WITHOUT encoding context still goes
+    through the original utf-8 branch (existing callers were varlenH-utf8 +
+    test-vector paths)."""
+    from protocol.compiler import _coerce_field_value
+    assert _coerce_field_value("hello") == b"hello"
+    assert _coerce_field_value("hello", encoding=None) == b"hello"
+
+
+def test_coerce_bytes20_with_bytes_literal_unchanged():
+    """The pre-v1.1 bytes20/bytes32 path is unchanged: raw Python bytes
+    pass through verbatim, no hex parsing."""
+    from protocol.compiler import _coerce_field_value
+    payload = b"\x01" * 20
+    assert _coerce_field_value(payload, encoding="bytes20") == payload
+
+
+def test_v1_1_encodings_advertised_in_system_prompt():
+    """The LLM-facing SYSTEM_PROMPT must list the new mappings so generated
+    code uses the correct struct format tokens."""
+    from protocol.compiler import SYSTEM_PROMPT
+    assert 'hash20 -> "20s"' in SYSTEM_PROMPT
+    assert 'hash32 -> "32s"' in SYSTEM_PROMPT
+    assert 'timestamp_unix -> "Q"' in SYSTEM_PROMPT

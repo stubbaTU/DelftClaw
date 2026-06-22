@@ -1,13 +1,13 @@
 """Tests for ``PEER_INTRO`` — live wallet + overlay catalogue exchange.
 
-Two SeedboxCommunities complete a mock-verifier JOIN round-trip. Both
-sides must populate ``peer_meta`` with the other's wallet_address and
-known_overlays within 1s of the JoinResponse arriving.
+Two SeedboxCommunities complete a community-join (signed-log) round-trip. On
+accept, both sides must populate ``peer_meta`` with the other's wallet_address
+and known_overlays within ~1s of the response arriving.
 
 Also covers:
   - Unconfigured wallet_address skips the send silently (no crash).
-  - PEER_INTRO from a peer who was rejected is NOT triggered (because
-    the auto-send sits behind the accepted=True check).
+  - PEER_INTRO from a peer who was rejected is NOT triggered (the auto-send
+    sits behind the accepted=True check).
   - Defensive: malformed msgpack in known_overlays is dropped without
     crashing the receiver.
 """
@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import msgpack
 import pytest
 import pytest_asyncio
 from ipv8.configuration import ConfigBuilder
@@ -29,23 +28,21 @@ from communication.community import (
     PeerMeta,
     SeedboxCommunity,
 )
-from admission.donation_verifier import DonationVerification
 
 
-class AlwaysAcceptVerifier:
-    """Mock verifier that admits every txid. Mirrors DonationVerifier.verify."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def verify(self, txid_hex: str) -> DonationVerification:
-        self.calls.append(txid_hex)
-        return DonationVerification(accepted=True, paid_sats=10_000, confirmations=1)
+# Community-join callbacks: (peer, entry) -> (accepted, reason). The decision is
+# whatever a community-state replay would return; here we stub accept/reject so
+# the test isolates the PEER_INTRO exchange that follows admission.
+def _accept(_peer, _entry) -> tuple[bool, str]:
+    return True, ""
 
 
-class AlwaysRejectVerifier:
-    def verify(self, txid_hex: str) -> DonationVerification:
-        return DonationVerification(accepted=False, reason="rejected_for_test")
+def _reject(_peer, _entry) -> tuple[bool, str]:
+    return False, "rejected_for_test"
+
+
+# A minimal signed_entry the joiner ships; the stub callback ignores its content.
+_DONATION = {"type": "donation_intent", "details": {"amount_sats": 10_000}}
 
 
 def _build_node(port: int, key_path: Path) -> IPv8:
@@ -103,7 +100,7 @@ async def test_peer_intro_exchanged_after_join_accept(two_seedboxes):
     sb_alice, sb_bob, peer_alice, peer_bob = two_seedboxes
 
     sb_alice.configure(
-        verifier=AlwaysAcceptVerifier(),
+        community_join_callback=_accept,
         wallet_address="tb1qalicewalletexample00000000000000000000",
     )
     sb_bob.configure(
@@ -113,8 +110,8 @@ async def test_peer_intro_exchanged_after_join_accept(two_seedboxes):
     bob_overlay = b"\xab" * 20
     sb_bob._published[bob_overlay] = "# stub overlay\n"
 
-    join_fut = sb_bob.request_join(peer_alice, donation_txid=b"\xde\xad\xbe\xef")
-    accepted = await asyncio.wait_for(join_fut, timeout=2.0)
+    join_fut = sb_bob.request_community_join(peer_alice, _DONATION)
+    accepted, _reason = await asyncio.wait_for(join_fut, timeout=2.0)
     assert accepted is True
 
     # Both sides should have stored each other's PeerMeta within ~1s.
@@ -141,13 +138,13 @@ async def test_peer_intro_exchanged_after_join_accept(two_seedboxes):
 async def test_peer_intro_skipped_on_reject(two_seedboxes):
     sb_alice, sb_bob, peer_alice, peer_bob = two_seedboxes
     sb_alice.configure(
-        verifier=AlwaysRejectVerifier(),
+        community_join_callback=_reject,
         wallet_address="tb1qalicewalletexample00000000000000000000",
     )
     sb_bob.configure(wallet_address="tb1qbobwalletexample0000000000000000000000")
 
-    join_fut = sb_bob.request_join(peer_alice, donation_txid=b"\xde\xad")
-    accepted = await asyncio.wait_for(join_fut, timeout=2.0)
+    join_fut = sb_bob.request_community_join(peer_alice, _DONATION)
+    accepted, _reason = await asyncio.wait_for(join_fut, timeout=2.0)
     assert accepted is False
 
     await asyncio.sleep(0.3)
@@ -162,11 +159,11 @@ async def test_peer_intro_skipped_on_reject(two_seedboxes):
 @pytest.mark.asyncio
 async def test_peer_intro_silent_without_wallet_config(two_seedboxes):
     sb_alice, sb_bob, peer_alice, peer_bob = two_seedboxes
-    sb_alice.configure(verifier=AlwaysAcceptVerifier())  # no wallet_address
+    sb_alice.configure(community_join_callback=_accept)  # no wallet_address
     sb_bob.configure()  # no wallet_address
 
-    join_fut = sb_bob.request_join(peer_alice, donation_txid=b"\x01")
-    accepted = await asyncio.wait_for(join_fut, timeout=2.0)
+    join_fut = sb_bob.request_community_join(peer_alice, _DONATION)
+    accepted, _reason = await asyncio.wait_for(join_fut, timeout=2.0)
     assert accepted is True
 
     await asyncio.sleep(0.3)
@@ -182,8 +179,7 @@ async def test_peer_intro_silent_without_wallet_config(two_seedboxes):
 @pytest.mark.asyncio
 async def test_peer_intro_malformed_msgpack_dropped(two_seedboxes):
     sb_alice, sb_bob, peer_alice, peer_bob = two_seedboxes
-    sb_alice.configure(verifier=AlwaysAcceptVerifier(),
-                       wallet_address="tb1qalicewalletexample00000000000000000000")
+    sb_alice.configure(wallet_address="tb1qalicewalletexample00000000000000000000")
     sb_bob.configure(wallet_address="tb1qbobwalletexample0000000000000000000000")
 
     # Send a deliberately malformed PEER_INTRO from Bob to Alice.
@@ -208,13 +204,13 @@ async def test_peer_intro_callback_invoked(two_seedboxes):
     sb_alice, sb_bob, peer_alice, peer_bob = two_seedboxes
     seen: list[tuple[bytes, PeerMeta]] = []
     sb_alice.configure(
-        verifier=AlwaysAcceptVerifier(),
+        community_join_callback=_accept,
         wallet_address="tb1qalicewalletexample00000000000000000000",
         peer_intro_callback=lambda p, meta: seen.append((p.mid, meta)),
     )
     sb_bob.configure(wallet_address="tb1qbobwalletexample0000000000000000000000")
 
-    join_fut = sb_bob.request_join(peer_alice, donation_txid=b"\x01")
+    join_fut = sb_bob.request_community_join(peer_alice, _DONATION)
     await asyncio.wait_for(join_fut, timeout=2.0)
     for _ in range(40):
         if seen:

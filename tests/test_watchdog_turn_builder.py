@@ -137,9 +137,9 @@ def test_prompt_progress_discipline_does_not_teach_read_loop():
     satisfies the mission, call ONE cheap no-op (e.g. wallet_balance)
     and end." Once the per-session budget exempted read tools, that
     line trained Haiku to spend every post-join turn on 6 free
-    read-only calls and never act — seek_cc reached member_count=4 but
-    never did SEARCH / torrent_fetch / seedbox_purchase_propose (concept
-    steps 4,5,7). The fix replaced it with: snapshot is already in the
+    read-only calls and never act — the admission demo reached member_count=3 but
+    never did SEARCH / torrent_fetch (concept steps 4,5). The fix
+    replaced it with: snapshot is already in the
     prompt, re-reading is not progress, the one action must change
     state, and the only no-op is an EMPTY assistant message.
     """

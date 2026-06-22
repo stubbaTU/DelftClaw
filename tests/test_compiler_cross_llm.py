@@ -5,7 +5,7 @@ same `.md` produce wire-compatible code, because the schema constrains
 encoding choices and the compiler runs test vectors before activating
 the result. This test puts that bet under load.
 
-We compile ``content_community.md`` against TWO ``StubLLMClient``
+We compile ``content_community.md`` against TWO independent inline
 variants that emit stylistically-divergent Python (reordered payload
 classes, different docstrings, different local variable names,
 different but equivalent handler bodies). Both must:
@@ -26,7 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from protocol import StubLLMClient, community_id_from_md, compile_overlay
+from protocol import community_id_from_md, compile_overlay
+from _live_llm import noop_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,11 +38,79 @@ COMMUNITY_ID_HEX = community_id_from_md(CONTENT_MD).hex()
 
 
 # ---------------------------------------------------------------------------
-# Variant A — the reference stub the repo already uses elsewhere.
+# Variant A — one valid, conformant content_community implementation. Together
+# with Variant B (a stylistically different but wire-equivalent implementation
+# below) these stand in for two independent LLM compilations of the same
+# descriptor; the test asserts they produce an identical community_id and wire
+# format. Defined inline as a local test fixture, fed straight through the
+# compile pipeline via llm_source (no live model, no shared stub module).
 # ---------------------------------------------------------------------------
 
-from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
-VARIANT_A_SOURCE = "```python\n" + CONTENT_COMMUNITY_SOURCE + "```"
+VARIANT_A_SOURCE = """```python
+import msgpack
+
+from ipv8.community import Community, CommunitySettings
+from ipv8.lazy_community import lazy_wrapper
+from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
+from ipv8.peer import Peer
+from ipv8.peerdiscovery.network import PeerObserver
+
+
+@vp_compile
+class SearchRequestPayload(VariablePayload):
+    msg_id = 1
+    format_list = ["varlenH"]
+    names = ["query"]
+
+
+@vp_compile
+class SearchResponsePayload(VariablePayload):
+    msg_id = 2
+    format_list = ["varlenH"]
+    names = ["results"]
+
+
+class GeneratedCommunity(Community, PeerObserver):
+    community_id = bytes.fromhex(\"""" + COMMUNITY_ID_HEX + """\")
+    MAX_RESULTS = 50
+
+    def __init__(self, settings: CommunitySettings) -> None:
+        super().__init__(settings)
+        self.local_index = []
+        self.response_cache = []
+        self.add_message_handler(SearchRequestPayload, self.on_search_request)
+        self.add_message_handler(SearchResponsePayload, self.on_search_response)
+
+    def started(self) -> None:
+        self.network.add_peer_observer(self)
+
+    def on_peer_added(self, peer: Peer) -> None:
+        pass
+
+    def on_peer_removed(self, peer: Peer) -> None:
+        pass
+
+    @lazy_wrapper(SearchRequestPayload)
+    def on_search_request(self, peer: Peer, payload: SearchRequestPayload) -> None:
+        query = payload.query.decode("utf-8").lower()
+        results = []
+        for entry in self.local_index:
+            hay = entry.get("name", "")
+            tags = entry.get("tags", [])
+            if isinstance(tags, list):
+                hay = hay + " " + " ".join(str(t) for t in tags)
+            if query == "" or query in hay.lower():
+                results.append(entry)
+            if len(results) >= self.MAX_RESULTS:
+                break
+        self.ez_send(peer, SearchResponsePayload(msgpack.packb(results, use_bin_type=True)))
+
+    @lazy_wrapper(SearchResponsePayload)
+    def on_search_response(self, peer: Peer, payload: SearchResponsePayload) -> None:
+        decoded = msgpack.unpackb(payload.results, raw=False)
+        if isinstance(decoded, list):
+            self.response_cache.extend(decoded)
+```"""
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +338,8 @@ class GeneratedCommunity(Community, PeerObserver):
     ids=["A_reference", "B_alternate"],
 )
 def test_each_variant_compiles_and_passes_test_vectors(source):
-    """Each LLM variant must independently activate (test vectors + AST)."""
-    llm = StubLLMClient(sources={COMMUNITY_ID_HEX: source})
-    compiled = compile_overlay(CONTENT_MD, llm)
+    """Each variant must independently activate (test vectors + AST)."""
+    compiled = compile_overlay(CONTENT_MD, noop_llm(), llm_source=source)
     assert compiled.community_id.hex() == COMMUNITY_ID_HEX
     assert "SEARCH_REQUEST" in compiled.payload_classes
     assert "SEARCH_RESPONSE" in compiled.payload_classes
@@ -279,13 +347,10 @@ def test_each_variant_compiles_and_passes_test_vectors(source):
 
 def test_both_variants_produce_identical_community_id_and_wire_format():
     """Activation success on both variants proves the determinism claim
-    for THIS overlay against THIS pair of LLM outputs — fail-closed via
-    the compiler's mandatory test vectors."""
-    llm_a = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_A_SOURCE})
-    llm_b = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_B_SOURCE})
-
-    compiled_a = compile_overlay(CONTENT_MD, llm_a)
-    compiled_b = compile_overlay(CONTENT_MD, llm_b)
+    for THIS overlay against THIS pair of independent implementations —
+    fail-closed via the compiler's mandatory test vectors."""
+    compiled_a = compile_overlay(CONTENT_MD, noop_llm(), llm_source=VARIANT_A_SOURCE)
+    compiled_b = compile_overlay(CONTENT_MD, noop_llm(), llm_source=VARIANT_B_SOURCE)
 
     # Content-derived id: same .md -> same id, irrespective of LLM output.
     assert compiled_a.community_id == compiled_b.community_id
@@ -318,15 +383,13 @@ def test_variant_c_missing_constant_is_rejected():
     fails activation. This is the brittleness the schema upgrade is
     designed to catch."""
     from protocol.compiler import ProtocolCompileError
-    llm = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_C_MISSING_CONSTANT})
     with pytest.raises(ProtocolCompileError, match="MAX_RESULTS"):
-        compile_overlay(CONTENT_MD, llm)
+        compile_overlay(CONTENT_MD, noop_llm(), llm_source=VARIANT_C_MISSING_CONSTANT)
 
 
 def test_variant_d_renamed_runtime_state_slot_is_rejected():
     """A wire-compatible LLM output that renames a `# Runtime State`
     slot (response_cache → responses) fails activation."""
     from protocol.compiler import ProtocolCompileError
-    llm = StubLLMClient(sources={COMMUNITY_ID_HEX: VARIANT_D_RENAMED_SLOT})
     with pytest.raises(ProtocolCompileError, match="response_cache"):
-        compile_overlay(CONTENT_MD, llm)
+        compile_overlay(CONTENT_MD, noop_llm(), llm_source=VARIANT_D_RENAMED_SLOT)

@@ -16,14 +16,14 @@
 # immediately, no donation prompt. The admission machinery is still
 # present in the codebase but inert for this scenario.
 #
-# `redteam_port: 0` on every agent disables the signed-log pull loop —
+# `signed_log_port: 0` on every agent disables the signed-log pull loop —
 # no inter-agent log replication. The /head HTTP chatter that dominates
-# seek_cc journals will not appear here.
+# the payment demo's journals will not appear here.
 #
-# Port windows (disjoint from seek_cc / community_demo / etc.):
+# Port windows (disjoint from payment / file_transfer / etc.):
 #   IPv8 UDP    8210-8212
 #   MCP TCP     18790-18792
-#   Redteam TCP unused (redteam_port=0 on every agent)
+#   SignedLog TCP unused (signed_log_port=0 on every agent)
 
 name: file_share
 description: >-
@@ -43,6 +43,12 @@ file_share_mode: true
 # replies can route back. See agent.runtime.ensure_default_overlays_loaded.
 wire_distribute_overlays: true
 
+# Two-author overlay-evolution chain: fetcher_1 (genesis) authors
+# download_announce v1.0.0; fetcher_2 (successor) adopts it + designs
+# v1.1.0. Drives EVOLUTION_BASE_OVERLAY_NAME + OVERLAY_AUTHOR_MODE at boot
+# and the author/adopt/announce ladder in state_snapshot._next_objective.
+evolution_base_overlay: download_announce
+
 watchdog:
   # interval_s doubles as the per-turn subprocess budget +30. 240s
   # gives each agent ~75s of LLM headroom while keeping ticks tight
@@ -50,11 +56,19 @@ watchdog:
   # (search -> download) so total wall-clock should stay under 10 min.
   interval_s: 240
   max_iterations_per_turn: 1
-  # 3 agents × ~4 turns each + slack.
-  max_total_turns: 16
-  # Hard 20-minute cap so the scenario auto-terminates if something
-  # hangs. Live demo should complete in 5-10 min when healthy.
-  max_wall_clock_s: 1200
+  # 3 agents × turns: fetcher_1 now runs 2 productive turns (fetch +
+  # author), the seeder needs a turn to adopt the authored overlay, plus
+  # slack for retries. Bumped 16 -> 24 for the protocol-evolution phase.
+  max_total_turns: 24
+  # Hard cap so the scenario auto-terminates if something hangs. The v4
+  # evolution chain is a long SEQUENCE across agents — fetch -> author
+  # v1.0.0 -> fetcher_2 adopt -> fetcher_1 ANNOUNCE -> fetcher_2 design
+  # v1.1.0 — each gated on a separate ~240s tick, and each authoring step
+  # is a real LLM compile that can take ~60s on a loaded backend. 20 min
+  # was too tight (a prior run hit the cap seconds after v1.0.0 landed,
+  # before the chain could continue). 60 min gives the full chain room;
+  # a healthy run still finishes well under it.
+  max_wall_clock_s: 3600
 
 observability:
   log_dir: /var/log/delftclaw/scenarios/file_share
@@ -64,7 +78,7 @@ agents:
   seeder:
     ipv8_port: 8210
     mcp_port: 18790
-    redteam_port: 0
+    signed_log_port: 0
     publish_overlays:
       - protocol/examples/content_community.md
     mission_file: seeder/mission.md
@@ -77,21 +91,32 @@ agents:
   fetcher_1:
     ipv8_port: 8211
     mcp_port: 18791
-    redteam_port: 0
+    signed_log_port: 0
     publish_overlays: []
     mission_file: fetcher_1/mission.md
-    stop_predicate: torrent_progress_gte_1
+    overlay_author_role: genesis
+    # v4 genesis author: fetch the file, author download_announce v1.0.0,
+    # AND send one ANNOUNCE so fetcher_2 can observe the protocol in use.
+    stop_predicate: download_done_and_overlay_authored_and_announce_sent
+    # Meshed with fetcher_2 (not just the seeder): fetcher_1's OverlayOffer
+    # for v1.0.0 must reach fetcher_2, and its Phase-3 ANNOUNCE is a unicast
+    # to fetcher_2. A star topology (seeder-only) would strand both.
     peers:
       - seeder
+      - fetcher_2
     initial_balance_sats: 0
 
   fetcher_2:
     ipv8_port: 8212
     mcp_port: 18792
-    redteam_port: 0
+    signed_log_port: 0
     publish_overlays: []
     mission_file: fetcher_2/mission.md
-    stop_predicate: torrent_progress_gte_1
+    overlay_author_role: successor
+    # v4 successor author: fetch its file, adopt fetcher_1's v1.0.0, observe
+    # an ANNOUNCE, then DESIGN v1.1.0. Stops once it has authored a successor.
+    stop_predicate: download_done_and_overlay_authored
     peers:
       - seeder
+      - fetcher_1
     initial_balance_sats: 0

@@ -194,27 +194,28 @@ def _tool_histogram(scenario: str) -> dict[str, collections.Counter]:
     record individual tool calls.
     """
     per_agent: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    # Tool calls can be made by the MCP service when OpenClaw talks over MCP,
-    # or directly by the watchdog when WATCHDOG_DRIVER=direct.
+    # Tool calls are made by the MCP service when OpenClaw talks to it over MCP.
+    #
+    # ``-o with-unit`` is load-bearing here. The previous incantation
+    # (``-o short-iso --output-fields=UNIT,MESSAGE``) silently dropped the
+    # unit name from each line — ``--output-fields`` is ignored unless the
+    # format is verbose/export/json — so the per-line unit-name lookup below
+    # always failed, every call landed under ``agent="?"``, and the renderer
+    # printed "no tool calls in journal" even when the MCP service was
+    # dispatching dozens of calls per turn.
     out = subprocess.run(
-        ["journalctl", "--no-pager", "-o", "short-iso",
-         "--output-fields=UNIT,MESSAGE", "--all",
+        ["journalctl", "--no-pager", "-o", "with-unit", "--all",
          f"-u", f"delftclaw-mcp@{scenario}-*.service",
          f"-u", f"delftclaw-watchdog@{scenario}-*.service"],
         capture_output=True, text=True,
     )
-    current_unit = ""
     for line in out.stdout.splitlines():
-        # Lines look like: "2026-05-15T07:30:15+0000 host UNIT[MESSAGE]"
-        # but the --output-fields layout differs across systemd versions.
-        # We fall back to a simpler heuristic: grep MESSAGE substring,
-        # then attribute by the agent name embedded in the line if we
-        # can find it.
         marker = "TOOL call name="
         idx = line.find(marker)
         if idx < 0:
             continue
-        # Try to find the unit name in the line:
+        # Lines now look like:
+        #   2026-05-29T08:01:25+0000 host delftclaw-mcp@<scenario>-<agent>.service[pid]: ... TOOL call name=…
         agent = "?"
         for piece in line.split():
             if piece.startswith(("delftclaw-mcp@", "delftclaw-watchdog@")) and ".service" in piece:
@@ -223,7 +224,6 @@ def _tool_histogram(scenario: str) -> dict[str, collections.Counter]:
                 if "-" in tag:
                     agent = tag.split("-", 1)[1]
                 break
-        # Extract tool name.
         rest = line[idx + len(marker):]
         tool = rest.split()[0] if rest.split() else "?"
         # Strip a trailing "args=" if our split caught it.
@@ -242,10 +242,6 @@ def _community_state_summary(scenario: str, agent: str) -> dict | None:
     """
     try:
         from protocol.manifest import load_manifest
-        from redteam.primitives.signed_log import SignedAppendOnlyLog
-        from redteam.primitives.peer_log import PeerLog
-        from agent.community_state import replay_community
-        from identity.openclaw_identity import OpenClawIdentity
     except ImportError:
         return None
 
@@ -272,7 +268,6 @@ def _community_state_summary(scenario: str, agent: str) -> dict | None:
             "own_log_entries": own_entries,
             "peer_log_entries": peer_entries,
             "manifest_admission_min_sats": manifest.admission.min_sats,
-            "manifest_seedbox_cost_sats": manifest.admission.seedbox_cost_sats,
         }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -327,269 +322,7 @@ def _render_agent(scenario: str, agent: str, snap: dict) -> None:
         else:
             print(f"    community: own_log={cs['own_log_entries']} entries  "
                   f"peers={cs['peer_log_entries']} entries  "
-                  f"min_sats={cs['manifest_admission_min_sats']}  "
-                  f"seedbox_cost={cs['manifest_seedbox_cost_sats']}")
-
-
-def _latest_snapshot(summary: dict) -> dict:
-    # Turn events capture the state *before* the agent acts. If the
-    # watchdog stopped later, the stop event contains the completed state
-    # and should drive the story checklist.
-    return summary.get("stop_snapshot") or summary.get("last_snapshot") or {}
-
-
-def _community_snapshot(summaries: dict[str, dict]) -> dict:
-    communities = [
-        _latest_snapshot(summary).get("community")
-        for summary in summaries.values()
-        if _latest_snapshot(summary).get("community")
-    ]
-    if not communities:
-        return {}
-    return max(
-        communities,
-        key=lambda c: (
-            int(c.get("seedbox_count") or 0),
-            int(c.get("member_count") or 0),
-            int(c.get("balance_sats") or 0),
-        ),
-    )
-
-
-def _network_admission(summaries: dict[str, dict]) -> dict:
-    for summary in summaries.values():
-        admission = (_latest_snapshot(summary).get("network") or {}).get("admission")
-        if admission:
-            return admission
-    return {}
-
-
-def _torrent_rows(summary: dict) -> list[dict]:
-    torrents = _latest_snapshot(summary).get("torrents") or []
-    return [row for row in torrents if isinstance(row, dict)]
-
-
-def _ok_wait(ok: bool) -> str:
-    return f"{_C['green']}OK{_C['reset']}" if ok else f"{_C['yellow']}WAIT{_C['reset']}"
-
-
-def _first_content_row(summaries: dict[str, dict]) -> dict:
-    for agent in ("agent_1", "agent_2"):
-        for row in _torrent_rows(summaries.get(agent, {})):
-            if row.get("name") or row.get("magnet"):
-                return row
-        for overlay in (_latest_snapshot(summaries.get(agent, {})).get("overlays") or []):
-            for key in ("local_index", "response_cache"):
-                for row in overlay.get(key) or []:
-                    if isinstance(row, dict) and (row.get("name") or row.get("magnet")):
-                        return row
-    return {}
-
-
-def _content_overlay_rows(summary: dict, key: str) -> list[dict]:
-    rows = []
-    for overlay in (_latest_snapshot(summary).get("overlays") or []):
-        if overlay.get("name") != "content_community":
-            continue
-        for row in overlay.get(key) or []:
-            if isinstance(row, dict):
-                rows.append(row)
-    return rows
-
-
-def _format_content_row(row: dict) -> str:
-    if not row:
-        return "none"
-    parts = []
-    for key in ("name", "size", "mime", "magnet"):
-        if row.get(key) is not None:
-            parts.append(f"{key}={row.get(key)}")
-    return " ".join(parts) if parts else "none"
-
-
-def _render_paper_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario not in {"community_demo", "secure_community_demo"}:
-        return
-
-    community = _community_snapshot(summaries)
-    admission = _network_admission(summaries)
-    content = _first_content_row(summaries)
-
-    member_count = int(community.get("member_count") or 0)
-    seedbox_count = int(community.get("seedbox_count") or 0)
-    treasury = int(community.get("balance_sats") or 0)
-    min_sats = admission.get("min_sats", "?")
-    seedbox_cost = admission.get("seedbox_cost_sats", "?")
-    capacity = admission.get("max_agents_per_seedbox", "?")
-
-    a1 = summaries.get("agent_1", {})
-    a2 = summaries.get("agent_2", {})
-    a3 = summaries.get("agent_3", {})
-    a4 = summaries.get("agent_4", {})
-    a2_retrieved = any(float(row.get("progress") or 0) >= 1 for row in _torrent_rows(a2))
-    seedbox_index = _content_overlay_rows(a1, "local_index")
-    seeker_responses = _content_overlay_rows(a2, "response_cache")
-
-    _print_header("community story checklist")
-    if scenario == "secure_community_demo":
-        print("  This section maps the live real-agent community demo to Paper - Demo.txt with the security episode embedded.")
-    else:
-        print("  This section maps the live real-agent community demo to Paper - Demo.txt before the security experiments.")
-    print(f"  1. Founder, wallet, treasury, first seedbox: {_ok_wait(member_count >= 1)}  "
-          f"members={member_count} treasury_sats={treasury} seedboxes={seedbox_count} "
-          f"join_fee={min_sats} seedbox_cost={seedbox_cost} capacity={capacity}")
-    print(f"  2. Second agent donation/admission: {_ok_wait(a2.get('last_turn_ok') is True)}  "
-          f"turns={a2.get('turn_count', 0)} stop={a2.get('last_stop_value')}")
-    print(f"  3. Third member on first seedbox: {_ok_wait(member_count >= 3 or a3.get('stopped'))}  "
-          f"members={member_count} agent_3_stopped={'yes' if a3.get('stopped') else 'no'}")
-
-    print(f"  4a. Seedbox file index published: {_ok_wait(bool(seedbox_index))}  "
-          f"{_format_content_row(seedbox_index[0] if seedbox_index else content)}")
-    print(f"  4b. Seeker received search metadata: {_ok_wait(bool(seeker_responses))}  "
-          f"{_format_content_row(seeker_responses[0] if seeker_responses else {})}")
-    print(f"  5. Retrieval and verification evidence: {_ok_wait(a2_retrieved)}  "
-          f"agent_2_torrent_progress_gte_1={'yes' if a2_retrieved else 'no'}")
-    print(f"  6. Capacity-triggered second seedbox: {_ok_wait(seedbox_count >= 2)}  "
-          f"seedboxes={seedbox_count} agent_4_stop={a4.get('last_stop_value')}")
-
-    own_peer_logs = []
-    for agent, summary in summaries.items():
-        cs = _community_state_summary(scenario, agent)
-        if cs and "error" not in cs:
-            own_peer_logs.append(
-                f"{agent}:own={cs['own_log_entries']},peer={cs['peer_log_entries']}"
-            )
-    if own_peer_logs:
-        print(f"  Signed append-only evidence: {'; '.join(own_peer_logs)}")
-    if a1.get("last_stdout"):
-        print(f"  Founder latest note: {a1['last_stdout'].replace(chr(10), ' ')[:220]}")
-
-
-def _security_snapshot(summaries: dict[str, dict]) -> dict:
-    snapshots = [
-        _latest_snapshot(summary).get("security")
-        for summary in summaries.values()
-        if _latest_snapshot(summary).get("security")
-    ]
-    if not snapshots:
-        return {}
-    return max(
-        snapshots,
-        key=lambda item: (
-            int(bool(item.get("ok"))),
-            sum(1 for ok in (item.get("checklist") or {}).values() if ok),
-            len(item.get("layers") or {}),
-        ),
-    )
-
-
-def _render_security_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario != "security_layers":
-        return
-
-    security = _security_snapshot(summaries)
-    layers = security.get("layers") or {}
-    checklist = security.get("checklist") or {}
-    layer1 = layers.get("1_preventative_gateway") or {}
-    layer2 = layers.get("2_accountability_reputation") or {}
-    layer3 = layers.get("3_impact_integrity_containment") or {}
-
-    l1_without = layer1.get("without_defense") or {}
-    l1_with = layer1.get("with_defense") or {}
-    l2_before = layer2.get("before_accountability_reports") or {}
-    l2_after = layer2.get("after_accountability_reports") or {}
-    l3_without = layer3.get("without_isolation") or {}
-    l3_with = layer3.get("with_proxy_only_isolation") or {}
-    tamper = layer3.get("tamper_detection") or {}
-    real = layer3.get("real_guardrails") or {}
-    gvisor = real.get("gvisor") or {}
-    iptables = real.get("iptables") or {}
-
-    _print_header("security story checklist")
-    print("  This section maps Act 2 to the paper's defense-in-depth security story.")
-    print(f"  1. Preventative gateway: {_ok_wait(bool(checklist.get('layer1')))}  "
-          f"baseline_attack_success={l1_without.get('attack_success')} "
-          f"benign_allowed={l1_with.get('benign_executed')} "
-          f"defended_blocked={l1_with.get('blocked')}")
-    print(f"  2. Accountability and reputation: {_ok_wait(bool(checklist.get('layer2')))}  "
-          f"before_score={l2_before.get('score')} before_banned={l2_before.get('banned')} "
-          f"after_score={l2_after.get('score')} after_banned={l2_after.get('banned')} "
-          f"banned_agents={l2_after.get('banned_agents')}")
-    print(f"  3. Impact containment and integrity: {_ok_wait(bool(checklist.get('layer3')))}  "
-          f"no_isolation_passed={l3_without.get('passed')} "
-          f"proxy_only_passed={l3_with.get('passed')} "
-          f"tamper_detected={tamper.get('community_log_after_tamper_ok') is False} "
-          f"real_gvisor={gvisor.get('ok')} real_iptables={iptables.get('ok')}")
-    print(f"  Overall defense-in-depth story: {_ok_wait(bool(security.get('ok')))}  "
-          f"evidence={security.get('path', 'none')}")
-
-
-def _render_integrated_security_story(scenario: str, summaries: dict[str, dict]) -> None:
-    if scenario != "secure_community_demo":
-        return
-
-    security = _security_snapshot(summaries)
-    story = security.get("integrated_story") or {}
-    timeline = story.get("timeline") or []
-    by_stage = {
-        row.get("stage"): row
-        for row in timeline
-        if isinstance(row, dict)
-    }
-    good = by_stage.get("joined_and_retrieved_file") or {}
-    blocked = by_stage.get("private_key_probe_blocked") or {}
-    privileged = by_stage.get("privileged_command_blocked") or {}
-    expelled = by_stage.get("fake_seedbox_self_donation_expelled") or {}
-    prevention = story.get("preventative") or {}
-    accountability = story.get("accountability") or {}
-    impact = story.get("impact") or {}
-    policy = story.get("openclaw_tool_policy") or {}
-    target_secret = story.get("target_secret") or {}
-    trust_basis = story.get("trust_basis") or {}
-    real = impact.get("real_guardrails") or {}
-    gvisor = real.get("gvisor") or {}
-    iptables = real.get("iptables") or {}
-    privileged_attempts = (impact.get("agent_privileged_attempts") or {})
-    no_iso_attempts = privileged_attempts.get("without_isolation") or {}
-    proxy_attempts = privileged_attempts.get("with_proxy_only_isolation") or {}
-
-    _print_header("integrated security episode")
-    print("  This section shows the security layers firing inside the normal four-agent community story.")
-    print(f"  Tool policy: allowlist={len(policy.get('allowlist') or [])} "
-          f"denylist={len(policy.get('denylist') or [])} driver={policy.get('driver', 'unknown')}")
-    print(f"  7. Good member earns trust first: {_ok_wait(bool(good))}  "
-          f"subject={story.get('subject_id', 'agent_2')} "
-          f"trust={good.get('trust_score')} risk={good.get('risk_score')} banned={good.get('banned')} "
-          f"basis='{trust_basis.get('formula', '')}'")
-    print(f"  8. Preventative Brain-vs-Hands block: {_ok_wait(bool(prevention.get('private_key_probe_blocked')))}  "
-          f"target={target_secret.get('owner_agent', 'agent_2')}:{target_secret.get('asset', 'private key')} "
-          f"blocked={prevention.get('private_key_probe_blocked')} "
-          f"attack_success={prevention.get('private_key_attack_success')} "
-          f"blocked_count={prevention.get('blocked_count')}")
-    print(f"  9. Reputation falls after private-key abuse: {_ok_wait(bool(blocked))}  "
-          f"trust={blocked.get('trust_score')} risk={blocked.get('risk_score')} banned={blocked.get('banned')}")
-    print(f"  10. Privileged system command is blocked: {_ok_wait(bool(prevention.get('privileged_command_blocked')))}  "
-          f"tool={prevention.get('privileged_command')} "
-          f"trust={privileged.get('trust_score')} risk={privileged.get('risk_score')} "
-          f"attack_success={prevention.get('privileged_command_attack_success')}")
-    print(f"  11. More malicious behavior triggers expulsion: {_ok_wait(bool(accountability.get('banned')))}  "
-          f"trust={expelled.get('trust_score')} "
-          f"risk={accountability.get('risk_after_more_malicious_behavior')} "
-          f"harm_count={accountability.get('harm_count')} banned={accountability.get('banned')}")
-    print(f"  12. Isolation limits fallout: {_ok_wait(impact.get('with_proxy_only_isolation_passed') is True)}  "
-          f"no_isolation_passed={impact.get('without_isolation_passed')} "
-          f"proxy_only_passed={impact.get('with_proxy_only_isolation_passed')} "
-          f"key_read_no_iso={no_iso_attempts.get('read_private_key_succeeded')} "
-          f"key_read_proxy={proxy_attempts.get('read_private_key_succeeded')} "
-          f"iptables_no_iso={no_iso_attempts.get('modify_iptables_succeeded')} "
-          f"iptables_proxy={proxy_attempts.get('modify_iptables_succeeded')} "
-          f"guardrails={', '.join(impact.get('guardrails') or [])}")
-    print(f"  13. Real gVisor and iptables probe: {_ok_wait(real.get('ok') is True)}  "
-          f"gvisor={gvisor.get('ok')} rootfs_write_blocked={gvisor.get('rootfs_write_probe_blocked')} "
-          f"network_blocked={gvisor.get('network_probe_blocked')} reason={gvisor.get('reason', '')} "
-          f"iptables={iptables.get('ok')} reason={iptables.get('reason', '')}")
-    print(f"  Combined demo security outcome: {_ok_wait(bool(story.get('represented')))}  "
-          f"evidence={security.get('path', 'none')}")
+                  f"min_sats={cs['manifest_admission_min_sats']}")
 
 
 def _render_ipv8(hist: collections.Counter, recent: list[str]) -> None:
@@ -611,6 +344,312 @@ def _render_ipv8(hist: collections.Counter, recent: list[str]) -> None:
                 print(f"  {line[i:]}")
             except ValueError:
                 print(f"  {line}")
+
+
+# ----- Overlay lifecycle (compile/install) from journal ----------------------
+
+_OVERLAY_MARKER = "OVERLAY "
+
+
+def _parse_kv_tokens(tokens: list[str]) -> dict[str, str]:
+    """``["cid=ab", "result=ok"]`` -> ``{"cid": "ab", "result": "ok"}``."""
+    out: dict[str, str] = {}
+    for tok in tokens:
+        if "=" in tok:
+            key, value = tok.split("=", 1)
+            out[key] = value
+    return out
+
+
+def _recent_overlay_events(scenario: str, n: int = 20) -> list[str]:
+    """Last ``n`` ``OVERLAY compile|install …`` lines from the journal."""
+    rows = [
+        line for line in _journal_lines(scenario, tail=4000)
+        if _OVERLAY_MARKER in line and ("compile cid=" in line or "install cid=" in line)
+    ]
+    return rows[-n:]
+
+
+def _overlay_lifecycle_histogram(scenario: str) -> collections.Counter:
+    """Count overlay lifecycle events from the journal.
+
+    Keys: ``("compile", "ok"|"fail")``, ``("install", "")`` and
+    ``("src", "cache_hit"|"llm")`` — matches the ``protocol.registry``
+    ``delftclaw.overlay.lifecycle`` stream only.
+    """
+    counter: collections.Counter = collections.Counter()
+    for line in _journal_lines(scenario):
+        idx = line.find(_OVERLAY_MARKER)
+        if idx < 0:
+            continue
+        toks = line[idx + len(_OVERLAY_MARKER):].split()
+        if not toks or toks[0] not in ("compile", "install"):
+            continue
+        event = toks[0]
+        kv = _parse_kv_tokens(toks[1:])
+        if event == "compile":
+            counter[("compile", kv.get("result", "?"))] += 1
+            if "src" in kv:
+                counter[("src", kv["src"])] += 1
+        else:
+            counter[("install", "")] += 1
+    return counter
+
+
+def _render_overlay_lifecycle(hist: collections.Counter, recent: list[str]) -> None:
+    _print_header("overlay lifecycle — compile/install (from journal)")
+    if not hist:
+        print(f"  {_C['yellow']}(none yet — no markdown-as-overlay compiles logged){_C['reset']}")
+    else:
+        ok = hist.get(("compile", "ok"), 0)
+        fail = hist.get(("compile", "fail"), 0)
+        inst = hist.get(("install", ""), 0)
+        cache_hit = hist.get(("src", "cache_hit"), 0)
+        llm = hist.get(("src", "llm"), 0)
+        caller = hist.get(("src", "caller"), 0)
+        fail_colour = _C["red"] if fail else _C["green"]
+        # ``caller`` source = the seeder-publish path that hands the registry
+        # a pre-canned ``*_stub.py`` body via ``llm_source=``. Skipping it on
+        # display undercounted the v2 install lifecycle by exactly the seeder
+        # contribution.
+        print(f"  compile: {_C['green']}{ok} ok{_C['reset']}, {fail_colour}{fail} fail{_C['reset']}   "
+              f"install: {inst}   source: {cache_hit} cache_hit / {llm} llm / {caller} caller")
+
+    _print_header("overlay lifecycle — last 15")
+    if not recent:
+        print(f"  {_C['dim']}(empty){_C['reset']}")
+    else:
+        for line in recent[-15:]:
+            try:
+                i = line.index("OVERLAY ")
+                print(f"  {line[i:]}")
+            except ValueError:
+                print(f"  {line}")
+
+
+# ----- Overlay versions (per-demo content-addressed spec archive) ------------
+
+def _overlay_archive_dir(scenario: str, agent: str) -> Path:
+    return STATE_ROOT / scenario / agent / "overlay_archive"
+
+
+def _agents_with_archive(scenario: str) -> list[str]:
+    base = STATE_ROOT / scenario
+    if not base.is_dir():
+        return []
+    return sorted(p.parent.name for p in base.glob("*/overlay_archive") if p.is_dir())
+
+
+def _overlay_versions(scenario: str, agents: list[str]) -> tuple[dict, list[str]]:
+    """Group archived specs by community_id across agents; detect genuine drift.
+
+    Returns ``(by_cid, drift)`` where ``by_cid[cid] = {name, version, holders,
+    provenance, supersedes, author_id, change_summary}``.
+
+    ``drift`` distinguishes intentional evolution from corruption. Two cids for
+    one overlay name are NOT drift when they form a ``supersedes`` chain (one's
+    meta points at the other) — that's a deliberate version bump and renders as
+    a chain. Genuine drift is two coexisting cids for one name with NO
+    supersedes link between any of them — i.e. agents silently diverged.
+    """
+    by_cid: dict[str, dict] = {}
+    for agent in agents:
+        adir = _overlay_archive_dir(scenario, agent)
+        if not adir.is_dir():
+            continue
+        for meta_path in sorted(adir.glob("*.meta.json")):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            # Compile-fail and post-compile-stranded cids leave a meta.json
+            # behind (the archive writes one on every ``seen`` event) but with
+            # empty name/identity_version. Surfacing them here as ``(unknown)
+            # v?`` rows pollutes the "overlay versions" view; the lifecycle
+            # totals and overlay ledger sections still expose them as failures
+            # so the data is preserved, just relocated to the right section.
+            if not meta.get("name") or not meta.get("identity_version"):
+                continue
+            cid = meta.get("community_id_hex") or meta_path.name.split(".")[0]
+            entry = by_cid.setdefault(cid, {
+                "name": "", "version": "", "holders": set(), "provenance": [],
+                "supersedes": None, "author_id": "", "change_summary": "",
+            })
+            entry["holders"].add(agent)
+            entry["name"] = entry["name"] or meta.get("name", "")
+            entry["version"] = entry["version"] or meta.get("identity_version", "")
+            entry["supersedes"] = entry["supersedes"] or meta.get("supersedes")
+            entry["author_id"] = entry["author_id"] or meta.get("author_id", "")
+            entry["change_summary"] = entry["change_summary"] or meta.get("change_summary", "")
+            for prov in meta.get("provenance", []) or []:
+                tag = prov.get("tag") if isinstance(prov, dict) else str(prov)
+                if tag:
+                    entry["provenance"].append(f"{agent}:{tag}")
+
+    names_to_cids: dict[str, set] = collections.defaultdict(set)
+    for cid, entry in by_cid.items():
+        if entry["name"]:
+            names_to_cids[entry["name"]].add(cid)
+
+    drift: list[str] = []
+    for name, cids in names_to_cids.items():
+        if len(cids) <= 1:
+            continue
+        # Evolution if at least one cid supersedes another present cid (a chain
+        # links them). Drift if the coexisting cids share no supersedes edge.
+        linked = any(
+            by_cid[c]["supersedes"] in cids for c in cids if by_cid[c]["supersedes"]
+        )
+        if not linked:
+            drift.append(
+                f"{name}: {len(cids)} unlinked community_ids "
+                f"({', '.join(sorted(c[:12] for c in cids))}) — no supersedes chain"
+            )
+    return by_cid, drift
+
+
+def _version_chains(by_cid: dict) -> dict[str, list[str]]:
+    """Order cids per overlay name into supersedes chains (oldest → newest).
+
+    Returns ``{name: [cid_oldest, ..., cid_newest]}``. A cid whose ``supersedes``
+    points at another present cid comes after it. Cids with no present
+    predecessor are roots; unlinked siblings of one name (drift) just appear in
+    name+version order.
+    """
+    by_name: dict[str, list[str]] = collections.defaultdict(list)
+    for cid, e in by_cid.items():
+        by_name[e["name"]].append(cid)
+    chains: dict[str, list[str]] = {}
+    for name, cids in by_name.items():
+        present = set(cids)
+        succ = {c: by_cid[c]["supersedes"] for c in cids}
+        roots = [c for c in cids if not succ[c] or succ[c] not in present]
+        ordered: list[str] = []
+        # Walk forward from each root following "who supersedes me".
+        reverse: dict[str, list[str]] = collections.defaultdict(list)
+        for c in cids:
+            if succ[c] in present:
+                reverse[succ[c]].append(c)
+        seen: set[str] = set()
+        stack = sorted(roots, key=lambda c: by_cid[c]["version"])
+        while stack:
+            c = stack.pop(0)
+            if c in seen:
+                continue
+            seen.add(c)
+            ordered.append(c)
+            stack = sorted(reverse.get(c, []), key=lambda x: by_cid[x]["version"]) + stack
+        # Any cids not reached (cycles / oddities) appended deterministically.
+        ordered += [c for c in sorted(cids) if c not in seen]
+        chains[name] = ordered
+    return chains
+
+
+def _overlay_ledger_tail(scenario: str, agents: list[str], n: int = 12) -> list[str]:
+    rows: list[tuple] = []
+    for agent in agents:
+        ledger = _overlay_archive_dir(scenario, agent) / "overlay_ledger.jsonl"
+        for rec in _read_jsonl(ledger):
+            rows.append((rec.get("ts", 0), agent, rec))
+    rows.sort(key=lambda r: r[0])
+    out = []
+    for _ts, agent, rec in rows[-n:]:
+        bits = [
+            f"{agent}:",
+            rec.get("event", "?"),
+            f"cid={str(rec.get('community_id_hex', ''))[:12]}",
+        ]
+        if rec.get("name"):
+            bits.append(f"name={rec['name']}")
+        if rec.get("identity_version"):
+            bits.append(f"v={rec['identity_version']}")
+        if rec.get("provenance"):
+            bits.append(f"prov={rec['provenance']}")
+        if rec.get("stage"):
+            bits.append(f"stage={rec['stage']}")
+        out.append(" ".join(bits))
+    return out
+
+
+def _render_overlay_versions(scenario: str) -> None:
+    agents = _agents_with_archive(scenario)
+    by_cid, drift = _overlay_versions(scenario, agents)
+    _print_header("overlay versions — per-demo spec archive")
+    if not by_cid:
+        print(f"  {_C['dim']}(no overlay archive under {STATE_ROOT}/{scenario}/*/overlay_archive){_C['reset']}")
+        return
+
+    chains = _version_chains(by_cid)
+    for name in sorted(chains):
+        cids = chains[name]
+        for i, cid in enumerate(cids):
+            entry = by_cid[cid]
+            holders = ", ".join(sorted(entry["holders"]))
+            arrow = f"{_C['cyan']}↳ supersedes {entry['supersedes'][:12]}{_C['reset']} " if entry["supersedes"] else ""
+            author = f" author={entry['author_id'][:18]}" if entry["author_id"] else ""
+            print(f"  {_C['bold']}{name or '(unknown)'}{_C['reset']} "
+                  f"v{entry['version'] or '?'}  cid={cid[:12]}  held_by=[{holders}]{author}")
+            if arrow:
+                print(f"    {arrow}")
+            if entry["change_summary"]:
+                print(f"    {_C['dim']}\"{entry['change_summary']}\"{_C['reset']}")
+            if entry["provenance"]:
+                print(f"    {_C['dim']}provenance: {'; '.join(entry['provenance'][:6])}{_C['reset']}")
+
+    if drift:
+        for line in drift:
+            print(f"  {_C['red']}DRIFT{_C['reset']} {line}")
+    else:
+        multi = any(len(c) > 1 for c in chains.values())
+        if multi:
+            print(f"  {_C['green']}no drift{_C['reset']} — coexisting versions are linked by supersedes (intentional evolution)")
+        else:
+            print(f"  {_C['green']}no spec drift{_C['reset']} — each overlay name maps to a single community_id")
+
+    # Evolution timeline: authored events across all agents, oldest first.
+    authored = _overlay_authored_events(scenario, agents)
+    if authored:
+        _print_header("overlay evolution — authored events")
+        for line in authored:
+            print(f"  {line}")
+
+    tail = _overlay_ledger_tail(scenario, agents)
+    if tail:
+        _print_header("overlay ledger — last events")
+        for line in tail:
+            print(f"  {line}")
+
+
+def _overlay_authored_events(scenario: str, agents: list[str]) -> list[str]:
+    """Every ``authored`` ledger event across agents, chronological.
+
+    These mark the exact moment an agent introduced a protocol version — the
+    agentic protocol-evolution act, distinct from adopters' ``install`` events.
+    """
+    rows: list[tuple] = []
+    for agent in agents:
+        ledger = _overlay_archive_dir(scenario, agent) / "overlay_ledger.jsonl"
+        for rec in _read_jsonl(ledger):
+            if rec.get("event") != "authored":
+                continue
+            rows.append((rec.get("ts", 0), agent, rec))
+    rows.sort(key=lambda r: r[0])
+    out = []
+    for _ts, agent, rec in rows:
+        bits = [
+            f"{_C['bold']}{agent}{_C['reset']} authored",
+            f"{rec.get('name', '?')} v{rec.get('identity_version', '?')}",
+            f"cid={str(rec.get('community_id_hex', ''))[:12]}",
+        ]
+        if rec.get("supersedes"):
+            bits.append(f"supersedes={str(rec['supersedes'])[:12]}")
+        if rec.get("author_id"):
+            bits.append(f"author={str(rec['author_id'])[:18]}")
+        line = "  ".join(bits)
+        if rec.get("change_summary"):
+            line += f'\n      {_C["dim"]}"{rec["change_summary"]}"{_C["reset"]}'
+        out.append(line)
+    return out
 
 
 def main(argv: list[str]) -> int:
@@ -635,11 +674,36 @@ def main(argv: list[str]) -> int:
             summaries[agent] = snap
             _render_agent(scenario, agent, snap)
 
-    _render_paper_story(scenario, summaries)
-    _render_security_story(scenario, summaries)
-    _render_integrated_security_story(scenario, summaries)
     _render_ipv8(_ipv8_histogram(scenario), _recent_ipv8_events(scenario))
+    _render_overlay_lifecycle(
+        _overlay_lifecycle_histogram(scenario), _recent_overlay_events(scenario)
+    )
+    _render_overlay_versions(scenario)
+    _render_version_history(scenario)
     return 0
+
+
+def _render_version_history(scenario: str) -> None:
+    """Inline the fleet-merged version_history.md artifact.
+
+    The on-disk artifact is the source of truth for the thesis writeup
+    (committed by ``OverlayArchive.append_authored_event`` every time any
+    agent in the scenario publishes a spec). We just read + print it so the
+    operator sees the same thing the bundle will contain.
+    """
+    history_dir = STATE_ROOT / scenario
+    md_path = history_dir / "version_history.md"
+    _print_header("version history — fleet-merged (per scenario)")
+    if not md_path.is_file():
+        print(f"  {_C['dim']}(no version_history.md yet at {md_path}){_C['reset']}")
+        return
+    try:
+        text = md_path.read_text(encoding="utf-8").rstrip()
+    except OSError as exc:
+        print(f"  {_C['red']}failed to read {md_path}: {exc}{_C['reset']}")
+        return
+    for line in text.splitlines():
+        print(f"  {line}")
 
 
 if __name__ == "__main__":

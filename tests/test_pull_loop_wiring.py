@@ -5,7 +5,7 @@ Three layers covered:
   - AgentConfig accepts ``peer_log_urls`` + ``pull_interval_s`` + ``pull_batch``.
   - ``OpenClawAgent.start()`` spawns the pull-loop task iff URLs are non-empty;
     ``stop()`` cancels it cleanly.
-  - End-to-end: alice's FastAPI server (built via ``redteam.integration.server``
+  - End-to-end: alice's FastAPI server (built via ``signed_log.integration.server``
     against alice's signed log) → bob's pull-loop fetches alice's entries
     into bob's PeerLog → bob's ``community_state()`` reflects alice's donation.
 
@@ -30,7 +30,7 @@ from communication.bittorrent import StubBitTorrentService
 from identity.agent_identity import AgentIdentity
 from identity.openclaw_identity import OpenClawIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient
+from _live_llm import noop_llm
 
 
 MANIFEST_TEMPLATE = """\
@@ -46,8 +46,6 @@ MANIFEST_TEMPLATE = """\
 - min_sats: 10000
 - min_confirmations: 0
 - bootstrap_cap_sats: 100000
-- max_agents_per_seedbox: 3
-- seedbox_cost_sats: 50000
 
 # Genesis Peers
 
@@ -98,7 +96,7 @@ def _build_agent(tmp_path, *, peer_log_urls=()):
     ).load()
     return OpenClawAgent(
         identity=AgentIdentity.from_seed(seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=tmp_path,
@@ -176,7 +174,7 @@ async def alice_and_bob_with_pull(tmp_path):
     ).load()
     alice = OpenClawAgent(
         identity=AgentIdentity.from_seed(alice_seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=a_dir,
@@ -193,7 +191,7 @@ async def alice_and_bob_with_pull(tmp_path):
     ).load()
     bob = OpenClawAgent(
         identity=AgentIdentity.from_seed(bob_seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=b_dir,
@@ -219,9 +217,9 @@ async def alice_and_bob_with_pull(tmp_path):
     await a_tools.dispatch("community_donate_and_join", {"amount_sats": 60_000})
 
     # Build alice's FastAPI app and bob's pull loop using ASGI transport.
-    from redteam.integration.server import build_app
-    from redteam.integration.peer_transport import HttpPeerTransport
-    from redteam.integration.pull_loop import run_pull_loop
+    from signed_log.integration.server import build_app
+    from signed_log.integration.peer_transport import HttpPeerTransport
+    from signed_log.integration.pull_loop import run_pull_loop
 
     alice_oc = OpenClawIdentity.from_agent_identity(alice.identity)
     app = build_app(
@@ -301,11 +299,11 @@ async def test_pull_loop_makes_bob_see_alice_in_community_state(
 
 
 # ---------------------------------------------------------------------------
-# Scenario YAML wiring (redteam_port collision, parse, env-file shape)
+# Scenario YAML wiring (signed_log_port collision, parse, env-file shape)
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_parses_redteam_port():
+def test_scenario_parses_signed_log_port():
     import yaml as _yaml
     from deploy.scenario import parse_scenario
 
@@ -321,7 +319,7 @@ def test_scenario_parses_redteam_port():
             "alice": {
                 "ipv8_port": 8190,
                 "mcp_port": 18765,
-                "redteam_port": 28765,
+                "signed_log_port": 28765,
                 "publish_overlays": [],
                 "mission_file": "alice/mission.md",
                 "stop_predicate": "never",
@@ -329,7 +327,7 @@ def test_scenario_parses_redteam_port():
             "bob": {
                 "ipv8_port": 8191,
                 "mcp_port": 18766,
-                "redteam_port": 28766,
+                "signed_log_port": 28766,
                 "publish_overlays": [],
                 "mission_file": "bob/mission.md",
                 "stop_predicate": "never",
@@ -349,12 +347,12 @@ def test_scenario_parses_redteam_port():
         scenario_path.write_text(_yaml.safe_dump(manifest), encoding="utf-8")
 
         scenario = parse_scenario(scenario_path)
-        assert scenario.agents["alice"].redteam_port == 28765
-        assert scenario.agents["bob"].redteam_port == 28766
+        assert scenario.agents["alice"].signed_log_port == 28765
+        assert scenario.agents["bob"].signed_log_port == 28766
 
 
-def test_scenario_rejects_redteam_port_collision():
-    """Two agents declaring the same redteam_port is a parse error."""
+def test_scenario_rejects_signed_log_port_collision():
+    """Two agents declaring the same signed_log_port is a parse error."""
     import yaml as _yaml
     import tempfile
     from deploy.scenario import ScenarioError, parse_scenario
@@ -371,7 +369,7 @@ def test_scenario_rejects_redteam_port_collision():
             "alice": {
                 "ipv8_port": 8190,
                 "mcp_port": 18765,
-                "redteam_port": 28765,
+                "signed_log_port": 28765,
                 "publish_overlays": [],
                 "mission_file": "alice/mission.md",
                 "stop_predicate": "never",
@@ -379,7 +377,7 @@ def test_scenario_rejects_redteam_port_collision():
             "bob": {
                 "ipv8_port": 8191,
                 "mcp_port": 18766,
-                "redteam_port": 28765,  # same as alice → conflict
+                "signed_log_port": 28765,  # same as alice → conflict
                 "publish_overlays": [],
                 "mission_file": "bob/mission.md",
                 "stop_predicate": "never",
@@ -394,11 +392,11 @@ def test_scenario_rejects_redteam_port_collision():
         _write_mission(tmp_path / "bob" / "mission.md")
         scenario_path = tmp_path / "scenario.yaml"
         scenario_path.write_text(_yaml.safe_dump(manifest), encoding="utf-8")
-        with pytest.raises(ScenarioError, match="redteam_port"):
+        with pytest.raises(ScenarioError, match="signed_log_port"):
             parse_scenario(scenario_path)
 
 
-def test_scenario_env_file_includes_peer_log_urls_and_redteam_port():
+def test_scenario_env_file_includes_peer_log_urls_and_signed_log_port():
     """``_instance_env_contents`` cross-wires every other agent's URL."""
     import yaml as _yaml
     import tempfile
@@ -417,7 +415,7 @@ def test_scenario_env_file_includes_peer_log_urls_and_redteam_port():
             "alice": {
                 "ipv8_port": 8190,
                 "mcp_port": 18765,
-                "redteam_port": 28765,
+                "signed_log_port": 28765,
                 "publish_overlays": [],
                 "mission_file": "alice/mission.md",
                 "stop_predicate": "never",
@@ -425,7 +423,7 @@ def test_scenario_env_file_includes_peer_log_urls_and_redteam_port():
             "bob": {
                 "ipv8_port": 8191,
                 "mcp_port": 18766,
-                "redteam_port": 28766,
+                "signed_log_port": 28766,
                 "publish_overlays": [],
                 "mission_file": "bob/mission.md",
                 "stop_predicate": "never",
@@ -434,7 +432,7 @@ def test_scenario_env_file_includes_peer_log_urls_and_redteam_port():
             "charlie": {
                 "ipv8_port": 8192,
                 "mcp_port": 18767,
-                "redteam_port": 28767,
+                "signed_log_port": 28767,
                 "publish_overlays": [],
                 "mission_file": "charlie/mission.md",
                 "stop_predicate": "never",
@@ -455,12 +453,12 @@ def test_scenario_env_file_includes_peer_log_urls_and_redteam_port():
         body = _instance_env_contents(scenario, scenario.agents["bob"])
         # Bob's peer list = alice + charlie (everyone except bob).
         assert "PEER_LOG_URLS=http://127.0.0.1:28765 http://127.0.0.1:28767" in body
-        assert "REDTEAM_PORT=28766" in body
+        assert "SIGNED_LOG_PORT=28766" in body
         # Alice's peer list = bob + charlie.
         body_alice = _instance_env_contents(scenario, scenario.agents["alice"])
         assert "http://127.0.0.1:28766" in body_alice
         assert "http://127.0.0.1:28767" in body_alice
-        assert "REDTEAM_PORT=28765" in body_alice
+        assert "SIGNED_LOG_PORT=28765" in body_alice
 
 
 def _write_mission(path: Path) -> None:

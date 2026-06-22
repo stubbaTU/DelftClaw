@@ -8,7 +8,7 @@ encoding locally rather than importing from ``signed_log`` or
 ``verify`` — that independence is the whole point of the verifier.
 
 The verifier contract under test:
-    python -m redteam.primitives.verify --log <path> [--network MAINNET]
+    python -m signed_log.primitives.verify --log <path> [--network MAINNET]
 
 Exit codes:
     0 — all checks pass
@@ -47,7 +47,7 @@ def _run_verify(log_path: str, *extra: str) -> subprocess.CompletedProcess:
         [
             sys.executable,
             "-m",
-            "redteam.primitives.verify",
+            "signed_log.primitives.verify",
             "--log",
             log_path,
             *extra,
@@ -73,7 +73,7 @@ def _produce_log(
     n: int = 3,
 ) -> list[dict]:
     """Write ``n`` entries via SignedAppendOnlyLog and return the list."""
-    from redteam.primitives.signed_log import SignedAppendOnlyLog
+    from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
     log = SignedAppendOnlyLog(identity, log_path)
     reporter = str(identity.network_hash)
@@ -351,7 +351,7 @@ def test_identity_pubkey_mismatch_exits_one(tmp_path: Path) -> None:
 
 def test_missing_log_argument_errors(tmp_path: Path) -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "redteam.primitives.verify"],
+        [sys.executable, "-m", "signed_log.primitives.verify"],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),

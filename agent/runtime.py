@@ -10,6 +10,7 @@ operate against this object.
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,6 @@ from identity.wallet import Wallet
 from protocol import OverlayRegistry
 from protocol.llm import LLMClient
 from protocol.manifest import NetworkManifest, parse_manifest
-from admission.donation_verifier import DonationVerifier
 
 
 @dataclass
@@ -37,29 +37,10 @@ class AgentConfig:
     address: str = "127.0.0.1"
     btc_network: str = "mock"           # synthetic; flip to "testnet" for real bitcoinlib
     save_dir: Path = Path("./downloads")
-    seedbox_min_sats: int = 10_000      # gatekeeper-side: minimum donation to admit
-    seedbox_min_confirmations: int = 0  # 0 = accept zero-conf for demos
-    # Initial synthetic balance for this agent's wallet. 0 = legacy
-    # always-zero behaviour. >0 = the wallet exposes a budget the LLM
-    # can spend down via wallet_send; over-spending raises a clean
-    # "insufficient funds" error. Plumbed from scenario.yaml ->
-    # /etc/delftclaw/instances/<instance>.env -> cli.py.
     initial_balance_sats: int = 0
-    # Per-agent paths for the community signed log (our own chain) and
-    # the peer-log cache (foreign chains pulled by the redteam pull loop).
-    # Default to in-process state under save_dir so unit tests don't
-    # collide; production sets these via scenario_boot env file to
-    # /var/lib/delftclaw/<scenario>/<agent>/{community.log, peer_logs/}.
     community_log_path: Optional[Path] = None
     peer_log_dir: Optional[Path] = None
-    # Phase 6: redteam-server (FastAPI) URLs this agent should pull
-    # community-log entries from. Each entry is a full base URL like
-    # ``http://127.0.0.1:28765``. Empty list disables the pull loop —
-    # ``OpenClawAgent`` will not start the background task, the test
-    # suite default. ``scenario_boot`` populates this cross-wise.
     peer_log_urls: tuple[str, ...] = ()
-    # Pull-loop cadence + batch size. Defaults to the same values the
-    # redteam pull-sync demo uses, so behaviour is consistent.
     pull_interval_s: float = 5.0
     pull_batch: int = 100
 
@@ -99,10 +80,16 @@ class OpenClawAgent:
         self._registry: Optional[OverlayRegistry] = None
         self._key_file: Optional[Path] = None
 
-        # Network manifest (None until --manifest, --genesis, network_join,
-        # or agent_inject_manifest loads one).
+        # OVERLAY_OFFERs received for hashes we don't yet run. Populated by
+        # ``_on_overlay_offer`` (wired as the seedbox offer_callback in
+        # start()); surfaced in the state snapshot as ``pending_overlay_offers``
+        # so the LLM can decide whether to adopt a peer-authored overlay via
+        # ``overlay_fetch_and_load``. md_hash (bytes) -> peer.mid hex.
+        self._pending_offers: dict[bytes, str] = {}
+
+        # Network manifest (None until --manifest, --genesis, or
+        # agent_inject_manifest loads one).
         self._manifest: Optional[NetworkManifest] = None
-        self._manifest_md: Optional[str] = None
 
         # Community signed log + peer-log cache. Lazily constructed on
         # first access so unit tests that don't care about the community
@@ -157,24 +144,31 @@ class OpenClawAgent:
         self._seedbox = next(
             o for o in self._ipv8.overlays if isinstance(o, SeedboxCommunity)
         )
-        verifier = DonationVerifier(
-            seedbox_address=self.wallet.address(),
-            min_sats=self.config.seedbox_min_sats,
-            min_confirmations=self.config.seedbox_min_confirmations,
-            network=self.config.btc_network,
-        )
         self._seedbox.configure(
-            verifier=verifier,
             wallet_address=self.wallet.address(),
             community_join_callback=self._handle_community_join,
+            offer_callback=self._on_overlay_offer,
         )
         # Persist LLM-generated overlay sources under the agent's save
         # dir so a watchdog restart doesn't re-pay the compiler-LLM
         # round-trip for overlays we've already seen. One file per
         # (canonical_md_sha1, model_id) pair.
         compile_cache = self.config.save_dir / "overlay_compile_cache"
+        # Per-demo overlay spec archive + ledger. Env-gated (set by
+        # deploy.scenario_boot for every scenario); unset in unit tests and
+        # ad-hoc runs so no archive is written. See protocol.overlay_archive.
+        archive_env = os.environ.get("OVERLAY_ARCHIVE_DIR")
+        archive_dir = Path(archive_env) if archive_env else None
+        # Fleet-wide version history (one file per scenario, shared by every
+        # agent in it). Env-gated like the per-agent archive; when set, each
+        # ``authored`` event is also appended to <history_dir>/version_history.jsonl
+        # and the rendered markdown summary is rewritten. See
+        # protocol.version_history.
+        history_env = os.environ.get("VERSION_HISTORY_DIR")
+        history_dir = Path(history_env) if history_env else None
         self._registry = OverlayRegistry(
-            self._ipv8, self.llm, cache_dir=compile_cache,
+            self._ipv8, self.llm, cache_dir=compile_cache, archive_dir=archive_dir,
+            history_dir=history_dir,
         )
 
         # Phase 6: start the pull loop iff peer URLs were declared.
@@ -184,18 +178,18 @@ class OpenClawAgent:
             await self._start_pull_loop()
 
     async def _start_pull_loop(self) -> None:
-        """Spawn the redteam pull-loop task pointed at ``config.peer_log_urls``.
+        """Spawn the signed_log pull-loop task pointed at ``config.peer_log_urls``.
 
         Lazy imports keep ``import agent.runtime`` cheap on tests that
         don't exercise the pull layer. Uses the agent's own ``peer_log``
-        (which is built from the same directory ``redteam.integration.server``
+        (which is built from the same directory ``signed_log.integration.server``
         uses if the operator runs it for outbound serving — fine to
         share via filesystem, each ``PeerLog`` instance owns its own
         in-process lock and ``accept_entry`` is idempotent on entry_hash).
         """
         import httpx
-        from redteam.integration.peer_transport import HttpPeerTransport
-        from redteam.integration.pull_loop import run_pull_loop
+        from signed_log.integration.peer_transport import HttpPeerTransport
+        from signed_log.integration.pull_loop import run_pull_loop
 
         self._pull_stop_event = asyncio.Event()
         self._pull_transport_handle = httpx.AsyncClient(timeout=10.0)
@@ -316,12 +310,113 @@ class OpenClawAgent:
             overlay.network.add_verified_peer(peer)
         return peer
 
-    def publish_overlay(self, md_text: str):
-        """Load + serve an overlay descriptor. Returns its 20-byte md_hash."""
+    def publish_overlay(self, md_text: str, *, llm_source: str | None = None):
+        """Load + serve an overlay descriptor. Returns its 20-byte md_hash.
+
+        ``llm_source`` (when set) hands a pre-canned compiled Python source
+        to the registry so the compile step skips the LLM round-trip. Used by
+        ``agent.cli._publish_overlays`` for ``*_stub.py`` siblings — keeps
+        boot fast AND routes the seeder through the same archive + lifecycle
+        path the fetchers use.
+        """
         md_hash = self.seedbox.publish_overlay(md_text)
         # Compile + register so we also speak the protocol locally.
-        self.registry.load(md_text)
+        self.registry.load(md_text, provenance="published", llm_source=llm_source)
         return md_hash
+
+    def _overlay_offers_path(self) -> Path:
+        """Shared on-disk offers file. ``save_dir`` is shared by an agent's MCP
+        and watchdog processes, so an offer received in one is visible to the
+        other (same bridge pattern as the BitTorrent download ledger)."""
+        return self.config.save_dir / ".overlay_offers.jsonl"
+
+    def _on_overlay_offer(self, peer: Peer, md_hash: bytes) -> None:
+        """Seedbox offer_callback: record offers for overlays we don't run yet.
+
+        Fires when a peer sends OVERLAY_OFFER. We deliberately do NOT auto-fetch
+        — adoption is the LLM's decision. We remember who offered what so the
+        next state snapshot surfaces it as ``pending_overlay_offers``, AND
+        append it to a shared on-disk file so the SEPARATE watchdog snapshot
+        process (which builds the prompt) sees the offer too — without that
+        bridge, the offer is invisible to the LLM and the agent never adopts.
+        Offers for an overlay we already run are ignored (nothing to adopt).
+        """
+        if self._registry is not None and self._registry.get(md_hash) is not None:
+            return
+        self._pending_offers[md_hash] = peer.mid.hex()
+        try:
+            import json as _json
+            self.config.save_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._overlay_offers_path(), "a", encoding="utf-8") as handle:
+                handle.write(_json.dumps({
+                    "md_hash_hex": md_hash.hex(),
+                    "from_peer_mid": peer.mid.hex(),
+                }) + "\n")
+        except OSError:
+            pass
+
+    def _overlay_already_held(self, md_hash: bytes) -> bool:
+        """Whether we've loaded OR fully adopted ``md_hash``.
+
+        The archive check is cross-process: if the MCP process adopted the
+        overlay (fetched + compiled + INSTALLED + archived it), the watchdog
+        snapshot process sees the populated meta.json and stops re-offering.
+
+        Uses ``is_installed`` not ``has``: a hung post-compile leaves the
+        ``.md`` archived as ``seen`` but install never completes, and we want
+        the agent to retry the adopt on the next tick rather than treat the
+        stranded spec as "done." Verified by the 2026-05-30 ~19:07 incident
+        where two parallel fresh-Haiku compiles for the same cid both hung
+        in the post-compile section and the agents went idle forever.
+        """
+        if self._registry is not None and self._registry.get(md_hash) is not None:
+            return True
+        archive = getattr(self._registry, "_archive", None) if self._registry else None
+        if archive is not None:
+            try:
+                return archive.is_installed(md_hash.hex())
+            except Exception:
+                pass
+        return False
+
+    def pending_overlay_offers(self) -> list[dict[str, str]]:
+        """Offers for overlays not yet loaded: ``[{md_hash_hex, from_peer_mid}]``.
+
+        Merges in-memory offers with the shared on-disk offers file (so the
+        watchdog snapshot process sees offers received by the MCP process), and
+        drops any whose overlay is already held (loaded or adopted, via the
+        shared archive) so the list only shows actionable offers.
+        """
+        merged: dict[str, str] = {}
+        for md_hash, peer_mid in self._pending_offers.items():
+            merged[md_hash.hex()] = peer_mid
+        try:
+            import json as _json
+            text = self._overlay_offers_path().read_text(encoding="utf-8")
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                h = rec.get("md_hash_hex")
+                if h:
+                    merged.setdefault(h, rec.get("from_peer_mid", ""))
+        except OSError:
+            pass
+
+        out: list[dict[str, str]] = []
+        for md_hash_hex, peer_mid in merged.items():
+            try:
+                already = self._overlay_already_held(bytes.fromhex(md_hash_hex))
+            except ValueError:
+                continue
+            if already:
+                continue
+            out.append({"md_hash_hex": md_hash_hex, "from_peer_mid": peer_mid})
+        return out
 
     # ------------------------------------------------------------------
     # Network manifest
@@ -332,36 +427,24 @@ class OpenClawAgent:
         """The currently-loaded network manifest, or None."""
         return self._manifest
 
-    @property
-    def network_manifest_md(self) -> Optional[str]:
-        """The raw markdown text of the currently-loaded manifest, or None."""
-        return self._manifest_md
-
     def load_manifest(self, md_text: str) -> NetworkManifest:
         """Parse + cache a network manifest and pre-introduce every genesis peer.
 
-        Idempotent: loading the same manifest twice is a no-op after the
-        first parse. Loading a *different* manifest replaces the cached
-        one (the agent runs one network at a time). Genesis peers whose
-        pubkey matches this agent's own ipv8 pubkey are skipped to avoid
+        The manifest arrives out-of-band (the ``--manifest``/``--genesis`` CLI
+        flag, the disk ``MANIFEST_FILE``, or the ``agent_inject_manifest`` MCP
+        call) — it is not fetched over the wire. Idempotent: loading the same
+        manifest twice is a no-op after the first parse. Loading a *different*
+        manifest replaces the cached one (one network at a time). Genesis peers
+        whose pubkey matches this agent's own ipv8 pubkey are skipped to avoid
         the runtime adding itself as a peer.
-
-        If this agent IS named in the manifest's genesis peer list, the
-        manifest is also published into the bootstrap community so future
-        joiners can fetch it via ``MANIFEST_REQUEST``. That keeps the
-        ``--genesis`` CLI flag and any MCP-driven manifest injection in
-        sync — an agent doesn't need to know whether it's "the genesis";
-        the manifest tells it.
         """
         manifest = parse_manifest(md_text)
         if self._manifest is not None and self._manifest.network_id == manifest.network_id:
             return self._manifest  # idempotent: same network already loaded
 
         own_pubkey_hex = self.pubkey_hex.lower()
-        self_is_genesis = False
         for gp in manifest.genesis_peers:
             if gp.pubkey_hex.lower() == own_pubkey_hex:
-                self_is_genesis = True
                 continue  # don't add self
             try:
                 self.add_peer(gp.host, gp.port, gp.pubkey_hex)
@@ -372,11 +455,6 @@ class OpenClawAgent:
                 pass
 
         self._manifest = manifest
-        self._manifest_md = md_text
-
-        if self_is_genesis and self._seedbox is not None:
-            self._seedbox.publish_manifest(md_text)
-
         return manifest
 
     async def ensure_default_overlays_loaded(
@@ -440,7 +518,10 @@ class OpenClawAgent:
             try:
                 fut = self._seedbox.fetch_overlay(primary, h)
                 md_bytes = await asyncio.wait_for(fut, timeout=timeout_s)
-                await self.registry.aload(md_bytes.decode("utf-8"))
+                await self.registry.aload(
+                    md_bytes.decode("utf-8"),
+                    provenance=f"received_from:{primary.mid.hex()[:12]}",
+                )
                 loaded.append(h_hex)
             except Exception as exc:
                 errors.append({
@@ -462,13 +543,13 @@ class OpenClawAgent:
         ``OpenClawIdentity`` adapted from this agent's ``AgentIdentity`` —
         same Ed25519 key, so signatures verify under ``self.pubkey_hex``.
 
-        The tool layer writes community events (donation_intent,
-        seedbox_purchase_intent, seedbox_provisioned) here; the redteam
-        pull loop (Phase 6) is responsible for shipping them to peers.
+        The tool layer writes community events (donation_intent) here;
+        the signed_log pull loop (Phase 6) is responsible for shipping them
+        to peers.
         """
         if self._community_log is None:
             from identity.openclaw_identity import OpenClawIdentity
-            from redteam.primitives.signed_log import SignedAppendOnlyLog
+            from signed_log.primitives.signed_log import SignedAppendOnlyLog
             path = self.config.community_log_path or (self.config.save_dir / "community.log")
             path.parent.mkdir(parents=True, exist_ok=True)
             oc_identity = OpenClawIdentity.from_agent_identity(self.identity)
@@ -481,7 +562,7 @@ class OpenClawAgent:
 
         Lazily constructed on first access using ``config.peer_log_dir``
         (defaults to ``<save_dir>/peer_logs/``). Each peer's chain lives
-        at ``<dir>/<peer_id>.jsonl``; entries are deposited by the redteam
+        at ``<dir>/<peer_id>.jsonl``; entries are deposited by the signed_log
         pull loop after passing ``SignedAppendOnlyLog.verify_foreign_entry``.
 
         The PeerLog's network parameter is the **identity network**
@@ -489,7 +570,7 @@ class OpenClawAgent:
         what ``identity_hash = SHA256(pubkey || network)`` was bound with.
         """
         if self._peer_log is None:
-            from redteam.primitives.peer_log import PeerLog
+            from signed_log.primitives.peer_log import PeerLog
             directory = self.config.peer_log_dir or (self.config.save_dir / "peer_logs")
             directory.mkdir(parents=True, exist_ok=True)
             from identity.openclaw_identity import OpenClawIdentity

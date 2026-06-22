@@ -11,7 +11,7 @@ There are now **two LLMs** in the picture, and they do not overlap:
   - **OpenClaw's LLM** (whatever model OpenClaw is configured with) —
     the agent's brain. Decides *which* tool to call. Talks to this
     server over MCP.
-  - **The compiler LLM** (e.g. Qwen on the supervisor's GPU host) —
+  - **The compiler LLM** (Claude, reached via the local LLM proxy) —
     called by ``OverlayRegistry`` *only* when this node needs to
     compile a ``.md`` overlay descriptor it has never seen before.
     Configured via ``--llm-base-url`` / ``--llm-model`` on the agent
@@ -22,8 +22,10 @@ Boot via ``python -m agent ... mcp --mcp-host 0.0.0.0 --mcp-port 8765``.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +34,10 @@ from fastmcp import FastMCP
 from agent.runtime import OpenClawAgent
 from agent.tools import (  # type: ignore[attr-defined]
     _resolve_peer,
-    _wire_logger,
+    _short,
+    _tool_logger,
     build_tools,
 )
-from communication.community import overlay_id
 from protocol.compiler import _coerce_field_value  # type: ignore[attr-defined]
 
 
@@ -62,12 +64,9 @@ DelftClaw agent tools. Use these to operate on the P2P content network:
   - peers_list / wallet_* — local-node introspection + Bitcoin ops.
   - agent_inject_manifest — load a network manifest into the runtime so
     state.network is populated; pre-introduces every genesis peer.
-  - network_join — one-shot admission: parse manifest (or use cached),
-    fetch default overlays from a genesis peer, donate the required sats,
-    send JOIN_REQUEST. The recommended entry point when state.network is
-    set but you have not yet joined.
-  - seedbox_donate_and_join — the manual decomposition of network_join's
-    last two steps; use only if you want explicit control.
+  - community_donate_and_join — admission: self-append a signed donation_intent
+    to your own log; every member admits you by replaying the signed logs (no
+    gatekeeper key). Use once state.network is set but you have not yet joined.
   - overlays_list — every loaded overlay's full per-message field schema
     and handler text. Read this before calling overlay_invoke.
   - overlay_describe — canonical markdown for one overlay (use when
@@ -119,22 +118,52 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     def _add(fn):
         """Register ``fn`` with FastMCP iff the allowlist permits it.
 
+        Each registered tool is wrapped with a tool-call audit logger that
+        emits the same ``TOOL call name=… args=…`` / ``TOOL ok name=…`` /
+        ``TOOL fail name=…`` lines on the ``delftclaw.agent.tools`` logger
+        that ``agent.tools.ToolRegistry.dispatch`` produces for the
+        direct-driver path. Without this wrapper, MCP-served scenarios
+        emit zero tool-call audit lines — ``make tools`` /
+        ``make tools-summary`` / the ``deploy.trace`` tool histogram
+        showed "no tool calls in journal" for the entire community_demo
+        + file_share lineup, even though the MCP service was definitely
+        dispatching tools.
+
         Filtering by ``fn.__name__`` matches how OpenClaw's MCP client
         addresses tools (bare name) before applying its own namespace
         prefix. Tools in ``BOOTSTRAP_TOOLS`` are always registered: they
         are called by ``scenario_boot`` before any LLM is involved, and
         the allowlist exists to constrain the *LLM-facing* surface only.
         """
-        if (
+        if not (
             _allowlist is None
             or fn.__name__ in _allowlist
             or fn.__name__ in BOOTSTRAP_TOOLS
         ):
-            mcp.add_tool(fn)
-        else:
-            _log.debug(
-                "MCP tool %r suppressed by allowlist", fn.__name__
+            _log.debug("MCP tool %r suppressed by allowlist", fn.__name__)
+            return
+
+        tool_name = fn.__name__
+
+        @functools.wraps(fn)
+        async def _audited(**kwargs):
+            t0 = time.monotonic()
+            _tool_logger.info("TOOL call name=%s args=%s", tool_name, _short(kwargs))
+            try:
+                result = await fn(**kwargs)
+            except Exception as exc:
+                _tool_logger.warning(
+                    "TOOL fail name=%s elapsed=%.3fs error=%s: %s",
+                    tool_name, time.monotonic() - t0, type(exc).__name__, exc,
+                )
+                raise
+            _tool_logger.info(
+                "TOOL ok   name=%s elapsed=%.3fs result=%s",
+                tool_name, time.monotonic() - t0, _short(result),
             )
+            return result
+
+        mcp.add_tool(_audited)
 
     # ---- Peers ---------------------------------------------------------
 
@@ -190,26 +219,6 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     _add(wallet_send)
 
-    # ---- Seedbox admission --------------------------------------------
-
-    async def seedbox_donate_and_join(
-        gatekeeper_mid: str,
-        sats: int,
-        gatekeeper_address: str,
-    ) -> dict[str, Any]:
-        """Donate satoshis to a gatekeeper's address, then JOIN_REQUEST them.
-
-        Returns {txid, accepted}.
-        """
-        import asyncio
-        peer = _resolve_peer(agent, gatekeeper_mid)
-        txid = agent.wallet.send(gatekeeper_address, sats)
-        future = agent.seedbox.request_join(peer, bytes.fromhex(txid))
-        accepted = await asyncio.wait_for(future, timeout=60)
-        return {"txid": txid, "accepted": bool(accepted)}
-
-    _add(seedbox_donate_and_join)
-
     # ---- Community treasury + signed-log layer -----------------------
 
     async def community_log_list_recent(limit: int = 50) -> list[dict[str, Any]]:
@@ -230,11 +239,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
             ),
         )
         state = replay_community(manifest, ordered)
-        accepted_hashes = (
-            {donation.entry_hash for donation in state.donations}
-            | {purchase.entry_hash for purchase in state.purchases}
-            | {provisioned.entry_hash for provisioned in state.provisioned}
-        )
+        accepted_hashes = {donation.entry_hash for donation in state.donations}
         out: list[dict[str, Any]] = []
         for entry in ordered[-max(0, int(limit)):]:
             details = entry.get("details") or {}
@@ -245,9 +250,6 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
                     "timestamp": entry.get("timestamp"),
                     "entry_hash": entry.get("entry_hash"),
                     "amount_sats": details.get("amount_sats"),
-                    "cost_sats": details.get("cost_sats"),
-                    "purchase_intent_hash": details.get("purchase_intent_hash"),
-                    "seedbox_url": details.get("seedbox_url"),
                     "accepted": entry.get("entry_hash") in accepted_hashes,
                 }
             )
@@ -259,14 +261,10 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         state = agent.community_state()
         if state is None:
             return {}
-        manifest = agent.network_manifest
         me = agent.community_reporter_id
         return {
             "balance_sats": state.balance_sats,
             "member_count": state.member_count,
-            "seedbox_count": state.seedbox_count,
-            "pending_purchases": state.pending_purchases,
-            "threshold_active": state.threshold_active(manifest),
             "my_membership_status": "admitted" if me in state.members else "outsider",
         }
 
@@ -287,7 +285,6 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         return {
             "member_count": summary["member_count"],
             "my_membership_status": summary["my_membership_status"],
-            "threshold_active": summary["threshold_active"],
         }
 
     _add(community_member_count)
@@ -317,31 +314,23 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
 
     _add(community_join_via_peer)
 
-    async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
-        """Append a signed seedbox_purchase_intent if growth threshold is active."""
-        registry = build_tools(agent)
-        args = {} if cost_sats is None else {"cost_sats": cost_sats}
-        return await registry.dispatch("seedbox_purchase_propose", args)
-
-    _add(seedbox_purchase_propose)
-
-    async def seedbox_provisioned(
-        purchase_intent_hash: str,
-        seedbox_url: str,
-        seedbox_pubkey_hex: str,
-    ) -> dict[str, Any]:
-        """Append a signed seedbox_provisioned entry closing a purchase intent."""
+    async def request_payment(amount_sats: int, memo: str = "") -> dict[str, Any]:
+        """Broadcast a PAYMENT_REQUEST for amount_sats to every known peer."""
         registry = build_tools(agent)
         return await registry.dispatch(
-            "seedbox_provisioned",
-            {
-                "purchase_intent_hash": purchase_intent_hash,
-                "seedbox_url": seedbox_url,
-                "seedbox_pubkey_hex": seedbox_pubkey_hex,
-            },
+            "request_payment", {"amount_sats": amount_sats, "memo": memo}
         )
 
-    _add(seedbox_provisioned)
+    _add(request_payment)
+
+    async def send_payment(to_peer_mid: str, amount_sats: int) -> dict[str, Any]:
+        """Send fake BTC to a peer: wallet debit + signed payment entry + notify."""
+        registry = build_tools(agent)
+        return await registry.dispatch(
+            "send_payment", {"to_peer_mid": to_peer_mid, "amount_sats": amount_sats}
+        )
+
+    _add(send_payment)
 
     # ---- Overlays ------------------------------------------------------
 
@@ -397,25 +386,39 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
     async def overlay_fetch_and_load(peer_mid: str, md_hash_hex: str) -> dict[str, Any]:
         """Ask a peer for an overlay descriptor by md_hash, compile + register it locally.
 
-        Returns {community_id_hex, loaded}.
+        Returns {community_id_hex, loaded}. ``aload`` (not ``load``) so the
+        multi-second live compile runs off the event loop, and
+        ``provenance="received_from:<peer>"`` so the per-demo archive attributes
+        this agent as an ADOPTER (matching agent/tools.py — kept in sync to
+        avoid the drift that left this copy on the stale code path).
         """
         import asyncio
         peer = _resolve_peer(agent, peer_mid)
         md_hash = bytes.fromhex(md_hash_hex)
         future = agent.seedbox.fetch_overlay(peer, md_hash)
         md_bytes = await asyncio.wait_for(future, timeout=10)
-        instance = agent.registry.load(md_bytes.decode("utf-8"))
-        return {"community_id_hex": instance.community_id.hex(), "loaded": True}
+        instance = await agent.registry.aload(
+            md_bytes.decode("utf-8"),
+            provenance=f"received_from:{peer.mid.hex()[:12]}",
+        )
+        cid_hex = instance.community_id.hex()
+        # Wake peers — mirrors agent/tools.py::overlay_fetch_and_load (see
+        # project-mcp-tool-drift memory; this file IS the deployed path).
+        from agent.wake_signal import signal_peers
+        signal_peers(f"overlay_adopted:{cid_hex[:12]}")
+        return {"community_id_hex": cid_hex, "loaded": True}
 
     _add(overlay_fetch_and_load)
 
     async def overlay_publish(md_text: str) -> str:
         """Publish (serve + locally load) a markdown overlay descriptor.
 
-        Returns the 20-byte md_hash as hex.
+        Returns the 20-byte md_hash as hex. ``aload`` + ``provenance="published"``
+        so the compile runs off the event loop and the archive attributes this
+        agent as the publisher (matching agent/tools.py).
         """
         md_hash = agent.seedbox.publish_overlay(md_text)
-        agent.registry.load(md_text)
+        await agent.registry.aload(md_text, provenance="published")
         return md_hash.hex()
 
     _add(overlay_publish)
@@ -452,6 +455,14 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         coerced = [_coerce_field_value(v) for v in fields.values()]
         peer = _resolve_peer(agent, peer_mid)
         instance.ez_send(peer, payload_cls(*coerced))
+        # Cross-process counter: lets the watchdog snapshot's
+        # ``announce_pending`` rule clear once the agent has sent at least one
+        # message on its self-authored protocol (matches the in-process tool).
+        from agent.tools import _maybe_record_self_authored_announce  # type: ignore[attr-defined]
+        _maybe_record_self_authored_announce(agent, community_id, message_name)
+        # Wake peers — mirrors agent/tools.py::overlay_invoke.
+        from agent.wake_signal import signal_peers
+        signal_peers(f"overlay_message:{message_name}")
         return {"sent": True}
 
     _add(overlay_invoke)
@@ -462,9 +473,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         """Parse + cache a network manifest into this agent's runtime.
 
         Pre-introduces every genesis peer (skipping self). Idempotent on
-        ``network_id``. If this agent is named as a genesis peer, the
-        manifest is also published into the bootstrap community so future
-        joiners can fetch it via MANIFEST_REQUEST.
+        ``network_id``.
 
         After the manifest is cached, the helper
         ``agent.ensure_default_overlays_loaded`` attempts to wire-fetch
@@ -472,8 +481,7 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         does not already hold locally — exercising the
         OVERLAY_REQUEST → OVERLAY_DELIVERY round-trip on the bootstrap
         community. Per-overlay failures are reported via
-        ``overlays_loaded`` / ``overlay_errors`` and do not raise: the
-        agent's later ``network_join`` will retry.
+        ``overlays_loaded`` / ``overlay_errors`` and do not raise.
         """
         from protocol.manifest import ManifestParseError
         try:
@@ -491,96 +499,6 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         }
 
     _add(agent_inject_manifest)
-
-    async def network_join(manifest_md_text: str | None = None) -> dict[str, Any]:
-        """Join the network end-to-end.
-
-        Steps inside the tool:
-          1. Parse the provided manifest (or use the cached one).
-          2. Pre-introduce every genesis peer (skipping self).
-          3. Fetch + compile + register every default overlay from the
-             first reachable genesis peer.
-          4. ``wallet.send(gatekeeper_address, min_sats)`` — broadcast
-             the donation.
-          5. ``request_join(primary_peer, txid)`` and await the decision.
-
-        Returns ``{network_id_hex, accepted, overlays_loaded, overlay_errors,
-        txid}``. If any stage fails, an ``error`` key surfaces the cause.
-        """
-        import asyncio
-        from protocol.manifest import ManifestParseError
-
-        if manifest_md_text is not None:
-            try:
-                manifest = agent.load_manifest(manifest_md_text)
-            except ManifestParseError as exc:
-                return {"error": f"manifest_parse_failed: {exc}"}
-        else:
-            manifest = agent.network_manifest
-            if manifest is None:
-                return {"error": "no_manifest_loaded"}
-
-        genesis_pubkey_set = {gp.pubkey_hex.lower() for gp in manifest.genesis_peers}
-        genesis_peers = [
-            p for p in agent.known_peers()
-            if p.public_key.key_to_bin().hex().lower() in genesis_pubkey_set
-        ]
-        if not genesis_peers:
-            return {
-                "error": "no_genesis_peers_reachable",
-                "network_id_hex": manifest.network_id.hex(),
-            }
-        primary = genesis_peers[0]
-
-        overlays_loaded: list[str] = []
-        overlay_errors: list[dict[str, str]] = []
-        for h_hex in manifest.default_overlays:
-            h = bytes.fromhex(h_hex)
-            if agent.registry.get(h) is not None:
-                overlays_loaded.append(h_hex)
-                continue
-            try:
-                fut = agent.seedbox.fetch_overlay(primary, h)
-                md_bytes = await asyncio.wait_for(fut, timeout=10)
-                agent.registry.load(md_bytes.decode("utf-8"))
-                overlays_loaded.append(h_hex)
-            except Exception as exc:
-                overlay_errors.append({"sha1": h_hex, "error": str(exc)})
-
-        try:
-            txid = agent.wallet.send(
-                manifest.admission.gatekeeper_address,
-                manifest.admission.min_sats,
-            )
-        except Exception as exc:
-            return {
-                "error": f"donation_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-            }
-
-        try:
-            fut = agent.seedbox.request_join(primary, bytes.fromhex(txid))
-            accepted = await asyncio.wait_for(fut, timeout=60)
-        except Exception as exc:
-            return {
-                "error": f"join_failed: {exc}",
-                "network_id_hex": manifest.network_id.hex(),
-                "overlays_loaded": overlays_loaded,
-                "overlay_errors": overlay_errors,
-                "txid": txid,
-            }
-
-        return {
-            "network_id_hex": manifest.network_id.hex(),
-            "accepted": bool(accepted),
-            "overlays_loaded": overlays_loaded,
-            "overlay_errors": overlay_errors,
-            "txid": txid,
-        }
-
-    _add(network_join)
 
     # ---- BitTorrent ---------------------------------------------------
 
@@ -622,115 +540,87 @@ def build_mcp_server(agent: OpenClawAgent, *, name: str = "delftclaw-agent") -> 
         timeout_s: float = 10.0,
         pick: str | int = "random",
     ) -> dict[str, Any]:
-        """Search content_community peers and fetch one returned magnet.
+        """Search content_community peers, fetch one matching file over IPv8.
 
-        Sends a SEARCH_REQUEST on the loaded ``content_community`` overlay
-        when ``response_cache`` is empty, waits up to ``timeout_s`` for a
-        SEARCH_RESPONSE, then picks one row (``"random"`` by default;
-        ``"first"`` or a 0-based integer index also accepted) and downloads
-        its magnet via the BitTorrent service. The single watchdog-friendly
-        tool for steps 4-5 of the paper-demo storyline; use this instead of
-        composing ``overlay_invoke`` + ``torrent_fetch`` by hand.
+        Sends a SEARCH_REQUEST on the loaded ``content_community`` overlay,
+        waits up to ``timeout_s`` for SEARCH_RESPONSE, narrows to rows whose
+        ``name`` or ``tags`` substring-match ``query``, picks one
+        (``"random"`` / ``"first"`` / int index), then fetches its bytes
+        from a peer via the ``SeedboxCommunity`` CONTENT_REQUEST/DELIVERY
+        path, verifies ``sha1(bytes) == magnet btih`` and the catalogue
+        size, writes the file into the agent's BitTorrent ``save_dir``, and
+        registers the completion so ``torrent_progress_gte_1`` fires on a
+        real download.
 
-        Default ``query=""`` matches every entry in the peer's
-        ``local_index`` — the content_community handler treats an empty
-        query as "return the full catalogue". Pass a non-empty string to
-        narrow the search to entries whose ``name`` or ``tags`` contain
-        that substring.
+        Implementation lives in ``agent.content_fetch`` — the same module
+        ``agent.tools`` delegates to, so MCP-served scenarios and direct
+        in-process drivers share one hash-verified transport (no drift).
         """
-        import asyncio
-        import random
-
-        compiled_item = None
-        overlay = None
-        for community_id in agent.registry.list_loaded():
-            compiled = agent.registry._compiled[community_id]
-            if compiled.parsed is not None and compiled.parsed.identity.get("name") == "content_community":
-                compiled_item = compiled
-                overlay = agent.registry.get(community_id)
-                break
-        if compiled_item is None or overlay is None:
-            return {"error": "content_community_not_loaded"}
-
-        def matching_rows() -> list[dict[str, Any]]:
-            rows = []
-            q = query.lower()
-            for row in getattr(overlay, "response_cache", []) or []:
-                if not isinstance(row, dict):
-                    continue
-                haystack = " ".join([
-                    str(row.get("name", "")),
-                    " ".join(str(t) for t in row.get("tags", []) or []),
-                    str(row.get("magnet", "")),
-                ]).lower()
-                if not q or q in haystack or "creative commons" in haystack:
-                    rows.append(row)
-            return rows
-
-        rows = matching_rows()
-        peers = list(agent.known_peers())
-        sent = False
-        if not rows:
-            payload_cls = compiled_item.payload_classes.get("SEARCH_REQUEST")
-            if payload_cls is None:
-                return {"error": "content_community_missing_SEARCH_REQUEST"}
-            if not peers:
-                return {"error": "no_known_peers_for_content_search"}
-            before = len(getattr(overlay, "response_cache", []) or [])
-            for peer in peers:
-                _wire_logger.info(
-                    "IPv8 send msg=SEARCH_REQUEST peer=%s overlay=content_community via=content_search_and_fetch query=%r",
-                    peer.mid.hex()[:12],
-                    query,
-                )
-                overlay.ez_send(peer, payload_cls(query.encode("utf-8")))
-            sent = True
-
-            deadline = asyncio.get_running_loop().time() + timeout_s
-            while asyncio.get_running_loop().time() < deadline:
-                if len(getattr(overlay, "response_cache", []) or []) > before:
-                    break
-                await asyncio.sleep(0.1)
-            rows = matching_rows()
-
-        if not rows:
-            return {
-                "searched": sent,
-                "peer_count": len(peers),
-                "response_count": len(getattr(overlay, "response_cache", []) or []),
-                "error": "no_matching_content_response",
-            }
-
-        if isinstance(pick, int) and 0 <= pick < len(rows):
-            chosen = rows[pick]
-            pick_mode = f"index_{pick}"
-        elif pick == "first":
-            chosen = rows[0]
-            pick_mode = "first"
-        else:
-            chosen = random.choice(rows)
-            pick_mode = "random"
-        magnet = chosen.get("magnet")
-        if not magnet:
-            return {"error": "matching_content_response_missing_magnet", "result": chosen}
-        _wire_logger.info(
-            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d pick=%s",
-            len(rows),
-            pick_mode,
+        from agent.content_fetch import content_search_and_fetch_impl
+        return await content_search_and_fetch_impl(
+            agent, query=query, timeout_s=timeout_s, pick=pick,
         )
-        path = await torrent_fetch(str(magnet), timeout_s=max(timeout_s, 30.0))
-        return {
-            "searched": sent,
-            "peer_count": len(peers),
-            "result": chosen,
-            "magnet": magnet,
-            "download_path": path,
-            "pick": pick_mode,
-            "result_count": len(rows),
-            "torrent_stats": await torrent_stats(),
-        }
 
     _add(content_search_and_fetch)
+
+    async def content_fetch_via_transfer(
+        query: str = "",
+        timeout_s: float = 20.0,
+        pick: str | int = "random",
+    ) -> dict[str, Any]:
+        """Like ``content_search_and_fetch``, but transfer the file over the
+        ``file_transfer`` overlay (chunked: manifest -> numbered CHUNKs ->
+        reassembly -> whole-content sha256 verify) instead of the single-shot
+        ``SeedboxCommunity`` CONTENT_REQUEST/DELIVERY path. Same discovery and
+        ``pick`` semantics. Implementation lives in ``agent.content_fetch`` so
+        the in-process and MCP-served paths share it (no drift).
+        """
+        from agent.content_fetch import content_fetch_via_transfer_impl
+        return await content_fetch_via_transfer_impl(
+            agent, query=query, timeout_s=timeout_s, pick=pick,
+        )
+
+    _add(content_fetch_via_transfer)
+
+    # ---- Overlay authoring: agents introduce new protocol versions ------
+
+    async def overlay_author_and_publish(
+        name: str,
+        version: str,
+        description: str,
+        messages: list[dict[str, Any]],
+        change_summary: str,
+        runtime_state: list[dict[str, Any]] | None = None,
+        constants: list[dict[str, Any]] | None = None,
+        samples: dict[str, Any] | None = None,
+        supersedes_cid_hex: str | None = None,
+    ) -> dict[str, Any]:
+        """Author a NEW overlay protocol spec and publish it to the network.
+
+        You describe the protocol as structured JSON: ``messages`` is a list of
+        ``{name (SCREAMING_SNAKE_CASE), msg_id (0-255), fields: [{name
+        (snake_case), encoding, description}], handler (prose)}``. Valid
+        encodings: uint8, uint16-be, uint32-be, uint64-be, bool, varlenH,
+        varlenH-utf8, varlenH-msgpack, bytes20, bytes32. Optionally pass
+        ``runtime_state`` ([{name, type, description}]), ``samples``
+        ({MESSAGE_NAME: {field: example}}), and ``supersedes_cid_hex`` (the
+        40-char community_id of a loaded same-name overlay this version
+        replaces). The tool synthesizes the markdown descriptor with byte-exact
+        test vectors, compiles + installs it locally, archives it, and offers it
+        to every peer so they can adopt it.
+
+        Implementation lives in ``agent.overlay_authoring_tool`` — shared with
+        the in-process tool surface so the two can't drift.
+        """
+        from agent.overlay_authoring_tool import overlay_author_and_publish_impl
+        return await overlay_author_and_publish_impl(
+            agent, name=name, version=version, description=description,
+            messages=messages, change_summary=change_summary,
+            runtime_state=runtime_state, constants=constants, samples=samples,
+            supersedes_cid_hex=supersedes_cid_hex,
+        )
+
+    _add(overlay_author_and_publish)
 
     return mcp
 

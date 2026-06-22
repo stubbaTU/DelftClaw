@@ -1,4 +1,4 @@
-# DelftClaw Overlay Protocol Schema (v1)
+# DelftClaw Overlay Protocol Schema (v1.1)
 
 This document defines the canonical structure every **overlay descriptor**
 (`*_community.md`, `*_overlay.md`, etc.) must follow. The DelftClaw protocol
@@ -48,10 +48,21 @@ Required key/value list. One per line, formatted `- key: value`.
 | `version` | semver | `<major>.<minor>.<patch>`. |
 | `description` | utf-8 string | One-line summary. |
 | `lifecycle` | enum (optional) | `peer-observer` (default) or `passive`. |
+| `supersedes` | 40-char hex (optional) | `community_id` of the predecessor this version replaces (same `name`, older `version`). Omitted on a first/original version. |
+| `author_id` | utf-8 string (optional) | Identifier (wallet address) of the agent that authored this version. Set by the authoring tool, not hand-written. |
+| `change_summary` | utf-8 string (optional) | 1-2 sentence description of what changed vs. the predecessor. |
 
 The 20-byte IPv8 `community_id` is **NOT** written in this section; it is
 derived as `sha1(canonical_md_bytes)[:20]`. The compiler computes it and
 asserts the generated class declares the same value.
+
+The `supersedes` / `author_id` / `change_summary` keys are **evolution
+provenance**: they let a fleet track who authored each protocol version and
+which version it replaces, while keeping `community_id` content-derived (two
+agents emitting byte-identical specs converge on the same id). They are
+in-band — a peer that receives the `.md` parses them during the normal compile
+pipeline; the per-demo overlay archive (`protocol/overlay_archive.py`) mirrors
+them into each spec's `meta.json`. They do not affect code generation.
 
 `lifecycle: peer-observer` (default) means the generated class MUST
 subclass both `Community` and `PeerObserver`, declare `started()`
@@ -77,24 +88,40 @@ For each message, a level-2 heading naming the message in
 
 Fields are encoded in table order with no padding. Allowed encodings:
 
-| Encoding | Wire bytes | Python type |
+| Encoding | Wire bytes | Python type / sample form |
 |---|---|---|
 | `uint8` | 1 byte | `int` ∈ [0, 255] |
-| `uint16-be` | 2 bytes, big-endian | `int` ∈ [0, 2¹⁶) |
-| `uint32-be` | 4 bytes, big-endian | `int` ∈ [0, 2³²) |
-| `uint64-be` | 8 bytes, big-endian | `int` ∈ [0, 2⁶⁴) |
+| `uint16-be` | 2 bytes, big-endian | `int` ∈ [0, 2^16) |
+| `uint32-be` | 4 bytes, big-endian | `int` ∈ [0, 2^32) |
+| `uint64-be` | 8 bytes, big-endian | `int` ∈ [0, 2^64) |
 | `bool` | 1 byte (`0x00` / `0x01`) | `bool` |
 | `varlenH` | 2-byte big-endian length, then that many raw bytes | `bytes` |
 | `varlenH-utf8` | varlenH whose payload is decoded as utf-8 | `str` |
 | `varlenH-msgpack` | varlenH whose payload is `msgpack.packb(value, use_bin_type=True)` | `list`/`dict`/scalar |
 | `bytes20` | exactly 20 raw bytes | `bytes` of length 20 |
 | `bytes32` | exactly 32 raw bytes | `bytes` of length 32 |
+| `hash20` *(v1.1)* | exactly 20 raw bytes (wire-identical to `bytes20`) | hex `str` of length 40 (e.g. SHA-1) |
+| `hash32` *(v1.1)* | exactly 32 raw bytes (wire-identical to `bytes32`) | hex `str` of length 64 (e.g. SHA-256) |
+| `timestamp_unix` *(v1.1)* | 8 bytes, big-endian (wire-identical to `uint64-be`) | `int` seconds since 1970-01-01 UTC |
 
 Anything outside this list is a schema error. The compiler maps these
 1:1 onto IPv8 ``VariablePayload.format_list`` entries. New encodings can
-be added in future schema versions (`v2`, `v3`, …) but require a
+be added in future schema versions (additive `v1.x` for wire-identical
+ergonomic aliases, `v2`, `v3`, … for new wire shapes) but require a
 compiler upgrade — this is by design: the byte-level surface is small
 and audited.
+
+**Semantic encodings (v1.1):** ``hash20``, ``hash32``, and
+``timestamp_unix`` are *ergonomic aliases* for ``bytes20``, ``bytes32``,
+and ``uint64-be`` respectively — they produce IDENTICAL wire bytes and
+the same struct ``format_list`` entry. They exist because LLM-authored
+samples naturally describe hashes as hex strings and timestamps as
+integers; the synthesizer's sample-coercion path knows to call
+``bytes.fromhex(sample)`` for ``hash20``/``hash32`` so authors don't have
+to think in raw bytes. Two specs that differ only in choosing
+``hash20`` vs ``bytes20`` produce different canonical ``.md`` text and
+therefore different ``community_id``s — they are different protocol
+versions even though the wire format is the same.
 
 3. A `### Handler` subheading containing free-text operational
 semantics: what the receiver does, what side effects are allowed, what

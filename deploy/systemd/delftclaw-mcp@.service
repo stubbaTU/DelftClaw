@@ -1,10 +1,10 @@
 [Unit]
 Description=DelftClaw MCP server (instance %i)
 After=network-online.target ollama.service
-# Wants= not Requires=: with --compiler-stub the MCP server doesn't need
-# Ollama at boot (it only compiles a peer-supplied overlay on demand).
-# Hard-Requiring Ollama would also block startup on VPSes that point
-# QWEN_BASE_URL at an external GPU host and don't run local Ollama.
+# Wants= not Requires=: the MCP server compiles overlays against the LLM at
+# ${LLM_BASE_URL}, which may be an external endpoint (the LLM proxy / an
+# external GPU host) rather than local Ollama. Hard-Requiring Ollama would
+# block startup on VPSes that don't run it locally.
 Wants=network-online.target ollama.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
@@ -27,11 +27,10 @@ ExecStart=/opt/delftclaw/venv/bin/python -m agent \
     --save-dir ${HOME}/torrents \
     --address ${IPV8_HOST} --port ${IPV8_PORT} \
     --publish-overlay ${PUBLISH_OVERLAY} \
-    --compiler-stub \
-    --llm-base-url ${QWEN_BASE_URL} \
-    --llm-model ${QWEN_MODEL} \
+    --llm-base-url ${LLM_BASE_URL} \
+    --llm-model ${LLM_MODEL} \
     mcp --mcp-host ${MCP_HOST} --mcp-port ${MCP_PORT} \
-        --redteam-host ${REDTEAM_HOST} --redteam-port ${REDTEAM_PORT}
+        --signed-log-host ${SIGNED_LOG_HOST} --signed-log-port ${SIGNED_LOG_PORT}
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30

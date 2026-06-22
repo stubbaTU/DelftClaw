@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from typing import Any
 
 from bitcoinlib.keys import HDKey
 from cryptography.hazmat.primitives import serialization
@@ -36,10 +35,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from identity.derivation import DerivationPath, wallet_path
 from identity.seed import Seed
-
-
-UTXO = Any
-SignedTransaction = Any
 
 
 # Per-process monotonic counter that participates in the deterministic
@@ -166,7 +161,7 @@ class Wallet:
         """Sign arbitrary bytes with the wallet's Ed25519 key.
 
         Used by the community-shared-log layer to sign ``donation_intent``
-        and ``seedbox_purchase_intent`` entries before they're appended.
+        entries before they're appended.
         Verification by peers uses the wallet's ``pubkey`` (the public
         side of the same Ed25519 key) — see ``Wallet.verify`` and
         ``cryptography.hazmat.primitives.asymmetric.ed25519.Ed25519PublicKey.verify``.
@@ -238,28 +233,6 @@ class Wallet:
         body = f"{self.address()}|{to_address}|{sats}|{nonce}".encode("utf-8")
         self._spent_sats += sats
         return hashlib.sha256(body).hexdigest()
-
-    # ------------------------------------------------------------------
-    # Master-side test helpers (preserved for identity/tests/)
-    # ------------------------------------------------------------------
-
-    def get_private_key(self) -> str:
-        """Return the raw Ed25519 private key as hex for local tests."""
-        return self.key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).hex()
-
-    def get_balance(self, as_string: bool = False) -> int | str:
-        """Synthetic balance accessor used by identity tests. Always zero."""
-        if as_string:
-            return "0.00000000 BTC"
-        return 0
-
-    def get_utxos(self) -> list[UTXO]:
-        """Synthetic UTXO listing — always empty."""
-        return []
 
 
 # ---------------------------------------------------------------------------

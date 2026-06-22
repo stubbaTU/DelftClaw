@@ -14,9 +14,6 @@ import pytest
 
 from agent.community_state import (
     CommunityState,
-    DonationIntent,
-    SeedboxProvisioned,
-    SeedboxPurchaseIntent,
     replay_community,
 )
 from protocol.manifest import parse_manifest
@@ -33,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_TEXT = """\
 # Identity
 
-- name: seek_cc_test
+- name: admission_test
 - version: 1.0.0
 - description: Fixture network for community_state replay tests.
 
@@ -43,8 +40,6 @@ MANIFEST_TEXT = """\
 - min_sats: 10000
 - min_confirmations: 0
 - bootstrap_cap_sats: 100000
-- max_agents_per_seedbox: 3
-- seedbox_cost_sats: 50000
 
 # Genesis Peers
 
@@ -61,18 +56,6 @@ MANIFEST_TEXT = """\
 @pytest.fixture
 def manifest():
     return parse_manifest(MANIFEST_TEXT)
-
-
-# A growth-disabled manifest (one of the two growth fields zero) so we
-# can test the "growth disabled" branch without restructuring the rest.
-MANIFEST_NO_GROWTH = MANIFEST_TEXT.replace(
-    "- max_agents_per_seedbox: 3\n- seedbox_cost_sats: 50000\n", "",
-)
-
-
-@pytest.fixture
-def manifest_no_growth():
-    return parse_manifest(MANIFEST_NO_GROWTH)
 
 
 def _entry(
@@ -104,40 +87,28 @@ def _entry(
     }
 
 
-def _donation(*, reporter, amount, ts, eh, nid):
+def _donation(*, reporter, amount, ts, eh, nid, wallet=None):
+    extra = {"amount_sats": amount}
+    if wallet is not None:
+        extra["wallet_address"] = wallet
     return _entry(
         action="donation_intent",
         reporter=reporter,
         network_id_hex=nid,
         timestamp=ts,
         entry_hash=eh,
-        details_extra={"amount_sats": amount},
+        details_extra=extra,
     )
 
 
-def _purchase(*, reporter, cost, ts, eh, nid):
+def _payment(*, reporter, to_wallet, amount, ts, eh, nid):
     return _entry(
-        action="seedbox_purchase_intent",
+        action="payment",
         reporter=reporter,
         network_id_hex=nid,
         timestamp=ts,
         entry_hash=eh,
-        details_extra={"cost_sats": cost},
-    )
-
-
-def _provisioned(*, reporter, intent_hash, url, pubkey, ts, eh, nid):
-    return _entry(
-        action="seedbox_provisioned",
-        reporter=reporter,
-        network_id_hex=nid,
-        timestamp=ts,
-        entry_hash=eh,
-        details_extra={
-            "purchase_intent_hash": intent_hash,
-            "seedbox_url": url,
-            "seedbox_pubkey_hex": pubkey,
-        },
+        details_extra={"to_wallet": to_wallet, "amount_sats": amount},
     )
 
 
@@ -146,19 +117,14 @@ def _provisioned(*, reporter, intent_hash, url, pubkey, ts, eh, nid):
 # ---------------------------------------------------------------------------
 
 
-def test_replay_empty_yields_genesis_only(manifest):
+def test_replay_empty_yields_no_members(manifest):
     state = replay_community(manifest, [])
     assert state == CommunityState(
         members=frozenset(),
         donations=(),
-        purchases=(),
-        provisioned=(),
         balance_sats=0,
-        seedbox_count=1,
     )
     assert state.member_count == 0
-    assert state.pending_purchases == 0
-    assert state.threshold_active(manifest) is False
 
 
 def test_replay_ignores_non_community_actions(manifest):
@@ -301,211 +267,6 @@ def test_replay_breaks_timestamp_ties_deterministically(manifest):
 
 
 # ---------------------------------------------------------------------------
-# Seedbox purchase intent — threshold + first-comer + treasury
-# ---------------------------------------------------------------------------
-
-
-def test_purchase_intent_rejected_when_threshold_not_tripped(manifest):
-    """max_agents_per_seedbox=3, seedbox_count=1 → tripped at 4+ members."""
-    nid = manifest.network_id.hex()
-    # 3 members; threshold = 3*1 = 3; members == cap, NOT tripped.
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t4", eh="h4", nid=nid),
-    ])
-    assert state.member_count == 3
-    assert state.threshold_active(manifest) is False
-    assert state.purchases == ()
-
-
-def test_purchase_intent_accepted_when_threshold_tripped(manifest):
-    """4 members at seedbox_count=1 → threshold tripped (> 3*1)."""
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-    ])
-    assert state.member_count == 4
-    assert state.threshold_active(manifest) is True
-    assert len(state.purchases) == 1
-    assert state.balance_sats == 80_000 + 60_000 + 60_000 + 60_000 - 50_000
-    assert state.pending_purchases == 1
-
-
-def test_purchase_intent_first_comer_wins(manifest):
-    """Two purchase intents race; first by sort order wins; second rejected."""
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-        _purchase(reporter="m2", cost=50_000, ts="t6", eh="h6", nid=nid),
-    ])
-    assert len(state.purchases) == 1
-    assert state.purchases[0].reporter_id == "m1"
-    # Treasury only debited once.
-    assert state.balance_sats == 260_000 - 50_000
-
-
-def test_purchase_intent_rejected_when_growth_disabled(manifest_no_growth):
-    nid = manifest_no_growth.network_id.hex()
-    state = replay_community(manifest_no_growth, [
-        _donation(reporter="m1", amount=20_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=20_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=20_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=20_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-    ])
-    assert state.threshold_active(manifest_no_growth) is False
-    assert state.purchases == ()
-
-
-def test_purchase_intent_rejected_when_signer_not_a_member(manifest):
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="outsider", cost=50_000, ts="t5", eh="h5", nid=nid),
-    ])
-    assert state.purchases == ()
-
-
-def test_purchase_intent_rejected_when_cost_mismatches_manifest(manifest):
-    """The manifest declares the price; the entry must match exactly."""
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=30_000, ts="t5", eh="h5", nid=nid),  # wrong price
-    ])
-    assert state.purchases == ()
-
-
-def test_purchase_intent_rejected_when_treasury_insufficient(manifest):
-    """4 small donors at exactly min_sats can't afford the seedbox."""
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=10_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=10_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=10_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=10_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-    ])
-    assert state.balance_sats == 40_000
-    assert state.purchases == ()
-
-
-# ---------------------------------------------------------------------------
-# Seedbox provisioned — closes a pending purchase, bumps seedbox_count
-# ---------------------------------------------------------------------------
-
-
-def test_provisioned_closes_pending_purchase_and_bumps_seedbox_count(manifest):
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-        _provisioned(reporter="m1", intent_hash="h5",
-                     url="mock-seedbox-2.delftclaw.test:18769",
-                     pubkey="b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
-                     ts="t6", eh="h6", nid=nid),
-    ])
-    assert state.seedbox_count == 2
-    assert state.pending_purchases == 0
-    # Threshold now: 4 > 3*2 == 6 → False (room for two more members).
-    assert state.threshold_active(manifest) is False
-
-
-def test_provisioned_after_close_unblocks_second_purchase(manifest):
-    """seedbox_count=2 means cap=6; need >6 members to trip again."""
-    nid = manifest.network_id.hex()
-    donations = [
-        _donation(reporter=f"m{i}", amount=20_000, ts=f"t{i:02}",
-                  eh=f"d{i:02}", nid=nid)
-        for i in range(1, 8)  # m1..m7 — 7 members
-    ]
-    later = [
-        _purchase(reporter="m1", cost=50_000, ts="t20", eh="p1", nid=nid),
-        _provisioned(reporter="m1", intent_hash="p1",
-                     url="sb2:1", pubkey="b1" * 20,
-                     ts="t21", eh="v1", nid=nid),
-        # After seedbox_count=2, threshold = 3*2=6; member_count=7 > 6.
-        _purchase(reporter="m2", cost=50_000, ts="t22", eh="p2", nid=nid),
-    ]
-    state = replay_community(manifest, donations + later)
-    assert state.seedbox_count == 2
-    assert len(state.purchases) == 2
-    assert state.pending_purchases == 1
-    assert state.balance_sats == 7 * 20_000 - 2 * 50_000
-
-
-def test_provisioned_rejected_without_matching_intent(manifest):
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _provisioned(reporter="m1", intent_hash="nonexistent",
-                     url="sb:1", pubkey="aa" * 20,
-                     ts="t2", eh="v1", nid=nid),
-    ])
-    assert state.provisioned == ()
-    assert state.seedbox_count == 1
-
-
-def test_provisioned_rejected_when_signer_not_a_member(manifest):
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-        _provisioned(reporter="outsider", intent_hash="h5",
-                     url="sb:1", pubkey="aa" * 20,
-                     ts="t6", eh="v1", nid=nid),
-    ])
-    assert state.provisioned == ()
-    assert state.seedbox_count == 1
-    # The purchase still drained the treasury — it's accepted, just not
-    # yet "delivered". Operator can write a follow-up provisioned event.
-    assert state.pending_purchases == 1
-
-
-def test_provisioned_rejected_when_already_closed(manifest):
-    """A second provisioned referencing the same intent is dropped."""
-    nid = manifest.network_id.hex()
-    state = replay_community(manifest, [
-        _donation(reporter="m1", amount=80_000, ts="t1", eh="h1", nid=nid),
-        _donation(reporter="m2", amount=60_000, ts="t2", eh="h2", nid=nid),
-        _donation(reporter="m3", amount=60_000, ts="t3", eh="h3", nid=nid),
-        _donation(reporter="m4", amount=60_000, ts="t4", eh="h4", nid=nid),
-        _purchase(reporter="m1", cost=50_000, ts="t5", eh="h5", nid=nid),
-        _provisioned(reporter="m1", intent_hash="h5",
-                     url="sb-A:1", pubkey="aa" * 20,
-                     ts="t6", eh="v1", nid=nid),
-        _provisioned(reporter="m2", intent_hash="h5",
-                     url="sb-B:1", pubkey="bb" * 20,
-                     ts="t7", eh="v2", nid=nid),
-    ])
-    assert len(state.provisioned) == 1
-    assert state.provisioned[0].seedbox_url == "sb-A:1"
-    assert state.seedbox_count == 2
-
-
-# ---------------------------------------------------------------------------
 # Defensive: malformed entries
 # ---------------------------------------------------------------------------
 
@@ -525,3 +286,75 @@ def test_donation_intent_rejects_missing_reporter_id(manifest):
     bad.pop("reporter_id")
     state = replay_community(manifest, [bad])
     assert state.member_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Payment ledger (peer-to-peer transfers replayed into balances)
+# ---------------------------------------------------------------------------
+
+
+def _two_members(manifest):
+    """Two admitted members alice/bob with known wallets; returns (nid, entries)."""
+    nid = manifest.network_id.hex()
+    return nid, [
+        _donation(reporter="alice", amount=80_000, ts="t1", eh="d1", nid=nid, wallet="w_alice"),
+        _donation(reporter="bob", amount=80_000, ts="t2", eh="d2", nid=nid, wallet="w_bob"),
+    ]
+
+
+def test_payment_between_members_updates_balances(manifest):
+    nid, base = _two_members(manifest)
+    state = replay_community(manifest, base + [
+        _payment(reporter="alice", to_wallet="w_bob", amount=5_000, ts="t3", eh="p1", nid=nid),
+        _payment(reporter="bob", to_wallet="w_alice", amount=2_000, ts="t4", eh="p2", nid=nid),
+    ])
+    assert len(state.payments) == 2
+    assert state.balances == {"w_alice": -3_000, "w_bob": 3_000}
+    # Treasury (donations) is untouched by payments.
+    assert state.balance_sats == 160_000
+
+
+def test_payment_to_non_member_wallet_rejected(manifest):
+    nid, base = _two_members(manifest)
+    state = replay_community(manifest, base + [
+        _payment(reporter="alice", to_wallet="w_charlie", amount=1_000, ts="t3", eh="p1", nid=nid),
+    ])
+    assert state.payments == ()
+    assert state.balances == {"w_alice": 0, "w_bob": 0}
+
+
+def test_payment_from_non_member_rejected(manifest):
+    nid, base = _two_members(manifest)
+    state = replay_community(manifest, base + [
+        _payment(reporter="mallory", to_wallet="w_bob", amount=1_000, ts="t3", eh="p1", nid=nid),
+    ])
+    assert state.payments == ()
+
+
+def test_self_payment_rejected(manifest):
+    nid, base = _two_members(manifest)
+    state = replay_community(manifest, base + [
+        _payment(reporter="alice", to_wallet="w_alice", amount=1_000, ts="t3", eh="p1", nid=nid),
+    ])
+    assert state.payments == ()
+
+
+def test_payment_nonpositive_amount_rejected(manifest):
+    nid, base = _two_members(manifest)
+    state = replay_community(manifest, base + [
+        _payment(reporter="alice", to_wallet="w_bob", amount=0, ts="t3", eh="p1", nid=nid),
+        _payment(reporter="alice", to_wallet="w_bob", amount=-5, ts="t4", eh="p2", nid=nid),
+    ])
+    assert state.payments == ()
+
+
+def test_payment_before_recipient_admitted_rejected(manifest):
+    """Time-ordered replay: a payment to a wallet whose donation comes later
+    is rejected (recipient not yet a known member wallet at that point)."""
+    nid = manifest.network_id.hex()
+    state = replay_community(manifest, [
+        _donation(reporter="alice", amount=80_000, ts="t1", eh="d1", nid=nid, wallet="w_alice"),
+        _payment(reporter="alice", to_wallet="w_bob", amount=1_000, ts="t2", eh="p1", nid=nid),
+        _donation(reporter="bob", amount=80_000, ts="t3", eh="d2", nid=nid, wallet="w_bob"),
+    ])
+    assert state.payments == ()

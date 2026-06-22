@@ -20,7 +20,6 @@ class DerivationPath(str):
 
 # Canonical derivation paths fixed across the project.
 IPV8_PATH = DerivationPath("m/44'/0'/0'/0/0")
-APP_PATH = DerivationPath("m/44'/0'/0'/1/0")
 WALLET_PATH = DerivationPath("m/44'/0'/0'/2/0")
 
 

@@ -3,16 +3,16 @@
 # Edit VPS_HOST / VPS_USER below, then on your laptop:
 #
 #     make deploy                  # rsync repo to VPS + run setup_vps.sh
-#     make scenario NAME=seek_cc   # launch a scenario on the VPS
+#     make scenario NAME=payment   # launch a scenario on the VPS
 #     make scenarios               # list scenarios + their agents on the VPS
-#     make watch    NAME=seek_cc   # tail the full journal (every line)
-#     make watch-ipv8 NAME=seek_cc # tail only IPv8 wire events + errors
-#     make tools    NAME=seek_cc   # tail only TOOL audit lines (one per agent tool call)
-#     make tail-turns NAME=seek_cc # turn-summary tail: lock acquire/release + TOOL + IPv8
-#     make tools-summary NAME=seek_cc  # one-shot histogram: TOOL counts per agent + per name
-#     make trace    NAME=seek_cc   # one-shot snapshot per agent
-#     make stop     NAME=seek_cc   # stop a scenario
-#     make demo     NAME=seek_cc   # one-shot: deploy + llm-up + stop + scenario
+#     make watch    NAME=payment   # tail the full journal (every line)
+#     make watch-ipv8 NAME=payment # tail only IPv8 wire events + errors
+#     make tools    NAME=payment   # tail only TOOL audit lines (one per agent tool call)
+#     make tail-turns NAME=payment # turn-summary tail: lock acquire/release + TOOL + IPv8
+#     make tools-summary NAME=payment  # one-shot histogram: TOOL counts per agent + per name
+#     make trace    NAME=payment   # one-shot snapshot per agent
+#     make stop     NAME=payment   # stop a scenario
+#     make demo     NAME=payment   # one-shot: deploy + llm-up + stop + scenario
 #     make llm-up                  # install/start LLM proxy on the VPS
 #     make llm-down                # stop the LLM proxy
 #     make llm-logs                # tail the LLM proxy journal
@@ -62,8 +62,7 @@ reinstall-units: push ## Reinstall the templated systemd units + daemon-reload (
 	# would otherwise leave systemd reading the previous unit body.
 	# Idempotent and fast (no apt, no ollama, no venv work).
 	$(SSH) "set -e; \
-	    for unit in delftclaw-mcp@.service delftclaw-watchdog@.service \
-	                delftclaw-identity-mcp@.service delftclaw-security-mcp@.service; do \
+	    for unit in delftclaw-mcp@.service delftclaw-watchdog@.service; do \
 	      if [ -f $(VPS_ROOT)/deploy/systemd/\$$unit ]; then \
 	        install -m 0644 -o root -g root \
 	          $(VPS_ROOT)/deploy/systemd/\$$unit /etc/systemd/system/\$$unit; \
@@ -77,7 +76,7 @@ reinstall-units: push ## Reinstall the templated systemd units + daemon-reload (
 
 check-name:
 	@if [ -z "$(NAME)" ]; then \
-		echo "set NAME=<scenario>. example: make scenario NAME=seek_cc"; \
+		echo "set NAME=<scenario>. example: make scenario NAME=payment"; \
 		exit 1; \
 	fi
 
@@ -118,16 +117,29 @@ tail-turns: check-name ## Turn-level tail: lock acquire/release + TOOL + IPv8 + 
 		  'llm turn lock|TOOL |IPv8 (send|recv)|ERROR|WARN|FAIL|Traceback|stop_predicate'"
 
 tools-summary: check-name ## One-shot histogram of TOOL invocations per agent and per tool name
-	$(SSH) "journalctl --no-pager --since '1 hour ago' \
+	# ``-o with-unit`` is load-bearing — without it the unit name (and thus
+	# the agent name) isn't on the line. The old awk script took op=$$5 from
+	# default short format, which is actually ``python[pid]:``, not the TOOL
+	# operation — so every bucket collapsed to one PID per agent. We now find
+	# ``TOOL`` token, take the next word as op (call/ok/fail/skip), pull the
+	# agent name from the unit field, and ``name=…`` from anywhere on the line.
+	$(SSH) "journalctl --no-pager -o with-unit --since '1 hour ago' \
 		-u 'delftclaw-mcp@$(NAME)-*.service' \
 		-u 'delftclaw-watchdog@$(NAME)-*.service' \
 		| grep -E 'delftclaw\\.agent\\.tools.*TOOL (call|ok|fail|skip)' \
 		| awk '{ \
+		    agent = \"?\"; op = \"?\"; name = \"?\"; \
 		    for (i=1; i<=NF; i++) { \
-		      if (\$\$i ~ /^name=/) { name=\$\$i; sub(/^name=/, \"\", name) } \
-		      if (\$\$i ~ /^session=/) { sess=\$\$i; sub(/^session=/, \"\", sess) } \
+		      if (\$\$i ~ /^delftclaw-(mcp|watchdog)@.*\\.service\\[/) { \
+		        tag = \$\$i; sub(/^delftclaw-(mcp|watchdog)@/, \"\", tag); \
+		        sub(/\\.service\\[.*\\]:$$/, \"\", tag); \
+		        n = index(tag, \"-\"); \
+		        if (n > 0) agent = substr(tag, n+1); \
+		      } \
+		      if (\$\$i == \"TOOL\" && i < NF) op = \$\$(i+1); \
+		      if (\$\$i ~ /^name=/) { name = \$\$i; sub(/^name=/, \"\", name) } \
 		    } \
-		    op=\$\$5; counts[op\" \"name]++ \
+		    counts[agent\" \"op\" \"name]++ \
 		  } \
 		  END { \
 		    for (k in counts) printf \"%6d  %s\\n\", counts[k], k \
@@ -141,37 +153,25 @@ stop: check-name ## Stop scenario NAME + teardown its env files
 	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
 		$(VPS_ROOT)/venv/bin/python -m deploy.scenario_boot $(NAME) --teardown"
 
-community-demo: push ## Run the direct community demo checklist on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo \
-		--provider mock --root /var/lib/delftclaw/community_demo --reset"
-
-community-demo-real: push ## Start the real-agent community_demo scenario on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --real-agents"
-
-community-demo-stop: ## Stop the real-agent community_demo scenario on the VPS
-	$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \
-		$(VPS_ROOT)/venv/bin/python -m deploy.community_demo --stop-real-agents"
 
 # ---------------------------------------------------------------------------
 # Gemini proxy + one-shot demo launcher
 # ---------------------------------------------------------------------------
 
-# Pull LLM_API_KEYS / LLM_PROXY_PORT / LLM_PROXY_UPSTREAM out of
-# configs/host.env so the Makefile can pass them to the VPS without the
-# user re-typing keys. host.env is gitignored.
-LLM_KEYS := $(shell grep -E '^LLM_API_KEYS=' configs/host.env 2>/dev/null | sed 's/^LLM_API_KEYS=//')
-LLM_PORT := $(shell grep -E '^LLM_PROXY_PORT=' configs/host.env 2>/dev/null | sed 's/^LLM_PROXY_PORT=//' | head -1)
-LLM_UPSTREAM := $(shell grep -E '^LLM_PROXY_UPSTREAM=' configs/host.env 2>/dev/null | sed 's/^LLM_PROXY_UPSTREAM=//' | head -1)
+# Pull LLM_API_KEY / LLM_PROXY_PORT / LLM_PROXY_UPSTREAM out of
+# configs/.env so the Makefile can pass them to the VPS without the
+# user re-typing keys. .env is gitignored.
+LLM_KEY := $(shell grep -E '^LLM_API_KEY=' configs/.env 2>/dev/null | sed 's/^LLM_API_KEY=//' | head -1)
+LLM_PORT := $(shell grep -E '^LLM_PROXY_PORT=' configs/.env 2>/dev/null | sed 's/^LLM_PROXY_PORT=//' | head -1)
+LLM_UPSTREAM := $(shell grep -E '^LLM_PROXY_UPSTREAM=' configs/.env 2>/dev/null | sed 's/^LLM_PROXY_UPSTREAM=//' | head -1)
 
 llm-up: push ## Install + (re)start the LLM proxy on the VPS
-	@if [ -z "$(LLM_KEYS)" ]; then \
-	  echo "LLM_API_KEYS is empty in configs/host.env — populate it first."; \
-	  echo "Get a key at https://console.anthropic.com, then edit configs/host.env."; \
+	@if [ -z "$(LLM_KEY)" ]; then \
+	  echo "LLM_API_KEY is empty in configs/.env — populate it first."; \
+	  echo "Get a key at https://console.anthropic.com, then edit configs/.env."; \
 	  exit 1; \
 	fi
-	$(SSH) "LLM_API_KEYS='$(LLM_KEYS)' \
+	$(SSH) "LLM_API_KEY='$(LLM_KEY)' \
 	        LLM_PROXY_PORT='$(or $(LLM_PORT),11600)' \
 	        LLM_PROXY_UPSTREAM='$(or $(LLM_UPSTREAM),https://api.anthropic.com/v1)' \
 	        REPO_ROOT='$(VPS_ROOT)' \
@@ -187,9 +187,9 @@ llm-logs: ## Tail the LLM proxy journal (Ctrl-C to stop)
 
 demo: check-name push reinstall-units llm-up ## One-shot: push + refresh units + llm-up + stop + scenario
 	# reinstall-units is part of the chain so a systemd unit change
-	# (e.g. adding the --redteam-host/port flags) lands without a
+	# (e.g. adding the --signed-log-host/port flags) lands without a
 	# separate ``make deploy``. Caught once: stale unit silently
-	# disabled the redteam FastAPI sub-server on every MCP process,
+	# disabled the signed_log FastAPI sub-server on every MCP process,
 	# which made pull_loop.error fire on every tick and prevented
 	# bob/charlie/dave from ever seeing alice's donation entry.
 	-$(SSH) "cd $(VPS_ROOT) && PYTHONPATH=$(VPS_ROOT) \

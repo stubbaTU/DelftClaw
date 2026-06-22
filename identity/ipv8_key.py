@@ -14,7 +14,6 @@ if sys.platform == "win32":
 
 from ipv8.keyvault.crypto import ECCrypto
 from ipv8.keyvault.private.libnaclkey import LibNaCLSK
-from ipv8.peer import Peer
 
 from identity.derivation import IPV8_PATH, derive
 from identity.seed import Seed
@@ -73,7 +72,3 @@ class IPv8KeyPair:
             return bool(self.key.pub().verify(signature, data))
         except Exception:
             return False
-
-    def to_ipv8_peer(self) -> Any:
-        """Bridge into py-ipv8 ``Peer`` object for runtime registration."""
-        return Peer(self.key)

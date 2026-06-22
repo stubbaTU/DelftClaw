@@ -16,11 +16,10 @@ Why this exists:
 
 Run it on whichever box openclaw runs on:
 
-    LLM_API_KEYS=sk-ant-... \\
+    LLM_API_KEY=sk-ant-... \\
         python scripts/llm_proxy.py --port 11600
 
-Then point openclaw at ``http://127.0.0.1:11600/v1`` with any
-non-empty placeholder ``apiKey`` — the real keys live here.
+Then point openclaw at ``http://127.0.0.1:11600/v1`` — the real key lives here.
 
 Configuration:
 
@@ -28,8 +27,8 @@ Configuration:
   ``--upstream`` (default https://api.anthropic.com/v1)
   ``--cooldown-seconds`` (default 60) — how long a key is benched after a 429
 
-  ``LLM_API_KEYS`` env var: comma-separated list of keys. The proxy
-  refuses to start if it's empty.
+  ``LLM_API_KEY`` env var: the upstream API key (comma-separate several keys
+  for round-robin rotation). The proxy refuses to start if it's empty.
 
 Logging:
 
@@ -244,10 +243,10 @@ def main(argv: list[str]) -> int:
                              "a free key.")
     args = parser.parse_args(argv)
 
-    raw = os.environ.get("LLM_API_KEYS", "").strip()
+    raw = os.environ.get("LLM_API_KEY", "").strip()
     keys = [k.strip() for k in raw.split(",") if k.strip()]
     if not keys:
-        print("set LLM_API_KEYS=key1[,key2,...] before starting the proxy",
+        print("set LLM_API_KEY=<key> (comma-separate for rotation) before starting the proxy",
               file=sys.stderr)
         return 2
 

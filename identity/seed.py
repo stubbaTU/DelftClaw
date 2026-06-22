@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 import os
-import secrets
 
 from bitcoinlib.mnemonic import Mnemonic
 

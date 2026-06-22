@@ -2,53 +2,41 @@
 
 The mission is the single operator-supplied input the watchdog feeds
 the LLM each turn. Schema is specified in ``deploy/mission_schema.md``.
-The parser deliberately refuses recipes — backtick-quoted tool names
-and ≥3-step lists under ``# Intent`` raise ``MissionParseError`` — so
-the agent has to reason from its world (the state snapshot + manifest)
-rather than execute a script the operator embedded.
 
 This module imports only the standard library and ``deploy.stop_predicates``
-to keep parse-time light; it does **not** import ``agent.tools``
-(the tool-name list is hardcoded here so a missing dependency never
-silently weakens the recipe filter).
+to keep parse-time light; it does **not** import ``agent.tools`` (the
+tool-name list is hardcoded here so the ``# Tools`` parser still validates
+even if that dependency is missing).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
 
 from deploy import stop_predicates
 
 
 REQUIRED_SECTIONS = ("Identity", "Intent", "Budget", "Stop")
-OPTIONAL_SECTIONS = ("Tools",)
 ALLOWED_ROLES = ("seedbox", "seeker", "general")
 
 # Hardcoded tool-name allowlist. Kept in sync with agent/mcp_server.py's
-# tool registration. Used by two validators in this module:
-#   1. The historical recipe filter — rejects mention of any of these
-#      names inside `# Intent` (currently disabled, see _check_intent_has_no_recipe).
-#   2. The `# Tools` section parser — rejects any name not in this set,
-#      so a typo in a mission's allowlist fails fast at boot.
+# tool registration. Used by the ``# Tools`` section parser — it rejects
+# any name not in this set, so a typo in a mission's allowlist fails fast
+# at boot.
 TOOL_NAMES: frozenset[str] = frozenset({
     "peers_list", "peer_add",
     "wallet_address", "wallet_balance", "wallet_send",
     "community_donate_and_join", "community_treasury_balance",
     "community_member_count", "community_log_list_recent",
     "community_join_via_peer",
-    "seedbox_donate_and_join",
-    "seedbox_purchase_propose", "seedbox_provisioned",
+    "request_payment", "send_payment",
     "overlays_list", "overlay_describe", "overlay_fetch_and_load",
-    "overlay_publish", "overlay_invoke",
-    "agent_inject_manifest", "network_join",
+    "overlay_publish", "overlay_invoke", "overlay_author_and_publish",
+    "agent_inject_manifest",
     "torrent_seed", "torrent_fetch", "torrent_stats",
-    "content_search_and_fetch",
+    "content_search_and_fetch", "content_fetch_via_transfer",
 })
-
-# Heuristic: a list under # Intent with this many entries or more is a recipe.
-MAX_INTENT_LIST_ENTRIES = 2
 
 
 class MissionParseError(Exception):
@@ -68,7 +56,6 @@ class Mission:
     intent_text: str
     budget: Budget
     stop_predicate: str
-    raw_md: str
     # Optional MCP tool allowlist parsed from a ``# Tools`` section. Three
     # states map onto the same field:
     #   None  -> section absent (mission does not constrain the surface;
@@ -124,9 +111,6 @@ def _check_required_sections(order: list[str], sections: dict[str, str]) -> None
 
 _KV_RE = re.compile(r"^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_BACKTICK_RE = re.compile(r"`([^`]+)`")
-_NUMBERED_STEP_RE = re.compile(r"^\s*\d+\.\s+\S")
-_BULLETED_STEP_RE = re.compile(r"^\s*[-*]\s+\S")
 
 
 def _parse_kv_list(body: str) -> dict[str, str]:
@@ -152,23 +136,6 @@ def _parse_identity(body: str) -> tuple[str, str]:
             f"# Identity role must be one of {ALLOWED_ROLES}; got {role!r}"
         )
     return name, role
-
-
-def _check_intent_has_no_recipe(body: str) -> None:
-    """Reject backtick-quoted tool names + step-shaped lists.
-
-    Implements the operator-facing rule from mission_schema.md: the
-    intent should describe *what* the agent wants, not *how*.
-
-    DEADLINE OVERRIDE 2026-05-25: temporarily disabled so seek_cc
-    missions can name tools explicitly. The zero-shot research claim
-    that this validator protects is empirically dead (Haiku does not
-    bridge admission -> search even with snapshot-derived tool-name
-    hints; see project_zeroshot_finding memory). Restore this body
-    after the demo if you want the original 2026-05-18 prohibition
-    back in force.
-    """
-    return  # deadline override; see docstring
 
 
 def _parse_budget(body: str) -> Budget:
@@ -262,7 +229,6 @@ def parse_mission(text: str) -> Mission:
     intent_text = sections["Intent"].strip()
     if not intent_text:
         raise MissionParseError("# Intent must not be empty")
-    _check_intent_has_no_recipe(intent_text)
     budget = _parse_budget(sections["Budget"])
     stop_predicate = _parse_stop(sections["Stop"])
 
@@ -276,6 +242,5 @@ def parse_mission(text: str) -> Mission:
         intent_text=intent_text,
         budget=budget,
         stop_predicate=stop_predicate,
-        raw_md=text,
         tools=tools,
     )

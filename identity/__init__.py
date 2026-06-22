@@ -1,4 +1,4 @@
-"""BIP-32 derived agent identity: one seed, two keys (IPv8, app-signing).
+"""BIP-32 derived agent identity: one seed, IPv8 key + wallet.
 
 ``Wallet`` and ``AgentIdentity`` are loaded lazily via PEP 562
 ``__getattr__`` so that ``python -m identity.wallet`` doesn't trigger
@@ -26,11 +26,9 @@ from identity.derivation import (
     DerivationPath,
     derive,
     IPV8_PATH,
-    APP_PATH,
     WALLET_PATH,
 )
 from identity.ipv8_key import IPv8KeyPair
-from identity.app_key import AppSigningKey
 
 # ``Wallet`` and ``AgentIdentity`` are intentionally lazy-loaded —
 # see module docstring above.
@@ -45,10 +43,8 @@ __all__ = [
     "DerivationPath",
     "derive",
     "IPV8_PATH",
-    "APP_PATH",
     "WALLET_PATH",
     "IPv8KeyPair",
-    "AppSigningKey",
     "Wallet",
     "AgentIdentity",
 ]

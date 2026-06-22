@@ -8,7 +8,7 @@ just text?
 
 Usage::
 
-    # Local Ollama (default — uses host.env's LLM_MODEL):
+    # Local Ollama (default — uses .env's LLM_MODEL):
     python scripts/probe_tool_calling.py
 
     # Local Ollama, explicit model:
@@ -42,9 +42,9 @@ ANTHROPIC_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _load_host_env() -> dict[str, str]:
-    """Best-effort: read configs/host.env to pick a sensible default model."""
+    """Best-effort: read configs/.env to pick a sensible default model."""
     here = Path(__file__).resolve().parent.parent
-    env_file = here / "configs" / "host.env"
+    env_file = here / "configs" / ".env"
     if not env_file.is_file():
         return {}
     out = {}
@@ -151,7 +151,7 @@ def _probe(base: str, model: str, api_key: str, *, force: bool, verbose: bool) -
 def main(argv: list[str]) -> int:
     host_env = _load_host_env()
     default_base = host_env.get("LLM_BASE_URL", DEFAULT_BASE)
-    # The host.env points at the SSH tunnel (port 11500); for a direct
+    # The .env points at the SSH tunnel (port 11500); for a direct
     # laptop test we want the bare Ollama port. If the URL looks like
     # the tunnel, hint at the direct port for clarity.
     if "11500" in default_base:

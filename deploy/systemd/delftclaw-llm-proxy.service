@@ -10,7 +10,7 @@ Type=simple
 User=delftclaw
 Group=delftclaw
 WorkingDirectory=/opt/delftclaw
-# Reads LLM_API_KEYS=key1[,key2,...] from this env file, written by
+# Reads LLM_API_KEY=key1[,key2,...] from this env file, written by
 # deploy/install_llm_proxy.sh. Same file carries LLM_PROXY_PORT and
 # LLM_PROXY_UPSTREAM (Anthropic by default).
 Environment=PYTHONPATH=/opt/delftclaw

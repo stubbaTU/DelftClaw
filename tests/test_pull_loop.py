@@ -1,4 +1,4 @@
-"""TDD red-step tests for ``redteam.integration.pull_loop``.
+"""TDD red-step tests for ``signed_log.integration.pull_loop``.
 
 These tests intentionally fail until two functions exist:
 
@@ -42,12 +42,12 @@ import pytest
 from fastapi import FastAPI
 
 from identity.openclaw_identity import OpenClawIdentity
-from redteam.primitives.peer_log import PeerLog
-from redteam.primitives.signed_log import SignedAppendOnlyLog
+from signed_log.primitives.peer_log import PeerLog
+from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
 # These imports will fail in the red phase — the modules / symbols don't
 # exist yet. That's expected.
-from redteam.integration.pull_loop import (  # noqa: E402
+from signed_log.integration.pull_loop import (  # noqa: E402
     pull_once,
     run_pull_loop,
 )
@@ -957,8 +957,8 @@ async def test_server_build_app_with_peers_pulls_alice_into_bobs_peer_log(
     lifespan handler spawning ``run_pull_loop``, and the algorithm storing
     pulled entries in PeerLog.
     """
-    from redteam.integration.peer_transport import HttpPeerTransport
-    from redteam.integration.server import build_app
+    from signed_log.integration.peer_transport import HttpPeerTransport
+    from signed_log.integration.server import build_app
 
     # Alice (the source). Use the existing ``build_app`` plus a seeded log.
     alice_id = _make_identity(tmp_path, "alice.pem")
@@ -1056,7 +1056,7 @@ def test_build_app_rejects_non_http_peer_url(tmp_path: Path) -> None:
     issue requests against ``file://``, ``data:`` etc. depending on
     httpx config.
     """
-    from redteam.integration.server import build_app
+    from signed_log.integration.server import build_app
 
     identity = _make_identity(tmp_path, "v.pem")
     log_path = str(tmp_path / "v.log")

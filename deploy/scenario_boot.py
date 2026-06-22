@@ -12,7 +12,7 @@ Run as root (the script `sudo`s where needed). What it does, in order:
           ``/etc/delftclaw/instances/<scenario>-<agent>.env``.
   3. ``systemctl enable --now delftclaw-mcp@<instance>.service`` per agent.
   4. Wait until each MCP server's port is open.
-  5. Probe each MCP server via ``deploy.probe_mcp`` (real handshake) to
+  5. Probe each MCP server with a real ``fastmcp`` client handshake to
      fetch ``wallet_address`` and the IPv8 pubkey.
   6. Cross-introduce peers — for every ``a peers: [b]``, call ``a``'s
      ``peer_add`` tool with ``b``'s host/port/pubkey.
@@ -21,13 +21,19 @@ Run as root (the script `sudo`s where needed). What it does, in order:
 ``--dry-run`` skips all systemd / sudo / state-dir work; it only parses
 the manifest and prints the plan. Useful from your laptop.
 
-``--teardown`` stops everything for the scenario and removes the state
-+ instance env files (but keeps the seed files, so identities survive).
+``--teardown`` stops everything for the scenario, removes the instance env
+files, and wipes each agent's regenerable runtime artifacts — the
+``torrents/`` dir (downloaded files + the cross-process download / offer
+ledgers) and the ``overlay_archive/`` dir (per-demo spec archive). This is
+what makes a re-run start CLEAN: otherwise a stale completed-download or a
+stale authored-overlay satisfies a stop predicate at turn 0 and the agents
+skip the demo. Seed files and the signed community/peer logs are kept, so
+agent identities and the accountability history survive.
 
 Usage:
-    python -m deploy.scenario_boot seek_cc
-    python -m deploy.scenario_boot seek_cc --dry-run
-    python -m deploy.scenario_boot seek_cc --teardown
+    python -m deploy.scenario_boot payment
+    python -m deploy.scenario_boot payment --dry-run
+    python -m deploy.scenario_boot payment --teardown
 """
 
 from __future__ import annotations
@@ -40,7 +46,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
 
 from fastmcp import Client
 
@@ -52,11 +57,11 @@ ETC_INSTANCES = Path("/etc/delftclaw/instances")
 ETC_SCENARIOS = Path("/etc/delftclaw/scenarios")
 STATE_ROOT = Path("/var/lib/delftclaw")
 SERVICE_USER = "delftclaw"
-HOST_ENV_FILE = REPO_ROOT / "configs" / "host.env"
+HOST_ENV_FILE = REPO_ROOT / "configs" / ".env"
 
 
 def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
-    """Parse ``configs/host.env`` as KEY=VALUE pairs. Missing file → empty dict.
+    """Parse ``configs/.env`` as KEY=VALUE pairs. Missing file → empty dict.
 
     Lines starting with ``#`` and blank lines are ignored; ``KEY=`` with
     no value is also ignored (treated as "unset, fall through to default").
@@ -82,155 +87,57 @@ def _load_host_env(path: Path = HOST_ENV_FILE) -> dict[str, str]:
     return out
 
 
-DEFAULT_QWEN_BASE_URL = "http://100.73.168.12:11434/v1"
-DEFAULT_QWEN_MODEL = "qwen3.6:27b"
-DEFAULT_OLLAMA_API_KEY = "ollama"
-DEFAULT_OPENCLAW_PROVIDER = "ollama"
-DEFAULT_LLM_BASE_URL = DEFAULT_QWEN_BASE_URL
-DEFAULT_LLM_MODEL = DEFAULT_QWEN_MODEL
-DEFAULT_LLM_API_KEY = DEFAULT_OLLAMA_API_KEY
+def _require_env(name: str, host_env: dict[str, str]) -> str:
+    """Return ``name`` from the process env, else ``.env`` — and fail loud
+    if it is set nowhere. There are no hard-coded fallbacks: a missing value is
+    a configuration error the operator must fix in ``configs/.env``, not
+    something we paper over with a placeholder endpoint."""
+    value = os.environ.get(name, host_env.get(name, "")).strip()
+    if not value:
+        c_fail(f"{name} is not set — add it to {HOST_ENV_FILE}")
+        raise SystemExit(2)
+    return value
 
 
 def _resolve_llm(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
-    """Resolve generic LLM_BASE_URL / LLM_MODEL / LLM_API_KEY.
-
-    Master renamed the per-host compiler/reasoning knobs from QWEN_* to
-    provider-neutral LLM_*. Keep this resolver as the canonical interface
-    for tests and new configs while the rest of the deploy stack still
-    emits QWEN_* into per-instance env files for compatibility.
-    """
+    """Resolve the compiler/agent LLM endpoint: LLM_BASE_URL / LLM_MODEL /
+    LLM_API_KEY (process env > .env, else error). This is the single source
+    of the overlay-compiler endpoint; the systemd MCP unit and the watchdog
+    both read these LLM_* names directly. Resolved at boot time, never at import
+    (so the module stays importable without .env)."""
     host_env = _load_host_env(host_env_file)
-    base = os.environ.get(
-        "LLM_BASE_URL",
-        host_env.get("LLM_BASE_URL", DEFAULT_LLM_BASE_URL),
+    return (
+        _require_env("LLM_BASE_URL", host_env),
+        _require_env("LLM_MODEL", host_env),
+        _require_env("LLM_API_KEY", host_env),
     )
-    model = os.environ.get(
-        "LLM_MODEL",
-        host_env.get("LLM_MODEL", DEFAULT_LLM_MODEL),
-    )
-    api_key = os.environ.get(
-        "LLM_API_KEY",
-        host_env.get("LLM_API_KEY", DEFAULT_LLM_API_KEY),
-    )
-    return base, model, api_key
 
 
-def _resolve_qwen(host_env_file: Path = HOST_ENV_FILE) -> tuple[str, str, str]:
-    """Resolve QWEN_BASE_URL + QWEN_MODEL.
-
-    Backward-compatible wrapper for the historical QWEN_* names. Generic
-    LLM_* values are accepted as fallbacks so a host can use either naming
-    scheme without breaking existing per-instance env generation.
-    """
-    host_env = _load_host_env(host_env_file)
-    base = os.environ.get(
-        "QWEN_BASE_URL",
-        os.environ.get(
-            "LLM_BASE_URL",
-            host_env.get("QWEN_BASE_URL", host_env.get("LLM_BASE_URL", DEFAULT_QWEN_BASE_URL)),
-        ),
-    )
-    model = os.environ.get(
-        "QWEN_MODEL",
-        os.environ.get(
-            "LLM_MODEL",
-            host_env.get("QWEN_MODEL", host_env.get("LLM_MODEL", DEFAULT_QWEN_MODEL)),
-        ),
-    )
-    api_key = os.environ.get(
-        "OLLAMA_API_KEY",
-        os.environ.get(
-            "LLM_API_KEY",
-            host_env.get("OLLAMA_API_KEY", host_env.get("LLM_API_KEY", DEFAULT_OLLAMA_API_KEY)),
-        ),
-    )
-    return base, model, api_key
+# The single env var that holds the upstream API key, everywhere. OpenClaw's
+# config references this name and resolves it against the process env.
+LLM_API_KEY_ENV = "LLM_API_KEY"
 
 
 def _resolve_openclaw_provider(host_env_file: Path = HOST_ENV_FILE) -> dict[str, str]:
-    """Resolve the reasoning-LLM provider OpenClaw should use.
+    """Resolve the OpenClaw reasoning-provider config.
 
-    The MCP/overlay compiler path still reads QWEN_*; OpenClaw's reasoning
-    process can point somewhere else, e.g. Gemini's OpenAI-compatible API.
+    The provider id is ``LLM_API_PROVIDER`` (required). The reasoning endpoint
+    defaults to the same LLM_* as the compiler, but a host can override it via
+    ``OPENCLAW_BASE_URL`` / ``OPENCLAW_MODEL`` (e.g. a different tier). The API
+    shape is always OpenAI-compatible, and the apiKey always comes from
+    ``LLM_API_KEY``.
     """
     host_env = _load_host_env(host_env_file)
-    provider = os.environ.get(
-        "OPENCLAW_PROVIDER",
-        host_env.get("OPENCLAW_PROVIDER", DEFAULT_OPENCLAW_PROVIDER),
-    ).strip().lower()
-    base_url = os.environ.get(
-        "OPENCLAW_BASE_URL",
-        host_env.get(
-            "OPENCLAW_BASE_URL",
-            host_env.get("QWEN_BASE_URL", host_env.get("LLM_BASE_URL", DEFAULT_QWEN_BASE_URL)),
-        ),
-    ).strip()
-    model = os.environ.get(
-        "OPENCLAW_MODEL",
-        host_env.get(
-            "OPENCLAW_MODEL",
-            host_env.get("QWEN_MODEL", host_env.get("LLM_MODEL", DEFAULT_QWEN_MODEL)),
-        ),
-    ).strip()
-    api = os.environ.get("OPENCLAW_API", host_env.get("OPENCLAW_API", "")).strip().lower()
-    if not api:
-        api = "ollama" if provider == "ollama" else "openai-completions"
-    api_key_env = os.environ.get(
-        "OPENCLAW_API_KEY_ENV",
-        host_env.get("OPENCLAW_API_KEY_ENV", "OLLAMA_API_KEY" if provider == "ollama" else "GEMINI_API_KEY"),
-    ).strip()
-    api_key_value = os.environ.get(api_key_env, host_env.get(api_key_env, "")).strip()
-    api_keys_raw = os.environ.get(
-        "OPENCLAW_API_KEYS",
-        host_env.get("OPENCLAW_API_KEYS", host_env.get("GEMINI_API_KEYS", "")),
-    )
-    api_keys = [part.strip() for part in api_keys_raw.split(",") if part.strip()]
-    if not api_keys and api_key_value:
-        api_keys = [api_key_value]
-    watchdog_driver = os.environ.get(
-        "WATCHDOG_DRIVER",
-        host_env.get("WATCHDOG_DRIVER", "direct" if provider == "gemini" else "openclaw"),
-    ).strip().lower()
+    base, model, _api_key = _resolve_llm(host_env_file)
+    provider = _require_env("LLM_API_PROVIDER", host_env).lower()
+    base_url = os.environ.get("OPENCLAW_BASE_URL", host_env.get("OPENCLAW_BASE_URL", base)).strip()
+    oc_model = os.environ.get("OPENCLAW_MODEL", host_env.get("OPENCLAW_MODEL", model)).strip()
     return {
         "provider": provider,
-        "api": api,
+        "api": "openai-completions",
         "base_url": base_url,
-        "model": model,
-        "api_key_env": api_key_env,
-        "api_key_value": api_key_value,
-        "api_keys": "\n".join(api_keys),
-        "watchdog_driver": watchdog_driver,
+        "model": oc_model,
     }
-
-
-# Module-level constants used by `_instance_env_contents` and the
-# OpenClaw provider patch. Tests that need to vary these stub
-# ``HOST_ENV_FILE`` then re-call ``_resolve_qwen`` directly.
-QWEN_BASE_URL, QWEN_MODEL, OLLAMA_API_KEY = _resolve_qwen()
-OPENCLAW_LLM = _resolve_openclaw_provider()
-
-
-def _ollama_base_from(qwen_base_url: str) -> str:
-    """Strip the trailing ``/v1`` from an OpenAI-compat URL to get Ollama's native base."""
-    return qwen_base_url.rstrip("/").removesuffix("/v1")
-
-
-def _normalise_openclaw_base_url(provider: str, base_url: str) -> str:
-    if provider == "ollama":
-        return _ollama_base_from(base_url)
-    return base_url.rstrip("/") + "/"
-
-
-def _openclaw_api_key_for_agent(scenario: Scenario, agent: AgentSpec) -> str:
-    keys = [part for part in OPENCLAW_LLM.get("api_keys", "").splitlines() if part]
-    if not keys:
-        return OPENCLAW_LLM.get("api_key_value", "")
-    names = list(scenario.agents)
-    try:
-        idx = names.index(agent.name)
-    except ValueError:
-        idx = 0
-    return keys[idx % len(keys)]
 
 
 def c_info(msg: str) -> None: print(f"\033[1;36m[boot]\033[0m {msg}", flush=True)
@@ -250,24 +157,16 @@ def _state_dir(scenario_name: str, agent_name: str) -> Path:
 
 def _prepare_shared_state(scenario: Scenario) -> None:
     """Create scenario-level writable state that is shared across agents."""
-    if scenario.name not in {"security_layers", "secure_community_demo"}:
-        return
-    security_root = STATE_ROOT / scenario.name / "security"
-    _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0750", str(security_root)])
-    if scenario.name == "secure_community_demo":
-        try:
-            from security.subq3_integrity.real_guardrails import run_real_guardrail_probe
-
-            report = run_real_guardrail_probe(security_root, timeout_s=120)
-            real_path = security_root / "real_guardrails.json"
-            _sudo(["chown", f"{SERVICE_USER}:{SERVICE_USER}", str(real_path)], check=False)
-            c_ok(
-                f"{scenario.name}: real isolation probe "
-                f"{'OK' if report.get('ok') else 'not ready'} ({real_path})"
-            )
-        except Exception as exc:
-            c_warn(f"{scenario.name}: real isolation probe failed: {type(exc).__name__}: {exc}")
-    c_ok(f"{scenario.name}: shared security evidence dir ready ({security_root})")
+    # Scenario-root dir owned by the service user. Hosts version_history.{jsonl,md}
+    # (the fleet-merged thesis artifact), which every agent's OverlayArchive
+    # writes via VERSION_HISTORY_DIR=STATE_ROOT/<scenario>. Without explicit
+    # ownership the parent inherits root:root from `install -d` ancestors and
+    # the delftclaw service silently fails to append (PermissionError ->
+    # logged warning in protocol/version_history.py).
+    scenario_root = STATE_ROOT / scenario.name
+    _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER, "-m", "0755",
+           str(scenario_root)])
+    c_ok(f"{scenario.name}: scenario root ready ({scenario_root})")
 
 
 def _instance_env_path(scenario: Scenario, agent: AgentSpec) -> Path:
@@ -287,111 +186,84 @@ def _seed_content_file_path(scenario: Scenario, agent: AgentSpec) -> Path:
     return _scenario_dir_on_vps(scenario, agent) / "seed_content.json"
 
 
+def _overlay_author_mode(scenario: Scenario, agent: AgentSpec) -> str:
+    """Authoring role for the multi-version evolution chain (see env comment).
+
+    Declared per-agent in scenario.yaml as ``overlay_author_role`` —
+    ``genesis`` authors v1.0.0, ``successor`` adopts it + designs v1.1.0,
+    ``""`` = no special role. file_share's fetcher_1/fetcher_2 and the
+    payment demo's bob/charlie set these; every other agent is "".
+    """
+    return agent.overlay_author_role
+
+
 def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
     state = _state_dir(scenario.name, agent.name)
     seed_file = state / "seed.txt"
-    security_root = STATE_ROOT / scenario.name / "security"
-    openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
+    llm_base_url, llm_model, llm_api_key = _resolve_llm()
     # PUBLISH_OVERLAY semantics:
-    #   - agent declares ``publish_overlays`` in scenario.yaml -> use that path.
-    #   - scenario sets ``wire_distribute_overlays: true`` and agent declares
-    #     none -> omit the env var so the agent has nothing to publish, and
-    #     instead relies on ``OpenClawAgent.ensure_default_overlays_loaded``
-    #     to fetch the descriptor from a genesis peer over the bootstrap
-    #     community (OVERLAY_REQUEST -> OVERLAY_DELIVERY).
-    #   - otherwise (legacy) -> fall back to the repo-tracked
-    #     content_community.md so every agent compiles from local disk.
-    overlay: Path | None
+    #   - agent declares ``publish_overlays`` in scenario.yaml -> publish ALL of
+    #     them. The MCP unit bakes ``--publish-overlay ${PUBLISH_OVERLAY}``;
+    #     systemd word-splits the expanded value, and the CLI's
+    #     ``--publish-overlay`` is ``action="append"``, so emitting the paths
+    #     joined by `` --publish-overlay `` makes every overlay a separate flag.
+    #     (A genesis seeder that hosts more than one overlay — e.g. the
+    #     file_transfer scenario's content_community + file_transfer — must load
+    #     all of them locally: it cannot wire-fetch from itself.)
+    #   - agent declares none -> emit the ``none`` sentinel so it publishes
+    #     nothing. Under ``wire_distribute_overlays: true`` the agent instead
+    #     relies on ``OpenClawAgent.ensure_default_overlays_loaded`` to fetch
+    #     each descriptor from a genesis peer over the bootstrap community
+    #     (OVERLAY_REQUEST -> OVERLAY_DELIVERY); otherwise it simply runs no
+    #     application overlay (e.g. the admission demo).
     if agent.publish_overlays:
-        overlay = agent.publish_overlays[0]
-    elif scenario.wire_distribute_overlays:
-        overlay = None
+        publish_value = " --publish-overlay ".join(str(p) for p in agent.publish_overlays)
     else:
-        overlay = REPO_ROOT / "protocol" / "examples" / "content_community.md"
+        publish_value = "none"
     # Phase 6: cross-wire pull-loop URLs so every member-agent in the
-    # scenario pulls from every other member-agent. ``redteam_port=0``
+    # scenario pulls from every other member-agent. ``signed_log_port=0``
     # on a peer disables both serving and being pulled from.
-    peer_redteam_urls = [
-        f"http://127.0.0.1:{other.redteam_port}"
+    peer_signed_log_urls = [
+        f"http://127.0.0.1:{other.signed_log_port}"
         for other in scenario.agents.values()
-        if other.name != agent.name and other.redteam_port != 0
+        if other.name != agent.name and other.signed_log_port != 0
     ]
     lines = [
         "# generated by deploy.scenario_boot — do not hand-edit",
         f"PYTHONPATH={REPO_ROOT}",
         f"HOME={state}",
         f"SEED_FILE={seed_file}",
+        f"SCENARIO_NAME={scenario.name}",
+        f"AGENT_NAME={agent.name}",
         "NETWORK=TESTNET",
-        # ``mock`` keeps the synthetic wallet + DonationVerifier path so
-        # the demo runs without a funded testnet wallet. Override by
-        # setting ``btc_network`` per-agent in scenario.yaml once the
-        # live-chain admission path is wired back in.
         "BTC_NETWORK=mock",
         f"INITIAL_BALANCE_SATS={agent.initial_balance_sats}",
         f"IPV8_HOST=0.0.0.0",
         f"IPV8_PORT={agent.ipv8_port}",
         f"MCP_HOST=0.0.0.0",
         f"MCP_PORT={agent.mcp_port}",
-        # Phase 6: redteam FastAPI port + cross-wired peer URLs.
-        # ``REDTEAM_PORT=0`` disables both the local FastAPI server and
-        # the pull loop; ``PEER_LOG_URLS`` is space-separated.
-        f"REDTEAM_HOST=0.0.0.0",
-        f"REDTEAM_PORT={agent.redteam_port}",
-        f"PEER_LOG_URLS={' '.join(peer_redteam_urls)}",
-        # Per-instance community-log + peer-log paths so multiple agents
-        # on the same VPS don't trample each other's files.
+        f"SIGNED_LOG_HOST=0.0.0.0",
+        f"SIGNED_LOG_PORT={agent.signed_log_port}",
+        f"PEER_LOG_URLS={' '.join(peer_signed_log_urls)}",
         f"COMMUNITY_LOG_PATH={state / 'community.log'}",
         f"PEER_LOG_DIR={state / 'peer_logs'}",
-        # PUBLISH_OVERLAY sentinel: emit the literal ``none`` so the
-        # systemd unit's ``--publish-overlay ${PUBLISH_OVERLAY}``
-        # expansion always has a token (an empty env-var would expand to
-        # nothing and break argparse). agent/cli.py treats ``none`` /
-        # empty as "publish nothing at boot" and falls back to scanning
-        # protocol/examples/ for stub sources so --compiler-stub still
-        # starts. See wire_distribute_overlays in deploy/scenario.py.
-        f"PUBLISH_OVERLAY={overlay if overlay is not None else 'none'}",
+        f"OVERLAY_ARCHIVE_DIR={state / 'overlay_archive'}",
+        f"VERSION_HISTORY_DIR={STATE_ROOT / scenario.name}",
+        f"EVOLUTION_BASE_OVERLAY_NAME={scenario.evolution_base_overlay}",
+        f"OVERLAY_AUTHOR_MODE={_overlay_author_mode(scenario, agent)}",
+        f"PUBLISH_OVERLAY={publish_value}",
         f"SEED_CONTENT_FILE={_seed_content_file_path(scenario, agent)}",
         f"FILE_SHARE_MODE={'1' if scenario.file_share_mode else '0'}",
-        # MCP tool allowlist (Mission.tools, optional). None -> omit the
-        # env var entirely so the MCP server exposes the full surface
-        # (backwards-compatible). An empty tuple -> emit an empty value
-        # so the server exposes no DelftClaw tools. A non-empty tuple ->
-        # csv-join. See agent/mcp_server.py for the consumer side.
+        f"PAYMENT_MODE={'1' if scenario.payment_mode else '0'}",
         *(
             [f"MCP_TOOL_ALLOWLIST={','.join(agent.mcp_tool_allowlist)}"]
             if agent.mcp_tool_allowlist is not None
             else []
         ),
-        # The watchdog reads this file at boot and calls load_manifest on its
-        # snapshot agent. Without it, state.network would be null in every
-        # snapshot — Phase 4b's MCP-driven injection only reaches the *MCP*
-        # process's agent, not the watchdog's separate snapshot collector.
         f"MANIFEST_FILE={_manifest_file_path(scenario, agent)}",
-        f"QWEN_BASE_URL={QWEN_BASE_URL}",
-        f"QWEN_MODEL={QWEN_MODEL}",
-        f"OPENCLAW_PROVIDER={OPENCLAW_LLM['provider']}",
-        f"OPENCLAW_API={OPENCLAW_LLM['api']}",
-        f"OPENCLAW_BASE_URL={OPENCLAW_LLM['base_url']}",
-        f"OPENCLAW_MODEL={OPENCLAW_LLM['model']}",
-        f"OPENCLAW_API_KEY_ENV={OPENCLAW_LLM['api_key_env']}",
-        f"WATCHDOG_DRIVER={'direct' if scenario.name in {'security_layers', 'secure_community_demo'} else OPENCLAW_LLM.get('watchdog_driver', 'openclaw')}",
-        *(
-            [
-                f"DIRECT_TOOL_ALLOWLIST={'security_layers' if scenario.name == 'security_layers' else 'secure_community_demo'}",
-                f"SECURITY_DEMO_ROOT={security_root}",
-                f"SECURITY_EVIDENCE_PATH={security_root / 'security_evidence.json'}",
-                "INTEGRATED_ATTACKER_ID=agent_2",
-            ]
-            if scenario.name in {"security_layers", "secure_community_demo"} else []
-        ),
-        # Ollama doesn't authenticate, but OpenClaw demands a value for any
-        # provider's apiKey. The string ``OLLAMA_API_KEY`` in the openclaw.json
-        # config resolves to this env var; any non-empty string works.
-        f"OLLAMA_API_KEY={OLLAMA_API_KEY}",
-        *(
-            [f"{OPENCLAW_LLM['api_key_env']}={openclaw_api_key_value}"]
-            if openclaw_api_key_value else []
-        ),
+        f"LLM_BASE_URL={llm_base_url}",
+        f"LLM_MODEL={llm_model}",
+        f"LLM_API_KEY={llm_api_key}",
         f"LOG_DIR={scenario.log_dir}",
     ]
     return "\n".join(lines) + "\n"
@@ -399,10 +271,9 @@ def _instance_env_contents(scenario: Scenario, agent: AgentSpec) -> str:
 
 def _redact_env_for_log(body: str) -> str:
     secret_keys = {
-        "GEMINI_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        OPENCLAW_LLM.get("api_key_env", ""),
+        LLM_API_KEY_ENV,
     }
     redacted: list[str] = []
     for line in body.splitlines():
@@ -455,7 +326,7 @@ def _write_env_file(scenario: Scenario, agent: AgentSpec) -> None:
     # Write through sudo tee so /etc/delftclaw is writable only by root.
     _sudo(["install", "-d", "-o", "root", "-g", SERVICE_USER, "-m", "0750",
            str(ETC_INSTANCES)])
-    proc = subprocess.run(
+    subprocess.run(
         ["sudo", "tee", str(env_path)],
         input=body, capture_output=True, text=True, check=True,
     )
@@ -759,16 +630,17 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     _sudo(["install", "-d", "-o", SERVICE_USER, "-g", SERVICE_USER,
            "-m", "0750", str(agent_dir)])
 
+    openclaw = _resolve_openclaw_provider()
+    _base, _model, llm_api_key = _resolve_llm()
     sudo_env = [
         "sudo", "-u", SERVICE_USER, "env",
         f"HOME={state}",
         "PATH=/usr/local/bin:/usr/bin:/bin",
-        "OLLAMA_API_KEY=ollama",
         "OPENCLAW_DISABLE_TELEMETRY=1",
+        # OpenClaw resolves its config apiKey (the literal "LLM_API_KEY") against
+        # the process env, so the config-set commands below need the key present.
+        f"{LLM_API_KEY_ENV}={llm_api_key}",
     ]
-    openclaw_api_key_value = _openclaw_api_key_for_agent(scenario, agent)
-    if openclaw_api_key_value:
-        sudo_env.append(f"{OPENCLAW_LLM['api_key_env']}={openclaw_api_key_value}")
 
     # (1) Update the agent's openclaw.json so the reasoning provider is
     # registered before any model lookup happens. Without this,
@@ -778,18 +650,15 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
     # subprocess-level timeout we pass via --timeout is unrelated). Keep it
     # below the watchdog's subprocess budget (interval_s + 30) so provider
     # failures surface inside OpenClaw instead of being truncated by the
-    # watchdog. Gemini free-tier calls can be slow under load, so cap this
-    # high enough for first-turn cold starts.
-    provider_id = OPENCLAW_LLM["provider"]
-    provider_api = OPENCLAW_LLM["api"]
-    provider_model = OPENCLAW_LLM["model"]
+    # watchdog, with headroom for first-turn cold starts.
+    provider_id = openclaw["provider"]
+    provider_model = openclaw["model"]
     provider_config = {
-        "baseUrl": _normalise_openclaw_base_url(provider_id, OPENCLAW_LLM["base_url"]),
-        "api": provider_api,
-        # OpenClaw resolves this string against the process environment.
-        # For Ollama we set OLLAMA_API_KEY=ollama; for Gemini set
-        # GEMINI_API_KEY in configs/host.env or the shell before boot.
-        "apiKey": OPENCLAW_LLM["api_key_env"],
+        "baseUrl": openclaw["base_url"].rstrip("/") + "/",
+        "api": openclaw["api"],
+        # OpenClaw resolves this string against the process environment;
+        # LLM_API_KEY carries the key.
+        "apiKey": LLM_API_KEY_ENV,
         "models": [
             {
                 "id": provider_model,
@@ -866,7 +735,7 @@ def _provision_openclaw_workspace(scenario: Scenario, agent: AgentSpec) -> None:
 def _pick_genesis(scenario: Scenario) -> str | None:
     """Pick the agent referenced as a peer by the most other agents.
 
-    For a scenario like ``seek_cc`` where bob.peers = [alice] and alice has
+    For a scenario like ``admission`` where bob.peers = [alice] and alice has
     no peers entry, alice wins. For scenarios where nobody references a
     peer (single-agent demos), this returns the first agent in YAML order.
     """
@@ -902,8 +771,6 @@ def _build_manifest_md(
     min_sats: int = 10_000,
     min_confirmations: int = 0,
     bootstrap_cap_sats: int = 100_000,
-    max_agents_per_seedbox: int = 3,
-    seedbox_cost_sats: int = 20_000,
 ) -> str:
     """Render a network manifest .md from the genesis agent's runtime coords."""
     if default_overlay_hashes:
@@ -923,8 +790,6 @@ def _build_manifest_md(
         f"- min_sats: {min_sats}\n"
         f"- min_confirmations: {min_confirmations}\n"
         f"- bootstrap_cap_sats: {bootstrap_cap_sats}\n"
-        f"- max_agents_per_seedbox: {max_agents_per_seedbox}\n"
-        f"- seedbox_cost_sats: {seedbox_cost_sats}\n"
         "\n"
         "# Genesis Peers\n"
         "| host | port | pubkey_hex |\n"
@@ -973,11 +838,12 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
         _write_env_file(scenario, agent)
 
     if dry_run:
+        openclaw = _resolve_openclaw_provider()
         c_dry(f"would systemctl enable --now delftclaw-mcp@<instance> for {list(scenario.agents)}")
         for agent in scenario.agents.values():
             instance = scenario.instance_id(agent.name)
             c_dry(f"  would openclaw mcp set {instance} (HOME=/var/lib/delftclaw/{scenario.name}/{agent.name})")
-            c_dry(f"  would openclaw agents add {instance} --non-interactive --model {OPENCLAW_LLM['provider']}/{OPENCLAW_LLM['model']}")
+            c_dry(f"  would openclaw agents add {instance} --non-interactive --model {openclaw['provider']}/{openclaw['model']}")
         c_dry("would call MCP peer_add for cross-introductions:")
         for agent in scenario.agents.values():
             for peer_name in agent.peers:
@@ -1040,8 +906,21 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     if scenario.wire_distribute_overlays:
         for agent in scenario.agents.values():
             for peer_name in agent.peers:
+                peer_spec = scenario.agents[peer_name]
+                # The watchdog cross-reg was added so a joiner's watchdog IPv8
+                # (on ipv8_port+1000) can wire-fetch the boot default overlay
+                # from the GENESIS peer at startup. For peer pairs where
+                # neither side publishes overlays (e.g. the two fetchers in
+                # the v4 mesh) it serves no purpose AND creates a routing
+                # hazard: ez_send to the peer's mid can pick the watchdog
+                # port, and a watchdog snapshot agent does NOT hold runtime-
+                # AUTHORED overlays (e.g. download_announce v1.0.0), so its
+                # IPv8 silently drops the OVERLAY_REQUEST and the caller
+                # times out. Skip when neither side publishes.
+                if not (agent.publish_overlays or peer_spec.publish_overlays):
+                    continue
                 target = coords[peer_name]
-                watchdog_port = scenario.agents[peer_name].ipv8_port + 1000
+                watchdog_port = peer_spec.ipv8_port + 1000
                 url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
                 c_info(
                     f"{agent.name}.peer_add({peer_name} watchdog @ {watchdog_port})"
@@ -1065,6 +944,13 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
     # coords and inject it into every agent. Without this, state.network is
     # null in the snapshot and the LLMs have no admission target — the most
     # common cause of "scenario is up but nothing happens."
+    #
+    # This central synthesis + injection is a TEST-HARNESS CONVENIENCE: it
+    # fakes N independent owners on one VPS so a demo bootstraps reproducibly.
+    # It is NOT part of the decentralised channel. In a real deployment the
+    # manifest is authored once by the network's founder and reaches a joiner
+    # out-of-band (a peer hands it over, a file, a link) — content-addressing
+    # by ``network_id`` makes that integrity-safe without any orchestrator.
     #
     # We do both: (a) push the manifest via MCP into each agent's MCP-process
     # runtime, and (b) write the manifest to disk under the staged scenario
@@ -1090,7 +976,7 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             # without re-running scenario_boot. The staged scenario dir is
             # owned by root:delftclaw 0750 (cp -aT preserves that).
             manifest_path = _manifest_file_path(scenario, agent)
-            proc = subprocess.run(
+            subprocess.run(
                 ["sudo", "tee", str(manifest_path)],
                 input=manifest_md, capture_output=True, text=True, check=True,
             )
@@ -1099,8 +985,8 @@ async def _bring_up(scenario: Scenario, dry_run: bool) -> int:
             c_ok(f"{agent.name}: manifest written to {manifest_path}")
 
             # (a) Inject into the MCP-process agent so OpenClaw-driven tool
-            # calls (network_join, agent_inject_manifest, etc.) see it
-            # immediately without waiting for the watchdog's first tick.
+            # calls (agent_inject_manifest, community_donate_and_join, etc.)
+            # see it immediately without waiting for the watchdog's first tick.
             url = f"http://127.0.0.1:{agent.mcp_port}/mcp"
             c_info(f"{agent.name}.agent_inject_manifest(...)")
             try:
@@ -1130,9 +1016,19 @@ def _teardown(scenario: Scenario, dry_run: bool) -> int:
         if dry_run:
             c_dry(f"would stop delftclaw-watchdog@{instance} and delftclaw-mcp@{instance}")
             c_dry(f"would openclaw agents delete {instance} (HOME={state})")
+            c_dry(f"would wipe {state}/torrents and {state}/overlay_archive")
             continue
         _stop_unit(f"delftclaw-watchdog@{instance}.service")
         _stop_unit(f"delftclaw-mcp@{instance}.service")
+        # Wipe per-run runtime artifacts so a re-run starts clean. Stale
+        # entries here otherwise satisfy stop predicates at turn 0 (a prior
+        # completed download -> torrent_progress_gte_1; a prior authored
+        # overlay -> download_done_and_overlay_authored), making agents skip
+        # the demo. Regenerated at boot. Signed logs (community.log /
+        # peer_logs) are deliberately NOT touched — the community/security
+        # scenarios rely on that accountability history surviving.
+        for runtime_sub in ("torrents", "overlay_archive"):
+            _sudo(["rm", "-rf", str(state / runtime_sub)], check=False)
         # Unregister the per-agent OpenClaw workspace; don't fail teardown if
         # it was never created (re-runs after partial boots).
         _openclaw_run(
@@ -1149,6 +1045,14 @@ def _teardown(scenario: Scenario, dry_run: bool) -> int:
         env_path = _instance_env_path(scenario, agent)
         if env_path.exists():
             _sudo(["rm", "-f", str(env_path)])
+    # Wipe the scenario-wide fleet artifacts so a re-run starts truly clean:
+    # version_history.{jsonl,md} live next to the per-agent dirs (one dir up),
+    # and a stale ledger here would otherwise show a misleading two-version
+    # chain in trace before the fresh run has caught up.
+    if not dry_run:
+        scenario_root = STATE_ROOT / scenario.name
+        for fname in ("version_history.jsonl", "version_history.md"):
+            _sudo(["rm", "-f", str(scenario_root / fname)], check=False)
     c_ok(f"scenario '{scenario.name}' torn down")
     return 0
 

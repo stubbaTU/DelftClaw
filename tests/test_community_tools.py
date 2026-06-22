@@ -12,9 +12,6 @@ state. End-to-end multi-agent gossip is Phase 6's responsibility.
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-
 import pytest
 import pytest_asyncio
 
@@ -22,7 +19,7 @@ from agent import AgentConfig, OpenClawAgent, build_tools
 from communication.bittorrent import StubBitTorrentService
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient
+from _live_llm import noop_llm
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +40,6 @@ MANIFEST_TEMPLATE = """\
 - min_sats: 10000
 - min_confirmations: 0
 - bootstrap_cap_sats: 100000
-- max_agents_per_seedbox: 3
-- seedbox_cost_sats: 50000
 
 # Genesis Peers
 
@@ -67,7 +62,7 @@ async def agent(tmp_path):
     ).load()
     a = OpenClawAgent(
         identity=AgentIdentity.from_seed(seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=save_dir,
@@ -103,7 +98,7 @@ async def two_agents(tmp_path):
     ).load()
     alice = OpenClawAgent(
         identity=AgentIdentity.from_seed(seed_a, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=save_dir,
@@ -116,9 +111,9 @@ async def two_agents(tmp_path):
     await alice.start()
 
     # Create bob as a SignedAppendOnlyLog writing into alice's peer-log
-    # cache as if pulled via the redteam pull loop.
+    # cache as if pulled via the signed_log pull loop.
     from identity.openclaw_identity import OpenClawIdentity
-    from redteam.primitives.signed_log import SignedAppendOnlyLog
+    from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
     seed_b = MnemonicSeedSource(
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -153,7 +148,7 @@ async def test_treasury_returns_no_manifest_error_before_manifest(tmp_path):
             ).load(),
             network="TESTNET",
         ),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=save_dir,
@@ -179,9 +174,6 @@ async def test_treasury_empty_at_genesis_with_manifest_loaded(agent):
     result = await tools.dispatch("community_treasury_balance", {})
     assert result["balance_sats"] == 0
     assert result["member_count"] == 0
-    assert result["seedbox_count"] == 1
-    assert result["pending_purchases"] == 0
-    assert result["threshold_active"] is False
     assert result["my_membership_status"] == "outsider"
 
 
@@ -192,7 +184,6 @@ async def test_member_count_returns_membership_view(agent):
     assert result == {
         "member_count": 0,
         "my_membership_status": "outsider",
-        "threshold_active": False,
     }
 
 
@@ -260,7 +251,6 @@ async def test_donate_rejects_non_int_amount(agent):
 async def test_donate_when_prior_donor_caps_to_running_average(two_agents):
     """Alice joins after bob donated 60_000 — her ceiling is 60_000."""
     alice, bob_id, bob_log, manifest_md = two_agents
-    from agent.community_state import replay_community
     from protocol.manifest import parse_manifest
     manifest = parse_manifest(manifest_md)
 
@@ -326,7 +316,7 @@ async def test_log_list_recent_returns_empty_before_manifest(tmp_path):
             ).load(),
             network="TESTNET",
         ),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=save_dir,
@@ -342,118 +332,6 @@ async def test_log_list_recent_returns_empty_before_manifest(tmp_path):
         assert out == []
     finally:
         await a.stop()
-
-
-# ---------------------------------------------------------------------------
-# seedbox_purchase_propose
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_purchase_propose_rejected_when_not_admitted(agent):
-    """A fresh agent that hasn't donated yet can't propose a purchase."""
-    tools = build_tools(agent)
-    result = await tools.dispatch("seedbox_purchase_propose", {})
-    assert result == {"error": "not_admitted"}
-
-
-@pytest.mark.asyncio
-async def test_purchase_propose_rejected_when_threshold_not_active(agent):
-    """Alice donates and becomes member #1; threshold (>3*1) not yet tripped."""
-    tools = build_tools(agent)
-    await tools.dispatch("community_donate_and_join", {"amount_sats": 60_000})
-    result = await tools.dispatch("seedbox_purchase_propose", {})
-    assert result == {"error": "threshold_not_active"}
-
-
-@pytest.mark.asyncio
-async def test_purchase_propose_accepted_when_threshold_tripped(two_agents):
-    """4 members at seedbox_count=1 → threshold tripped. Alice's purchase accepted."""
-    alice, bob_id, bob_log, manifest_md = two_agents
-    from protocol.manifest import parse_manifest
-    manifest = parse_manifest(manifest_md)
-    nid = manifest.network_id.hex()
-
-    # Three peer donors so alice is member #4. We seed peer-log entries
-    # under three distinct OpenClawIdentity hashes — pretend three peers
-    # donated; the actual signed_log identity binding is per-file, so
-    # write each into its own peer_log file.
-    from identity.openclaw_identity import OpenClawIdentity
-    from identity.seed import Seed
-    from redteam.primitives.signed_log import SignedAppendOnlyLog
-
-    peer_log_dir = alice.config.peer_log_dir
-    for i, mnemonic in enumerate([
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        "legal winner thank year wave sausage worth useful legal winner thank yellow",
-        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
-    ]):
-        seed = MnemonicSeedSource(mnemonic).load()
-        peer_identity = AgentIdentity.from_seed(seed, network="TESTNET")
-        oc = OpenClawIdentity.from_agent_identity(peer_identity)
-        log_path = peer_log_dir / f"{oc.identity_hash}.jsonl"
-        peer_log = SignedAppendOnlyLog(oc, str(log_path))
-        # Each donor pays 60k → running-avg cap stays at 60k.
-        peer_log.append_event(
-            reporter_id=oc.identity_hash,
-            subject_id=oc.identity_hash,
-            action="donation_intent",
-            details={"network_id_hex": nid, "amount_sats": 60_000},
-        )
-
-    tools = build_tools(alice)
-    # Alice donates last → 4 members, threshold tripped (>3*1).
-    await tools.dispatch("community_donate_and_join", {"amount_sats": 60_000})
-
-    state = await tools.dispatch("community_treasury_balance", {})
-    assert state["member_count"] == 4
-    assert state["balance_sats"] == 4 * 60_000
-    assert state["threshold_active"] is True
-
-    # Alice proposes the purchase. Default cost = manifest's 50_000.
-    result = await tools.dispatch("seedbox_purchase_propose", {})
-    assert "entry_hash" in result
-    assert result["cost_sats"] == 50_000
-
-    after = await tools.dispatch("community_treasury_balance", {})
-    assert after["balance_sats"] == 4 * 60_000 - 50_000
-    assert after["pending_purchases"] == 1
-
-
-@pytest.mark.asyncio
-async def test_purchase_propose_rejects_wrong_cost(two_agents):
-    alice, bob_id, bob_log, manifest_md = two_agents
-    from protocol.manifest import parse_manifest
-    manifest = parse_manifest(manifest_md)
-    nid = manifest.network_id.hex()
-
-    # Seed 3 peer donors so alice can become member #4.
-    from identity.openclaw_identity import OpenClawIdentity
-    from redteam.primitives.signed_log import SignedAppendOnlyLog
-
-    peer_log_dir = alice.config.peer_log_dir
-    for mnemonic in [
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        "legal winner thank year wave sausage worth useful legal winner thank yellow",
-        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
-    ]:
-        seed = MnemonicSeedSource(mnemonic).load()
-        peer_identity = AgentIdentity.from_seed(seed, network="TESTNET")
-        oc = OpenClawIdentity.from_agent_identity(peer_identity)
-        log_path = peer_log_dir / f"{oc.identity_hash}.jsonl"
-        peer_log = SignedAppendOnlyLog(oc, str(log_path))
-        peer_log.append_event(
-            reporter_id=oc.identity_hash,
-            subject_id=oc.identity_hash,
-            action="donation_intent",
-            details={"network_id_hex": nid, "amount_sats": 60_000},
-        )
-
-    tools = build_tools(alice)
-    await tools.dispatch("community_donate_and_join", {"amount_sats": 60_000})
-    # Manifest says 50_000; alice proposes 30_000.
-    result = await tools.dispatch("seedbox_purchase_propose", {"cost_sats": 30_000})
-    assert "error" in result and "manifest.seedbox_cost_sats" in result["error"]
 
 
 @pytest.mark.asyncio

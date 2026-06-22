@@ -4,9 +4,8 @@ Two IPv8-connected agents, each with their own SignedAppendOnlyLog +
 PeerLog, both holding the same network manifest. Joiner ships a signed
 donation_intent over the new wire message; gatekeeper accepts iff the
 entry passes signature/identity/cap checks against its own community
-replay.
-
-Bypasses the legacy ``DonationVerifier`` path entirely.
+replay. Signed-log replay is the sole admission mechanism; no key-holding
+gatekeeper decides membership.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from communication.community import (
 )
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient
+from _live_llm import noop_llm
 
 
 MANIFEST_TEMPLATE = """\
@@ -42,8 +41,6 @@ MANIFEST_TEMPLATE = """\
 - min_sats: 10000
 - min_confirmations: 0
 - bootstrap_cap_sats: 100000
-- max_agents_per_seedbox: 3
-- seedbox_cost_sats: 50000
 
 # Genesis Peers
 
@@ -96,7 +93,7 @@ async def alice_and_bob(tmp_path):
 
     alice = OpenClawAgent(
         identity=AgentIdentity.from_seed(alice_seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=a_dir,
@@ -108,7 +105,7 @@ async def alice_and_bob(tmp_path):
     )
     bob = OpenClawAgent(
         identity=AgentIdentity.from_seed(bob_seed, network="TESTNET"),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=b_dir,
@@ -262,7 +259,7 @@ async def test_community_join_callback_returns_no_manifest_when_unloaded(tmp_pat
             ).load(),
             network="TESTNET",
         ),
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             save_dir=save_dir,
@@ -288,7 +285,7 @@ async def test_community_join_callback_returns_no_manifest_when_unloaded(tmp_pat
 # Regression: a timed-out wire ack must NOT look like a failure.
 #
 # v5.2 admission is decided by signed-log replay, not by the IPv8
-# CommunityJoinResponse. Caught live in the seek_cc 16:07 run: every
+# CommunityJoinResponse. Caught live in an admission-demo run: every
 # joiner's community_join_via_peer blocked the full 30s on a wire reply
 # that never arrived, holding the cross-agent LLM turn lock and stalling
 # the whole scenario — even though the donation_intent was already

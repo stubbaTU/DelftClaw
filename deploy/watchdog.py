@@ -32,9 +32,7 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +40,6 @@ from agent.runtime import AgentConfig, OpenClawAgent
 from communication.bittorrent import build_default_service
 from deploy import stop_predicates
 from deploy.scenario import AgentSpec, parse_scenario
-from deploy.security_agent_tools import add_integrated_security_tools, build_security_tools
 from deploy.state_snapshot import collect_state
 from deploy.turn_builder import (
     TurnHistory,
@@ -54,9 +51,12 @@ from deploy.turn_builder import (
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
 from protocol.llm import OpenAICompatibleClient
-from agent.cli import _apply_seed_content, _publish_overlays
-from agent.loop import OpenAICompatibleToolLLM, run_tool_loop
-from agent.tools import build_tools
+from agent.cli import (
+    _apply_seed_content,
+    _publish_overlays,
+    is_publish_overlay_sentinel,
+)
+from agent.wake_signal import read_signal_mtime, self_state_dir
 
 
 _log = logging.getLogger("watchdog")
@@ -68,93 +68,17 @@ EXIT_LLM_ERRORS = 3
 
 MAX_CONSECUTIVE_LLM_ERRORS = 5
 
-COMMUNITY_DEMO_TOOL_ALLOWLIST = {
-    "peers_list",
-    "wallet_address",
-    "wallet_balance",
-    "community_log_list_recent",
-    "community_treasury_balance",
-    "community_member_count",
-    "community_donate_and_join",
-    "community_join_via_peer",
-    "content_search_and_fetch",
-    "network_join",
-    "overlay_invoke",
-    "overlays_list",
-    "seedbox_purchase_propose",
-    "seedbox_provisioned",
-    "torrent_fetch",
-    "torrent_stats",
-    "run_integrated_security_episode",
-}
+# Minimum delay between consecutive turns FOR THE SAME AGENT, in seconds.
+# Independent of ``interval_s`` (the per-tick cap): a peer's wake signal can
+# shorten the wait below ``interval_s`` but never below ``MIN_FLOOR_S``. The
+# floor exists so an LLM that mis-fires can't churn budget / quota at the
+# polling cadence — 60s comfortably covers a real-Haiku overlay compile so a
+# successful turn isn't competing with its own previous turn's lingering work.
+MIN_FLOOR_S = 60.0
 
-SECURE_COMMUNITY_DEMO_TOOL_DENYLIST = {
-    # These are intentionally absent from the real OpenClaw-facing tool
-    # surface. The integrated security episode asks for them through the
-    # defended gateway so Brain may request them, but Hands must block them.
-    "broadcast_payment",
-    "create_fake_seedbox",
-    "delete_audit_log",
-    "exfiltrate_private_key",
-    "exfiltrate_secret",
-    "modify_iptables",
-    "run_shell",
-}
-
-
-def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Trim prompt-only state for low request-size providers.
-
-    Stop predicates and JSONL still receive the full snapshot; this is only
-    what the LLM sees. The community demo's normal flow can reason from the
-    manifest/admission, wallet, community summary, peers, and torrent status
-    without embedding every overlay message schema on every turn.
-    """
-    agent = snapshot.get("agent") or {}
-    overlays_loaded = []
-    for item in snapshot.get("overlays") or []:
-        messages = []
-        for message in item.get("messages") or []:
-            name = message.get("name")
-            if name not in {"SEARCH_REQUEST", "SEARCH_RESPONSE"}:
-                continue
-            messages.append({
-                "name": name,
-                "fields": [
-                    field.get("name")
-                    for field in message.get("fields") or []
-                    if field.get("name")
-                ],
-            })
-        overlays_loaded.append({
-            "community_id_hex": item.get("community_id_hex"),
-            "name": item.get("name"),
-            "messages": messages,
-            "usage_hint": (
-                "For content_community, a seeker sends SEARCH_REQUEST to a seedbox peer. "
-                "SEARCH_RESPONSE is sent automatically by the seedbox handler; do not send "
-                "SEARCH_RESPONSE manually as a seeker. After a response arrives, read "
-                "response_cache and call torrent_fetch on the returned magnet."
-                if item.get("name") == "content_community" else None
-            ),
-            "local_index": (item.get("local_index") or [])[:5],
-            "response_cache": (item.get("response_cache") or [])[-5:],
-        })
-
-    return {
-        "ts": snapshot.get("ts"),
-        "agent": {
-            "agent_id": agent.get("agent_id"),
-            "wallet_address": agent.get("wallet_address"),
-        },
-        "network": snapshot.get("network"),
-        "wallet": snapshot.get("wallet"),
-        "community": snapshot.get("community"),
-        "peers": snapshot.get("peers"),
-        "torrents": snapshot.get("torrents"),
-        "overlays_loaded": overlays_loaded,
-        "security": snapshot.get("security"),
-    }
+# Polling granularity of the wake-watching sleep. ≤2s loss vs ideal early
+# wake; the GIL/asyncio cost of a stat() every 2s is negligible.
+WAKE_POLL_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +133,8 @@ def _reset_openclaw_session(instance: str) -> None:
     OpenClaw maintains session state across invocations under
     ``$HOME/.openclaw/agents/<instance>/sessions/``. Without resetting,
     every watchdog tick appends to the same session — within ~10 turns
-    that overruns the model's context window (qwen3.6:27b is 32K) and
-    every subsequent turn fails with "Context overflow: prompt too large".
+    that overruns the model's context window and every subsequent turn
+    fails with "Context overflow: prompt too large".
 
     Removing the sessions directory is robust against openclaw CLI flag
     changes; openclaw recreates the dir on the next invocation.
@@ -255,9 +179,9 @@ def _invoke_openclaw_agent(
     # actually loses for our use case.
     _reset_openclaw_session(instance)
 
-    # ``--thinking off`` is required for non-reasoning Ollama models like
-    # qwen2.5-coder:7b (they reject any other level). If/when this watchdog
-    # drives a reasoning model, expose ``thinking`` via the env file.
+    # ``--thinking off`` for non-reasoning model configs (some reject any
+    # other level). If/when this watchdog drives a reasoning model, expose
+    # ``thinking`` via the env file.
     cmd = [
         "openclaw", "agent",
         "--local",
@@ -267,11 +191,9 @@ def _invoke_openclaw_agent(
         "--timeout", str(timeout_s),
         "--thinking", "off",
     ]
+    # env.copy() already carries LLM_API_KEY (from the systemd EnvironmentFile),
+    # which is the apiKey OpenClaw's config resolves against.
     env = os.environ.copy()
-    env.setdefault("OLLAMA_API_KEY", "ollama")
-    api_key_env = env.get("OPENCLAW_API_KEY_ENV")
-    if api_key_env and api_key_env in os.environ:
-        env[api_key_env] = os.environ[api_key_env]
     env["PATH"] = env.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     env.setdefault("OPENCLAW_DISABLE_TELEMETRY", "1")
     try:
@@ -285,68 +207,6 @@ def _invoke_openclaw_agent(
     except subprocess.TimeoutExpired as exc:
         return False, "", f"openclaw timed out after {timeout_s + 30}s: {exc}"
     return proc.returncode == 0, proc.stdout, proc.stderr
-
-
-async def _invoke_direct_tool_loop(
-    *,
-    agent: OpenClawAgent,
-    agent_name: str,
-    prompt: str,
-    timeout_s: int,
-    max_iterations: int,
-) -> tuple[bool, str, str]:
-    """Drive DelftClaw's native tool loop directly.
-
-    This avoids OpenClaw's large built-in tool bundle. Gemini's
-    OpenAI-compatible endpoint rejects that bundle's schema before a turn can
-    start, while DelftClaw's own tool surface is smaller and is all the paper
-    demo needs.
-    """
-    api_key_env = os.environ.get("OPENCLAW_API_KEY_ENV", "GEMINI_API_KEY")
-    api_key = os.environ.get(api_key_env, "")
-    provider = os.environ.get("OPENCLAW_PROVIDER", "").strip().lower()
-    llm = OpenAICompatibleToolLLM(
-        base_url=os.environ.get("OPENCLAW_BASE_URL")
-        or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
-        model_id=os.environ.get("OPENCLAW_MODEL")
-        or os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
-        api_key=api_key,
-        timeout_s=max(30, timeout_s - 15),
-        extra_body={"reasoning": {"enabled": False}} if provider == "openrouter" else {},
-    )
-    tool_allowlist = os.environ.get("DIRECT_TOOL_ALLOWLIST", "community_demo").strip().lower()
-    if tool_allowlist == "security_layers":
-        tools = build_security_tools(agent_name)
-    else:
-        tools = build_tools(agent)
-    if tool_allowlist == "secure_community_demo":
-        tools = add_integrated_security_tools(tools, agent_name)
-    if tool_allowlist == "community_demo":
-        tools._tools = {  # type: ignore[attr-defined]
-            name: tool
-            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
-        }
-    if tool_allowlist == "secure_community_demo":
-        tools._tools = {  # type: ignore[attr-defined]
-            name: tool
-            for name, tool in tools._tools.items()  # type: ignore[attr-defined]
-            if name in COMMUNITY_DEMO_TOOL_ALLOWLIST
-            and name not in SECURE_COMMUNITY_DEMO_TOOL_DENYLIST
-        }
-    try:
-        text = await asyncio.wait_for(
-            run_tool_loop(
-                prompt,
-                llm,
-                tools,
-                max_iterations=max_iterations,
-            ),
-            timeout=timeout_s,
-        )
-    except Exception as exc:
-        return False, "", f"{type(exc).__name__}: {exc}"
-    return True, text, ""
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +236,9 @@ async def _run_loop(args: argparse.Namespace) -> int:
     snapshot_port = spec.ipv8_port + 1000
     save_dir = Path(os.environ.get("HOME", "/var/lib/delftclaw")) / "torrents"
     compiler_llm = OpenAICompatibleClient(
-        base_url=os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:11434/v1"),
-        model_id=os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b"),
+        base_url=os.environ.get("LLM_BASE_URL", "http://127.0.0.1:11600/v1"),
+        model_id=os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001"),
+        api_key=os.environ.get("LLM_API_KEY", ""),
     )
     agent = OpenClawAgent(
         identity=identity,
@@ -403,7 +264,13 @@ async def _run_loop(args: argparse.Namespace) -> int:
     # describes the real service OpenClaw is about to operate through.
     publish_overlay = os.environ.get("PUBLISH_OVERLAY")
     overlay_paths = [str(path) for path in spec.publish_overlays]
-    if publish_overlay and publish_overlay not in overlay_paths:
+    # The sentinel filter mirrors agent/cli._discover_stub_sources — without it
+    # the literal string ``"none"`` (scenario_boot's no-publish placeholder)
+    # was appended verbatim and _publish_overlays then tried to open it as a
+    # file, logging ``failed to mirror published overlays in snapshot agent:
+    # 'none'`` every boot. Routed through ``is_publish_overlay_sentinel`` so
+    # the two call sites cannot drift again.
+    if not is_publish_overlay_sentinel(publish_overlay) and publish_overlay not in overlay_paths:
         overlay_paths.append(publish_overlay)
     if overlay_paths:
         try:
@@ -463,6 +330,53 @@ async def _run_loop(args: argparse.Namespace) -> int:
         await agent.stop()
 
 
+async def _wait_for_next_turn(
+    *,
+    tick_deadline: float,
+    turn_end: float,
+    min_floor_s: float,
+    baseline_mtime: float,
+    self_dir: "Path | None" = None,
+    poll_s: float = WAKE_POLL_S,
+) -> str:
+    """Sleep until the next turn should fire, watching for a peer wake signal.
+
+    Exits on whichever happens first AFTER the same-agent floor has elapsed:
+      * ``mtime`` of THIS agent's ``.wake_signal`` exceeds ``baseline_mtime``
+        → new state arrived since the previous turn started; return ``"signal"``.
+      * ``tick_deadline`` is reached → normal periodic tick; return ``"tick"``.
+
+    ``baseline_mtime`` is the mtime captured by the CALLER **before** the
+    turn it just finished ran. Caller-supplied because a turn that signals
+    itself (e.g. ``content_search_and_fetch`` touches the agent's own dir to
+    advance fetch→author) must still wake this agent — capturing the
+    baseline inside this helper would include the self-touch and the wake
+    would never fire. See _drive() for the caller-side baseline capture.
+
+    Before the floor elapses we keep sleeping even if the signal has fired,
+    to prevent runaway LLM churn. The floor is also the minimum total delay
+    between consecutive turns regardless of how short the prior turn was.
+
+    Returns the wake reason for journal-grep correlation. Pure async — no
+    blocking calls; safe inside the watchdog event loop.
+    """
+    if self_dir is None:
+        self_dir = self_state_dir()
+    while True:
+        now = time.monotonic()
+        if now >= tick_deadline:
+            return "tick"
+        floor_elapsed = (now - turn_end) >= min_floor_s
+        if floor_elapsed and self_dir is not None:
+            if read_signal_mtime(self_dir) > baseline_mtime:
+                _log.info("watchdog: early wake reason=signal")
+                return "signal"
+        # Wake at whichever comes first: the next poll tick or the deadline.
+        # ``min(...)`` keeps us from oversleeping past the cap on the final
+        # iteration when ``tick_deadline - now`` is fractional-small.
+        await asyncio.sleep(min(poll_s, max(0.0, tick_deadline - now)))
+
+
 async def _drive(
     *,
     agent: OpenClawAgent,
@@ -489,10 +403,25 @@ async def _drive(
     start = time.monotonic()
     consecutive_llm_errors = 0
     turn_n = 0
+    # Wake-signal baseline: the mtime of THIS agent's ``.wake_signal`` as of
+    # before the current turn started. Captured here once, then refreshed at
+    # the top of every turn iteration. Using a pre-turn snapshot means a tool
+    # that signals this agent's own state (e.g. content_search_and_fetch
+    # touches the actor's own state dir to advance fetch->author) WILL wake
+    # the next sleep, because the post-turn mtime exceeds the pre-turn one.
+    _self_dir = self_state_dir()
 
     while True:
         turn_n += 1
         elapsed = time.monotonic() - start
+
+        # Capture the wake-signal baseline BEFORE the turn runs. Any signal
+        # touched during the turn — by this agent's own tools (self-wake) or
+        # by a peer (cross-agent wake) — will exceed this baseline in the
+        # subsequent sleep and trigger an early wake.
+        _turn_start_mtime = (
+            read_signal_mtime(_self_dir) if _self_dir is not None else 0.0
+        )
 
         snapshot = collect_state(agent)
         stop_value = predicate(snapshot)
@@ -521,24 +450,13 @@ async def _drive(
             _log.warning("max_wall_clock_s hit (elapsed=%.1f)", elapsed)
             return EXIT_WALL_CLOCK
 
-        driver = os.environ.get("WATCHDOG_DRIVER", "openclaw").strip().lower()
-        prompt_snapshot = _compact_snapshot(snapshot) if driver == "direct" else snapshot
-        prompt = build_turn_prompt(mission_text, prompt_snapshot, history)
-        if driver == "direct":
-            ok, stdout, stderr = await _invoke_direct_tool_loop(
-                agent=agent,
-                agent_name=spec.name,
-                prompt=prompt,
-                timeout_s=scenario.watchdog.interval_s + 30,
-                max_iterations=scenario.watchdog.max_iterations_per_turn,
-            )
-        else:
-            ok, stdout, stderr = await asyncio.to_thread(
-                _invoke_openclaw_agent,
-                instance=instance,
-                prompt=prompt,
-                timeout_s=scenario.watchdog.interval_s,
-            )
+        prompt = build_turn_prompt(mission_text, snapshot, history)
+        ok, stdout, stderr = await asyncio.to_thread(
+            _invoke_openclaw_agent,
+            instance=instance,
+            prompt=prompt,
+            timeout_s=scenario.watchdog.interval_s,
+        )
 
         record = {
             "event": "turn",
@@ -583,10 +501,20 @@ async def _drive(
                 stop_predicate_value=stop_value,
             ))
 
-        # Sleep the remaining time inside this tick — never sleep negative.
-        tick_remaining = scenario.watchdog.interval_s - (time.monotonic() - start - elapsed)
-        if tick_remaining > 0:
-            await asyncio.sleep(tick_remaining)
+        # Sleep until either the tick window expires OR a peer agent signals
+        # there's new state to react to (e.g. an overlay was just published).
+        # The MIN_FLOOR_S delay prevents an LLM hot-loop; the wake polls
+        # this agent's own .wake_signal mtime — touched by ``signal_peers``
+        # from any peer's MCP-side tool. See agent/wake_signal.py.
+        turn_end = time.monotonic()
+        tick_deadline = start + (turn_n * scenario.watchdog.interval_s)
+        await _wait_for_next_turn(
+            tick_deadline=tick_deadline,
+            turn_end=turn_end,
+            min_floor_s=MIN_FLOOR_S,
+            baseline_mtime=_turn_start_mtime,
+            self_dir=_self_dir,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +524,7 @@ async def _drive(
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m deploy.watchdog")
     parser.add_argument("--instance", required=True,
-                        help="systemd instance id, e.g. seek_cc-bob")
+                        help="systemd instance id, e.g. payment-bob")
     parser.add_argument("--scenario-dir", required=True,
                         help="dir containing scenario.yaml (and persona/goal files)")
     args = parser.parse_args()

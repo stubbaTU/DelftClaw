@@ -388,29 +388,6 @@ def test_legacy_goal_file_raises_migration_error(tmp_path: Path):
         parse_scenario(path)
 
 
-def test_mission_with_recipe_rejected_at_scenario_parse(tmp_path: Path):
-    """A mission whose # Intent embeds a step recipe kills scenario boot."""
-    manifest = _copy(VALID_BASE)
-    scenario_dir = tmp_path / manifest["name"]
-    scenario_dir.mkdir(parents=True)
-    for agent_name in manifest["agents"]:
-        agent_dir = scenario_dir / agent_name
-        agent_dir.mkdir()
-    # alice's mission contains a 3-step list inside # Intent — recipe heuristic.
-    bad_mission = (
-        "# Identity\n- name: alice\n- role: general\n\n"
-        "# Intent\nDo this:\n1. First step\n2. Second step\n3. Third step\n\n"
-        "# Budget\n- max_sats_outbound: 0\n- max_total_turns: 10\n\n"
-        "# Stop\n- predicate: never\n"
-    )
-    (scenario_dir / "alice" / "mission.md").write_text(bad_mission)
-    (scenario_dir / "bob" / "mission.md").write_text(_mission_md("bob", "torrent_progress_gte_1"))
-    path = scenario_dir / "scenario.yaml"
-    path.write_text(yaml.safe_dump(manifest))
-    with pytest.raises(ScenarioError, match="step-by-step list"):
-        parse_scenario(path)
-
-
 def test_port_below_1024_rejected(tmp_path: Path):
     manifest = _copy(VALID_BASE)
     manifest["agents"]["alice"]["ipv8_port"] = 80
@@ -542,10 +519,29 @@ def test_file_share_scenario_sets_wire_distribute_overlays():
     assert s.wire_distribute_overlays is True
 
 
-def test_seek_cc_scenario_keeps_wire_distribute_overlays_off():
-    """Backwards-compat: seek_cc still uses the local PUBLISH_OVERLAY fallback."""
-    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "seek_cc" / "scenario.yaml")
-    assert s.wire_distribute_overlays is False
+def test_file_share_fetchers_are_meshed_for_evolution():
+    """v4 autonomous-evolution needs the two fetchers to know each other (not a
+    seeder-only star): fetcher_1's OverlayOffer + ANNOUNCE must reach fetcher_2."""
+    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "file_share" / "scenario.yaml")
+    assert set(s.agents["fetcher_1"].peers) == {"seeder", "fetcher_2"}
+    assert set(s.agents["fetcher_2"].peers) == {"seeder", "fetcher_1"}
+
+
+def test_file_share_v4_stop_predicates():
+    """The watchdog reads stop_predicate from scenario.yaml, so the v4 values
+    must live here (not only in mission.md): fetcher_1 must announce before it
+    stops; fetcher_2 must author a successor before it stops."""
+    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "file_share" / "scenario.yaml")
+    assert s.agents["fetcher_1"].stop_predicate == "download_done_and_overlay_authored_and_announce_sent"
+    assert s.agents["fetcher_2"].stop_predicate == "download_done_and_overlay_authored"
+
+
+def test_payment_scenario_wire_distributes_overlay():
+    """The payment demo publishes the payment_request overlay from the genesis
+    and wire-distributes it to joiners."""
+    s = parse_scenario(REPO_ROOT / "deploy" / "scenarios" / "payment" / "scenario.yaml")
+    assert s.wire_distribute_overlays is True
+    assert s.payment_mode is True
 
 
 # ---------------------------------------------------------------------------

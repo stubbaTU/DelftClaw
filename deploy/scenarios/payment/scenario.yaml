@@ -1,0 +1,109 @@
+# Scenario: payment
+#
+# Three autonomous agents on a single VPS. Two acts:
+#
+#   Act 1 — admission (decentralized, no gatekeeper key):
+#     alice    founder. Donates first to bootstrap the treasury. Never stops.
+#     bob      joiner. Donates exactly min_sats to be admitted.
+#     charlie  joiner. Same.
+#   Membership is decided by every peer replaying the union of signed
+#   donation logs — no custodian. Caps come from the manifest's # Admission
+#   section (see protocol/network_schema.md).
+#
+#   Act 2 — peer-to-peer payments + protocol authoring:
+#     Joiners ask the community for fake BTC over the payment_request
+#     markdown-as-overlay (PAYMENT_REQUEST), which alice (the founder/payer)
+#     fulfils with send_payment: a wallet debit + a signed `payment` log
+#     entry. Every peer replays those entries into community.balances — the
+#     decentralized "how much money everyone has", with no custodian.
+#     Then bob (genesis) AUTHORS a new overlay `payment_receipt` v1.0.0 and
+#     sends one RECEIPT; charlie (successor) adopts it and DESIGNS v1.1.0.
+#
+# alice publishes payment_request.md; bob/charlie wire-fetch + compile it
+# from her over the bootstrap community (markdown-as-overlay distribution).
+#
+# Port windows (per-scenario, must not clash with other scenarios):
+#   IPv8 UDP    8190-8192
+#   MCP TCP     18765-18767
+#   SignedLog TCP 28765-28767  (FastAPI signed-log server for pull-loop)
+#
+# Future scenarios should claim disjoint windows (see deploy/README.md).
+
+name: payment
+description: >-
+  Three-agent community: alice founds + bootstraps the treasury; bob and
+  charlie donate to join, then ask for and receive fake BTC over the
+  payment_request overlay. The signed log is the money ledger (replayed
+  into balances). bob authors a payment_receipt protocol; charlie evolves it.
+
+# alice publishes payment_request.md; joiners wire-fetch + compile it.
+wire_distribute_overlays: true
+
+# Act 2 flips the watchdog objective ladder into the payment flow
+# (request -> receive -> author) once an agent is admitted.
+payment_mode: true
+
+# Two-author overlay-evolution chain: bob (genesis) authors payment_receipt
+# v1.0.0; charlie (successor) adopts it + designs v1.1.0.
+evolution_base_overlay: payment_receipt
+
+watchdog:
+  # interval_s doubles as the per-turn budget. The subprocess timeout is
+  # interval_s + 30. 240s gives Haiku headroom while keeping ticks tight.
+  interval_s: 240
+  max_iterations_per_turn: 1
+  # ~6 steps for bob (join -> request -> author -> announce) across agents,
+  # plus retries on cache misses.
+  max_total_turns: 80
+  max_wall_clock_s: 5400
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/payment
+
+agents:
+
+  alice:
+    ipv8_port: 8190
+    mcp_port: 18765
+    signed_log_port: 28765
+    # Genesis publisher of the payment-request overlay; joiners fetch it.
+    publish_overlays:
+      - protocol/examples/payment_request.md
+    mission_file: alice/mission.md
+    stop_predicate: never
+    # Founder donation bootstraps the treasury + funds the payments she
+    # sends to each admitted joiner.
+    initial_balance_sats: 500000
+    # No peers entry: bob/charlie dial alice (cross-introduced at boot), so
+    # alice is the most-referenced agent = genesis publisher. She learns
+    # them via inbound connections + PEER_INTRO, enough to pay them back.
+
+  bob:
+    ipv8_port: 8191
+    mcp_port: 18766
+    signed_log_port: 28766
+    publish_overlays: []
+    mission_file: bob/mission.md
+    overlay_author_role: genesis
+    # Genesis author: join, request + receive a payment, author
+    # payment_receipt v1.0.0, send one RECEIPT so charlie can observe it.
+    stop_predicate: paid_and_overlay_authored_and_announce_sent
+    peers:
+      - alice
+      - charlie
+    initial_balance_sats: 100000
+
+  charlie:
+    ipv8_port: 8192
+    mcp_port: 18767
+    signed_log_port: 28767
+    publish_overlays: []
+    mission_file: charlie/mission.md
+    overlay_author_role: successor
+    # Successor author: join, request + receive a payment, adopt bob's
+    # payment_receipt v1.0.0, design v1.1.0.
+    stop_predicate: paid_and_overlay_authored
+    peers:
+      - alice
+      - bob
+    initial_balance_sats: 100000

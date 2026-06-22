@@ -1,6 +1,6 @@
 """TDD red-step tests for the Layer 3 HTTP dev-mode endpoints.
 
-These tests intentionally fail until ``redteam.integration.server.build_app``
+These tests intentionally fail until ``signed_log.integration.server.build_app``
 is extended to accept a ``peer_log_dir`` argument and host the new routes:
 
 * ``GET  /identity``          — node identity advert.
@@ -26,11 +26,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from identity.openclaw_identity import OpenClawIdentity
-from redteam.primitives.signed_log import SignedAppendOnlyLog
+from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
 # This call signature change will fail in the red phase — the existing
 # ``build_app`` only takes (identity, log_path).
-from redteam.integration.server import build_app  # noqa: E402
+from signed_log.integration.server import build_app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

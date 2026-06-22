@@ -24,7 +24,8 @@ from ipv8.peer import Peer
 from ipv8_service import IPv8
 
 from communication.community import SeedboxCommunity
-from protocol import OverlayRegistry, StubLLMClient
+from protocol import OverlayRegistry
+from _live_llm import noop_llm
 from protocol.examples.echo_traditional import (
     EchoRequestPayload,
     EchoTraditionalCommunity,
@@ -184,7 +185,7 @@ def test_introspect_payload_classes_rejects_duplicate_msg_id():
 async def test_register_community_registers_with_ipv8(two_nodes):
     svc_a, _svc_b, _sb_a, _sb_b, _peer_b, _peer_a = two_nodes
 
-    reg = OverlayRegistry(svc_a, StubLLMClient(sources={}))
+    reg = OverlayRegistry(svc_a, noop_llm())
     before = len(svc_a.overlays)
     instance = reg.register_community(EchoTraditionalCommunity)
 
@@ -203,7 +204,7 @@ async def test_register_community_registers_with_ipv8(two_nodes):
 @pytest.mark.asyncio
 async def test_register_community_is_idempotent(two_nodes):
     svc_a, *_ = two_nodes
-    reg = OverlayRegistry(svc_a, StubLLMClient(sources={}))
+    reg = OverlayRegistry(svc_a, noop_llm())
     a = reg.register_community(EchoTraditionalCommunity)
     b = reg.register_community(EchoTraditionalCommunity)
     assert a is b
@@ -212,7 +213,7 @@ async def test_register_community_is_idempotent(two_nodes):
 @pytest.mark.asyncio
 async def test_register_community_rejects_bad_community_id(two_nodes):
     svc_a, *_ = two_nodes
-    reg = OverlayRegistry(svc_a, StubLLMClient(sources={}))
+    reg = OverlayRegistry(svc_a, noop_llm())
 
     from ipv8.community import Community
     from ipv8.peerdiscovery.network import PeerObserver
@@ -234,7 +235,7 @@ async def test_register_community_rejects_bad_community_id(two_nodes):
 @pytest.mark.asyncio
 async def test_overlay_to_dict_python_class_origin(two_nodes):
     svc_a, *_ = two_nodes
-    reg = OverlayRegistry(svc_a, StubLLMClient(sources={}))
+    reg = OverlayRegistry(svc_a, noop_llm())
     reg.register_community(EchoTraditionalCommunity)
     compiled = reg._compiled[EchoTraditionalCommunity.community_id]
     out = overlay_to_dict(compiled)
@@ -294,8 +295,8 @@ async def test_traditional_community_round_trip(two_nodes):
     """Two agents both register the same hand-written community and exchange ECHO."""
     svc_a, svc_b, sb_a, sb_b, peer_b_for_a, peer_a_for_b = two_nodes
 
-    reg_a = OverlayRegistry(svc_a, StubLLMClient(sources={}))
-    reg_b = OverlayRegistry(svc_b, StubLLMClient(sources={}))
+    reg_a = OverlayRegistry(svc_a, noop_llm())
+    reg_b = OverlayRegistry(svc_b, noop_llm())
 
     echo_a = reg_a.register_community(EchoTraditionalCommunity)
     echo_b = reg_b.register_community(EchoTraditionalCommunity)

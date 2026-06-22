@@ -1,16 +1,16 @@
-"""TDD red-step tests for ``redteam.integration.peer_transport``.
+"""TDD red-step tests for ``signed_log.integration.peer_transport``.
 
 These tests intentionally fail until two things exist:
 
-* ``redteam.integration.peer_transport.PeerTransport`` (a typing.Protocol
+* ``signed_log.integration.peer_transport.PeerTransport`` (a typing.Protocol
   with ``get_head``, ``get_entries_since``, ``get_identity``).
-* ``redteam.integration.peer_transport.HttpPeerTransport`` — a concrete
+* ``signed_log.integration.peer_transport.HttpPeerTransport`` — a concrete
   ``httpx.AsyncClient``-backed implementation of that protocol.
 
 The transport layer is the dev-mode wire surface for pull sync. The
 algorithm tests live in ``test_pull_loop.py``; this file only checks
 that the HTTP transport speaks correctly to the existing FastAPI app
-(``redteam.integration.server.build_app``) and that transport-level
+(``signed_log.integration.server.build_app``) and that transport-level
 errors (closed peer, bad URL, timeout) bubble out as ``httpx`` errors
 rather than being silently swallowed.
 
@@ -30,11 +30,11 @@ import pytest
 from fastapi import FastAPI
 
 from identity.openclaw_identity import OpenClawIdentity
-from redteam.integration.server import build_app
-from redteam.primitives.signed_log import SignedAppendOnlyLog
+from signed_log.integration.server import build_app
+from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
 # This import will fail in the red phase — the module does not exist yet.
-from redteam.integration.peer_transport import (  # noqa: E402
+from signed_log.integration.peer_transport import (  # noqa: E402
     HttpPeerTransport,
     PeerTransport,
 )
@@ -382,7 +382,7 @@ async def test_get_entries_since_returns_entry_dicts_acceptable_to_peer_log(
     primitives so a green-phase change to ``/entries``'s response shape
     can't silently regress the algorithm.
     """
-    from redteam.primitives.peer_log import PeerLog
+    from signed_log.primitives.peer_log import PeerLog
 
     app, identity, log_path, _peer_log_dir = _make_app(tmp_path)
     entries = _seed_log(log_path, identity, n=2)

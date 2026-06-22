@@ -28,7 +28,6 @@ class OpenClawIdentity:
 
         self.ipv8 = self.agent_identity.ipv8
         self.public_key = self.agent_identity.ipv8.raw_pubkey
-        self.serialized_public_key = self.public_key
         self.identity_hash_bytes = hashlib.sha256(self.public_key + self.network.encode("utf-8")).digest()
         self.identity_hash = self.identity_hash_bytes.hex()
 
@@ -64,14 +63,8 @@ class OpenClawIdentity:
         instance.agent_identity = agent_identity
         instance.ipv8 = agent_identity.ipv8
         instance.public_key = agent_identity.ipv8.raw_pubkey
-        instance.serialized_public_key = instance.public_key
         instance.identity_hash_bytes = hashlib.sha256(
             instance.public_key + instance.network.encode("utf-8")
         ).digest()
         instance.identity_hash = instance.identity_hash_bytes.hex()
         return instance
-
-    @staticmethod
-    def identity_hash_for_public_key(public_key: bytes, network: str = "MAINNET") -> str:
-        tag = network.upper().encode("utf-8")
-        return hashlib.sha256(public_key + tag).hexdigest()

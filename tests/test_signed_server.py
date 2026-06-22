@@ -36,7 +36,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from identity.openclaw_identity import OpenClawIdentity
-from redteam.integration.server import (
+from signed_log.integration.server import (
     DEFAULT_SEVERITY_FALLBACK,
     DEFAULT_SEVERITY_WEIGHTS,
     LOOPBACK_HOSTS,
@@ -44,7 +44,7 @@ from redteam.integration.server import (
     build_app,
     check_loopback_host,
 )
-from redteam.primitives.signed_log import SignedAppendOnlyLog
+from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -315,7 +315,7 @@ def test_multi_post_chain(test_client) -> None:
 
 
 def test_round_trip_with_verify_cli(test_client, tmp_path: Path) -> None:
-    """POST 3 entries, then run `python -m redteam.primitives.verify` over the log."""
+    """POST 3 entries, then run `python -m signed_log.primitives.verify` over the log."""
     client, _identity, log_path = test_client
 
     for i in range(3):
@@ -328,7 +328,7 @@ def test_round_trip_with_verify_cli(test_client, tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "redteam.primitives.verify",
+            "signed_log.primitives.verify",
             "--log",
             log_path,
         ],
@@ -1087,13 +1087,13 @@ def test_post_log_too_high_severity_rejected(test_client) -> None:
 # ---------------------------------------------------------------------------
 # Regression: cross-instance / cross-process latest_hash() coherence.
 #
-# The redteam FastAPI server builds its OWN SignedAppendOnlyLog instance
+# The signed_log FastAPI server builds its OWN SignedAppendOnlyLog instance
 # pointing at the SAME on-disk community.log as the agent runtime's
-# instance (see agent/cli.py:_start_redteam_server). The audit fix that
+# instance (see agent/cli.py:_start_signed_log_server). The audit fix that
 # added an in-memory latest_hash cache silently broke this: the reader
 # instance kept serving a stale head forever, so every peer's pull loop
 # short-circuited with appended=0 and the founder's donation_intent
-# never replicated to bob/charlie/dave. Caught live in the seek_cc
+# never replicated to bob/charlie/dave. Caught live in the admission-demo
 # 21:17 run (alice saw member_count=2, bob/charlie/dave saw 0).
 # ---------------------------------------------------------------------------
 

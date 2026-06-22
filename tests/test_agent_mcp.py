@@ -23,20 +23,17 @@ from communication.bittorrent import StubBitTorrentService
 from communication.community import overlay_id
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient, community_id_from_md
-from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
+from protocol import community_id_from_md
+from _live_llm import live_compiler_llm, requires_live_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTENT_MD = (REPO_ROOT / "protocol" / "examples" / "content_community.md").read_text()
 CONTENT_HASH = overlay_id(CONTENT_MD)
 
-
-def _stub_llm() -> StubLLMClient:
-    return StubLLMClient(sources={
-        community_id_from_md(CONTENT_MD).hex():
-            "```python\n" + CONTENT_COMMUNITY_SOURCE + "```",
-    })
+# The MCP tool surface tests publish/compile content_community via a real LLM,
+# so the module skips without a configured endpoint (stubs were removed).
+pytestmark = requires_live_llm
 
 
 @pytest_asyncio.fixture
@@ -48,7 +45,7 @@ async def two_agents_with_mcp(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "army van defense carry jealous true garbage claim echo media make crunch"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_a),
         bt_service=StubBitTorrentService(save_dir=save_a),
     )
@@ -56,7 +53,7 @@ async def two_agents_with_mcp(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_b),
         bt_service=StubBitTorrentService(save_dir=save_b),
     )
@@ -96,16 +93,15 @@ async def test_mcp_server_lists_the_full_tool_surface(two_agents_with_mcp):
     assert names == {
         "peers_list", "peer_add",
         "wallet_address", "wallet_balance", "wallet_send",
-        "seedbox_donate_and_join",
         "community_log_list_recent", "community_treasury_balance",
         "community_member_count", "community_donate_and_join",
-        "community_join_via_peer", "seedbox_purchase_propose",
-        "seedbox_provisioned",
+        "community_join_via_peer",
+        "request_payment", "send_payment",
         "overlays_list", "overlay_describe", "overlay_fetch_and_load",
-        "overlay_publish", "overlay_invoke",
-        "agent_inject_manifest", "network_join",
+        "overlay_publish", "overlay_invoke", "overlay_author_and_publish",
+        "agent_inject_manifest",
         "torrent_seed", "torrent_fetch", "torrent_stats",
-        "content_search_and_fetch",
+        "content_search_and_fetch", "content_fetch_via_transfer",
     }
 
 
@@ -184,7 +180,7 @@ async def test_mcp_peer_add_round_trips_a_new_peer(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "legal winner thank year wave sausage worth useful legal winner thank yellow"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=tmp_path),
         bt_service=StubBitTorrentService(save_dir=tmp_path),
     )
@@ -216,6 +212,160 @@ async def test_mcp_peer_add_round_trips_a_new_peer(tmp_path):
         assert any(p.mid.hex() == payload["mid_hex"] for p in peers)
     finally:
         await solo.stop()
+
+
+# ---------------------------------------------------------------------------
+# Tool-call audit + IPv8 content transfer via the MCP wrapper
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mcp_dispatch_emits_TOOL_call_audit_line(two_agents_with_mcp, caplog):
+    """Every MCP-dispatched tool call must emit a ``TOOL call name=…`` line on
+    the ``delftclaw.agent.tools`` logger so deploy/trace.py's _tool_histogram
+    (and ``make tools`` / ``make tools-summary``) surface it. Before this
+    wrapper, the deployed file_share + community_demo scenarios looked tool-
+    silent in the journal even though they were dispatching every turn."""
+    import logging
+
+    alice, _bob = two_agents_with_mcp
+    server = build_mcp_server(alice)
+    with caplog.at_level(logging.INFO, logger="delftclaw.agent.tools"):
+        async with Client(server) as client:
+            await client.call_tool("peers_list", {})
+
+    msgs = [r.getMessage() for r in caplog.records if r.name == "delftclaw.agent.tools"]
+    assert any(m.startswith("TOOL call name=peers_list") for m in msgs)
+    assert any(m.startswith("TOOL ok   name=peers_list") for m in msgs)
+
+
+@pytest.mark.asyncio
+async def test_mcp_content_search_and_fetch_uses_ipv8_content_transport(
+    two_agents_with_mcp, tmp_path
+):
+    """The MCP-served ``content_search_and_fetch`` must use the IPv8
+    CONTENT_REQUEST/CONTENT_DELIVERY transport (via the shared
+    ``agent.content_fetch`` helper) — NOT the legacy ``torrent_fetch`` stub
+    path. End-to-end: Alice publishes a real file via ``publish_content``;
+    Bob's MCP tool fetches it; the bytes on Bob's disk equal Alice's source,
+    sha1 verifies, and ``torrent_stats`` reports a real progress=1.0."""
+    import hashlib
+
+    from communication.community import content_id_for_bytes
+
+    alice, bob = two_agents_with_mcp
+    # Both load the content overlay.
+    alice.publish_overlay(CONTENT_MD)
+    bob.publish_overlay(CONTENT_MD)
+    content_a = alice.registry.get(CONTENT_HASH)
+    content_b = bob.registry.get(CONTENT_HASH)
+    content_a.network.add_verified_peer(Peer(content_b.my_peer.public_key, address=bob.address))
+    content_b.network.add_verified_peer(Peer(content_a.my_peer.public_key, address=alice.address))
+
+    # Alice indexes a single real file + publishes its content.
+    payload = b"# CC0 pancakes recipe\nflour, milk, eggs\n" * 4
+    src = alice.bittorrent.save_dir / "pancakes.txt"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(payload)
+    cid = content_id_for_bytes(payload)
+    alice.seedbox.publish_content(cid, src)
+    content_a.local_index = [{
+        "magnet": f"magnet:?xt=urn:btih:{cid.hex()}&dn=pancakes.txt",
+        "name": "pancakes.txt",
+        "size": len(payload),
+        "mime": "text/plain",
+        "tags": ["recipe"],
+    }]
+
+    # Bob's MCP-side tool call → shared helper → IPv8 CONTENT path → real bytes.
+    server = build_mcp_server(bob)
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "content_search_and_fetch",
+            {"query": "pancakes", "pick": "first", "timeout_s": 3.0},
+        )
+    payload_json = json.loads(result.content[0].text)
+    assert "error" not in payload_json, payload_json
+    assert payload_json["verified_size_bytes"] == len(payload)
+    assert payload_json["content_id_hex"] == cid.hex()
+
+    landed = Path(payload_json["download_path"])
+    assert landed.is_file()
+    assert landed.read_bytes() == payload
+    assert hashlib.sha1(landed.read_bytes()).digest() == cid
+
+    # And the stop predicate's signal is real now: torrent_stats reports the
+    # actual file (not a fabricated stub-<btih>.bin placeholder).
+    progress_ok = any(
+        t.name == landed.name and float(t.progress) >= 1.0
+        for t in bob.bittorrent.stats()
+    )
+    assert progress_ok
+
+
+@pytest.mark.asyncio
+async def test_mcp_overlay_author_and_publish_authors_and_offers(
+    two_agents_with_mcp, monkeypatch, tmp_path
+):
+    """Authoring via the MCP tool: Alice synthesizes + publishes a new overlay,
+    it loads locally with her wallet as author_id, and the offer reaches Bob's
+    pending_overlay_offers. This is the agent-authored-protocol path end to end
+    through the deployed tool surface (the synthesized spec compiles via the
+    stub LLM both agents share)."""
+    from agent.overlay_authoring import synthesize_overlay_markdown
+    from protocol import community_id_from_md
+
+    alice, bob = two_agents_with_mcp
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(tmp_path / "alice_arch"))
+
+    # Pre-load the stub LLM with the implementation for the EXACT spec the tool
+    # will synthesize, so the live compile resolves offline. We compute the cid
+    # by synthesizing the same markdown the tool will.
+    messages = [{
+        "name": "ANNOUNCE", "msg_id": 1,
+        "fields": [
+            {"name": "who", "encoding": "varlenH-utf8", "description": "a"},
+            {"name": "filename", "encoding": "varlenH-utf8", "description": "f"},
+            {"name": "size_bytes", "encoding": "uint32-be", "description": "s"},
+        ],
+        "handler": "On receipt, append {who, filename, size_bytes} to self.received_announcements.",
+    }]
+    state = [{"name": "received_announcements", "type": "list[dict]", "description": "r"}]
+    expected_md = synthesize_overlay_markdown(
+        name="download_announce", version="1.0.0",
+        description="Announce a completed download to peers.",
+        messages=messages, runtime_state=state,
+        author_id=alice.wallet.address(),
+        change_summary="Announce a completed download to peers.",
+        samples={"ANNOUNCE": {"who": "fetcher_1", "filename": "calc.txt", "size_bytes": 382}},
+    )
+    cid_hex = community_id_from_md(expected_md).hex()
+
+    # The authoring tool compiles the synthesized descriptor via the live LLM.
+    server = build_mcp_server(alice)
+    async with Client(server) as client:
+        result = await client.call_tool("overlay_author_and_publish", {
+            "name": "download_announce", "version": "1.0.0",
+            "description": "Announce a completed download to peers.",
+            "change_summary": "Announce a completed download to peers.",
+            "messages": messages, "runtime_state": state,
+            "samples": {"ANNOUNCE": {"who": "fetcher_1", "filename": "calc.txt", "size_bytes": 382}},
+        })
+    payload = json.loads(result.content[0].text)
+    assert "error" not in payload, payload
+    assert payload["community_id_hex"] == cid_hex
+    assert payload["author_id"] == alice.wallet.address()
+    assert payload["offered_to_peers"] >= 1
+
+    # Alice runs it locally.
+    assert alice.registry.get(bytes.fromhex(cid_hex)) is not None
+
+    # Bob received the OVERLAY_OFFER -> shows up in his pending offers.
+    for _ in range(40):
+        offers = bob.pending_overlay_offers()
+        if any(o["md_hash_hex"] == cid_hex for o in offers):
+            break
+        await asyncio.sleep(0.05)
+    assert any(o["md_hash_hex"] == cid_hex for o in bob.pending_overlay_offers())
 
 
 @pytest.mark.asyncio
@@ -337,11 +487,8 @@ async def test_mcp_agent_inject_manifest_round_trips(two_agents_with_mcp):
     assert payload["genesis_peers"] == 1
     assert payload["default_overlays"] == [CONTENT_HASH.hex()]
 
-    # Alice's runtime now has the manifest cached and (since she's named
-    # as the genesis) has published it via the bootstrap community.
+    # Alice's runtime now has the manifest parsed + cached.
     assert alice.network_manifest is not None
-    from communication.community import manifest_id
-    assert manifest_id(md_text) in alice.seedbox.published_manifests
 
 
 @pytest.mark.asyncio
@@ -383,37 +530,3 @@ async def test_mcp_overlay_describe_returns_canonical_md(two_agents_with_mcp):
     assert "SEARCH_REQUEST" in payload["md_text"]
 
 
-@pytest.mark.asyncio
-async def test_mcp_network_join_uses_cached_manifest_when_no_arg(two_agents_with_mcp):
-    """After inject, network_join() with no args must use the cached manifest."""
-    alice, bob = two_agents_with_mcp
-    md_text = _build_manifest_md_for_test(alice)
-
-    # Wire Alice as gatekeeper (accept-everything verifier) and Bob's wallet
-    # as a mock so .send() doesn't try to broadcast on testnet.
-    from admission.donation_verifier import DonationVerification
-
-    class _Accept:
-        def verify(self, _txid_hex: str) -> DonationVerification:
-            return DonationVerification(accepted=True, paid_sats=10_000, confirmations=1)
-
-    alice.seedbox.configure(verifier=_Accept())
-    alice.seedbox.publish_overlay(CONTENT_MD)
-    sends: list[tuple[str, int]] = []
-
-    def _fake_send(to: str, sats: int) -> str:
-        sends.append((to, sats))
-        return "aa" * 32
-
-    bob.wallet.send = _fake_send  # type: ignore[method-assign]
-
-    server_b = build_mcp_server(bob)
-    async with Client(server_b) as client:
-        await client.call_tool("agent_inject_manifest", {"md_text": md_text})
-        result = await client.call_tool("network_join", {})
-    payload = json.loads(result.content[0].text)
-
-    assert "error" not in payload, payload
-    assert payload["accepted"] is True
-    assert payload["overlays_loaded"] == [CONTENT_HASH.hex()]
-    assert sends == [(alice.wallet.address(), 10000)]

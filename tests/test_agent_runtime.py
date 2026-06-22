@@ -30,20 +30,18 @@ from communication.bittorrent import StubBitTorrentService
 from communication.community import overlay_id
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient, community_id_from_md
-from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
+from protocol import community_id_from_md
+from _live_llm import live_compiler_llm, requires_live_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTENT_MD = (REPO_ROOT / "protocol" / "examples" / "content_community.md").read_text()
 CONTENT_HASH = overlay_id(CONTENT_MD)
 
-
-def _stub_llm() -> StubLLMClient:
-    return StubLLMClient(sources={
-        community_id_from_md(CONTENT_MD).hex():
-            "```python\n" + CONTENT_COMMUNITY_SOURCE + "```",
-    })
+# These exercise the agent's overlay lifecycle (publish/compile/search) end to
+# end, so they compile content_community via a real LLM and skip without an
+# endpoint (stubs were removed).
+pytestmark = requires_live_llm
 
 
 @pytest_asyncio.fixture
@@ -55,7 +53,7 @@ async def two_agents(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "army van defense carry jealous true garbage claim echo media make crunch"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_a),
         bt_service=StubBitTorrentService(save_dir=save_a),
     )
@@ -63,7 +61,7 @@ async def two_agents(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_b),
         bt_service=StubBitTorrentService(save_dir=save_b),
     )
@@ -301,3 +299,104 @@ async def test_tool_loop_drives_scripted_search(two_agents):
             break
         await asyncio.sleep(0.05)
     assert any("Creative Commons" in r["name"] for r in content_b.response_cache)
+
+
+@pytest.mark.asyncio
+async def test_agent_archives_published_overlay_when_env_set(tmp_path, monkeypatch):
+    """OpenClawAgent.start() honours OVERLAY_ARCHIVE_DIR and publish_overlay
+    tags provenance='published' — the per-demo version-control path end-to-end."""
+    archive_dir = tmp_path / "arch"
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(archive_dir))
+    save = tmp_path / "seeder"
+    agent = OpenClawAgent(
+        identity=AgentIdentity.from_seed(MnemonicSeedSource(
+            "army van defense carry jealous true garbage claim echo media make crunch"
+        ).load(), network="TESTNET"),
+        llm=live_compiler_llm(),
+        config=AgentConfig(port=0, save_dir=save),
+        bt_service=StubBitTorrentService(save_dir=save),
+    )
+    await agent.start()
+    try:
+        agent.publish_overlay(CONTENT_MD)
+        cid_hex = CONTENT_HASH.hex()
+        assert (archive_dir / f"{cid_hex}.md").is_file()
+        meta = json.loads((archive_dir / f"{cid_hex}.meta.json").read_text())
+        assert meta["name"] == "content_community"
+        assert any(p["tag"] == "published" for p in meta["provenance"])
+        events = [
+            json.loads(line)["event"]
+            for line in (archive_dir / "overlay_ledger.jsonl").read_text().splitlines()
+        ]
+        assert "install" in events
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_pending_offers_bridge_is_cross_process(tmp_path, monkeypatch):
+    """An OVERLAY_OFFER received by the MCP process must be visible to the
+    SEPARATE watchdog snapshot process. Simulated by two OpenClawAgents sharing
+    save_dir: the 'mcp' agent records an offer; the 'watchdog' agent (which
+    never saw the wire offer) surfaces it via the shared on-disk offers file."""
+    from ipv8.peer import Peer as _Peer
+    from ipv8.keyvault.crypto import default_eccrypto
+
+    shared = tmp_path / "torrents"
+
+    def _mk(mnem: str) -> OpenClawAgent:
+        return OpenClawAgent(
+            identity=AgentIdentity.from_seed(MnemonicSeedSource(mnem).load(), network="TESTNET"),
+            llm=live_compiler_llm(),
+            config=AgentConfig(port=0, save_dir=shared),
+            bt_service=StubBitTorrentService(save_dir=shared),
+        )
+
+    mcp = _mk("army van defense carry jealous true garbage claim echo media make crunch")
+    watchdog = _mk("legal winner thank year wave sausage worth useful legal winner thank yellow")
+    await mcp.start()
+    await watchdog.start()
+    try:
+        offered_hash = b"\xab" * 20
+        offering = _Peer(default_eccrypto.generate_key("curve25519").pub(), address=("127.0.0.1", 9001))
+
+        # MCP-side receives the offer (its in-memory + shared file).
+        mcp._on_overlay_offer(offering, offered_hash)
+        assert any(o["md_hash_hex"] == offered_hash.hex() for o in mcp.pending_overlay_offers())
+
+        # Watchdog-side never saw the wire offer in-memory, but reads it from
+        # the shared file.
+        wd_offers = watchdog.pending_overlay_offers()
+        assert any(o["md_hash_hex"] == offered_hash.hex() for o in wd_offers)
+
+        # Once FULLY ADOPTED (install completed, meta.json populated) the
+        # offer clears even cross-process. A .md alone is NOT enough — that's
+        # the "seen but install hung" state, and the agent must retry the
+        # adopt on the next tick rather than treat the stranded spec as done.
+        # Verified by the 2026-05-30 ~19:07 deployed incident.
+        from protocol.overlay_archive import OverlayArchive
+        arch_dir = shared / "overlay_archive"
+        watchdog.registry._archive = OverlayArchive(arch_dir)
+        (arch_dir).mkdir(parents=True, exist_ok=True)
+        (arch_dir / f"{offered_hash.hex()}.md").write_text("# Identity\n", encoding="utf-8")
+        # .md alone -> offer STAYS visible (the contract change).
+        assert any(
+            o["md_hash_hex"] == offered_hash.hex()
+            for o in watchdog.pending_overlay_offers()
+        )
+        # Add a populated meta.json -> install completed -> offer clears.
+        import json as _json
+        (arch_dir / f"{offered_hash.hex()}.meta.json").write_text(
+            _json.dumps({
+                "community_id_hex": offered_hash.hex(),
+                "name": "test_overlay", "identity_version": "1.0.0",
+            }),
+            encoding="utf-8",
+        )
+        assert not any(
+            o["md_hash_hex"] == offered_hash.hex()
+            for o in watchdog.pending_overlay_offers()
+        )
+    finally:
+        await mcp.stop()
+        await watchdog.stop()

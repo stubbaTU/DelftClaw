@@ -1,0 +1,99 @@
+# Scenario: file_transfer
+#
+# Sibling of `file_share`, with the data path swapped. `file_share` discovers
+# content over the content_community IPv8 overlay and then moves the bytes over
+# the platform's hand-coded, single-shot SeedboxCommunity CONTENT_REQUEST/
+# CONTENT_DELIVERY path (capped at 64 KiB, no chunking). This scenario keeps the
+# same discovery but transfers the file over the `file_transfer` *markdown-as-
+# overlay* instead: a chunked protocol (manifest -> numbered CHUNKs -> in-order
+# reassembly -> whole-content sha256 verify), compiled at runtime from
+# protocol/examples/file_transfer_overlay.md. It demonstrates that the
+# markdown-as-overlay approach can carry the data path the platform currently
+# hard-codes, including content larger than one packet.
+#
+#   seeder      hosts the Creative Commons library; runs BOTH overlays
+#               (content_community for SEARCH, file_transfer for the chunked
+#               transfer). Its file_transfer `served` state is seeded at boot
+#               from the same library. Never stops.
+#   fetcher_1   knows seeder; searches "calculus" and fetches it over
+#               file_transfer. Stops on torrent_progress_gte_1.
+#   fetcher_2   same, for "pancakes".
+#
+# `file_share_mode: true` -> non-gatekeeper agents see retrieve_content
+# immediately, no donation prompt (admission machinery inert here).
+#
+# `wire_distribute_overlays: true` -> the seeder publishes both overlay
+# descriptors; each fetcher pulls both from the seeder over the bootstrap
+# community (OVERLAY_REQUEST -> OVERLAY_DELIVERY) and compiles them locally
+# before it can run SEARCH or FETCH. See
+# agent.runtime.ensure_default_overlays_loaded; the manifest's default_overlays
+# is built from the genesis (seeder) agent's publish_overlays.
+#
+# `signed_log_port: 0` on every agent disables the signed-log pull loop.
+#
+# Port windows (disjoint from file_share / payment / etc.):
+#   IPv8 UDP    8220-8222
+#   MCP TCP     18800-18802
+#   SignedLog TCP unused (signed_log_port=0 on every agent)
+
+name: file_transfer
+description: >-
+  Three-agent peer-to-peer file transfer demo. One seeder serves a Creative
+  Commons library; two fetchers each search the network and download a single
+  file over the chunked file_transfer markdown-as-overlay (manifest, numbered
+  chunks, in-order reassembly, whole-content hash verification) rather than the
+  platform's single-shot transfer path.
+
+file_share_mode: true
+
+wire_distribute_overlays: true
+
+watchdog:
+  interval_s: 240
+  max_iterations_per_turn: 1
+  # Each fetcher needs ~1-2 productive turns: pull+compile both overlays, then
+  # one content_fetch_via_transfer call. No protocol-authoring chain here.
+  max_total_turns: 12
+  max_wall_clock_s: 1800
+
+observability:
+  log_dir: /var/log/delftclaw/scenarios/file_transfer
+
+agents:
+
+  seeder:
+    ipv8_port: 8220
+    mcp_port: 18800
+    signed_log_port: 0
+    # BOTH overlays: content_community (discovery) + file_transfer (chunked
+    # data path). The first is the genesis publish; both are listed in the
+    # synthesised manifest's default_overlays so fetchers fetch+compile both.
+    publish_overlays:
+      - protocol/examples/content_community.md
+      - protocol/examples/file_transfer_overlay.md
+    mission_file: seeder/mission.md
+    stop_predicate: never
+    library_csv: protocol/examples/cc_library/content_catalog.csv
+    initial_balance_sats: 0
+
+  fetcher_1:
+    ipv8_port: 8221
+    mcp_port: 18801
+    signed_log_port: 0
+    publish_overlays: []
+    mission_file: fetcher_1/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - seeder
+    initial_balance_sats: 0
+
+  fetcher_2:
+    ipv8_port: 8222
+    mcp_port: 18802
+    signed_log_port: 0
+    publish_overlays: []
+    mission_file: fetcher_2/mission.md
+    stop_predicate: torrent_progress_gte_1
+    peers:
+      - seeder
+    initial_balance_sats: 0

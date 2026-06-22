@@ -28,20 +28,17 @@ from communication.bittorrent import StubBitTorrentService
 from communication.community import overlay_id
 from identity.agent_identity import AgentIdentity
 from identity.seed import MnemonicSeedSource
-from protocol import StubLLMClient, community_id_from_md
-from protocol.examples.content_community_stub import CONTENT_COMMUNITY_SOURCE
+from protocol import community_id_from_md
+from _live_llm import live_compiler_llm, requires_live_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTENT_MD = (REPO_ROOT / "protocol" / "examples" / "content_community.md").read_text()
 CONTENT_HASH = overlay_id(CONTENT_MD)
 
-
-def _stub_llm() -> StubLLMClient:
-    return StubLLMClient(sources={
-        community_id_from_md(CONTENT_MD).hex():
-            "```python\n" + CONTENT_COMMUNITY_SOURCE + "```",
-    })
+# Wire-distribution of default overlays compiles content_community via a real
+# LLM on both sides, so the module skips without an endpoint (stubs removed).
+pytestmark = requires_live_llm
 
 
 @pytest_asyncio.fixture
@@ -54,7 +51,7 @@ async def alice_and_bob(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "army van defense carry jealous true garbage claim echo media make crunch"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_a),
         bt_service=StubBitTorrentService(save_dir=save_a),
     )
@@ -62,7 +59,7 @@ async def alice_and_bob(tmp_path):
         identity=AgentIdentity.from_seed(MnemonicSeedSource(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         ).load(), network="TESTNET"),
-        llm=_stub_llm(),
+        llm=live_compiler_llm(),
         config=AgentConfig(port=0, save_dir=save_b),
         bt_service=StubBitTorrentService(save_dir=save_b),
     )
@@ -112,8 +109,6 @@ def _manifest_md_with_alice_as_genesis(
         "- min_sats: 10000\n"
         "- min_confirmations: 0\n"
         "- bootstrap_cap_sats: 100000\n"
-        "- max_agents_per_seedbox: 3\n"
-        "- seedbox_cost_sats: 20000\n"
         "\n"
         "# Genesis Peers\n"
         "| host | port | pubkey_hex |\n"

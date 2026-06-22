@@ -80,7 +80,22 @@ from agent import (
 from identity.agent_identity import AgentIdentity
 from identity.seed import EnvSeedSource, KeyfileSeedSource, MnemonicSeedSource
 from protocol import community_id_from_md
-from protocol.llm import OpenAICompatibleClient, StubLLMClient
+from protocol.llm import OpenAICompatibleClient
+
+
+def is_publish_overlay_sentinel(value: str | None) -> bool:
+    """True iff ``value`` is the empty / ``"none"`` no-publish sentinel.
+
+    ``deploy.scenario_boot`` always emits a token for ``${PUBLISH_OVERLAY}``
+    in the systemd unit expansion (an empty env var would break argparse),
+    so it writes the literal string ``"none"`` when an agent has nothing to
+    publish at boot. Both ``_publish_overlays`` here and the watchdog's
+    snapshot-agent path in ``deploy/watchdog.py`` must filter the sentinel
+    the same way — without this shared helper they drifted and the watchdog
+    spent each boot logging ``failed to mirror published overlays in
+    snapshot agent: 'none'``.
+    """
+    return value is None or not value.strip() or value.strip().lower() == "none"
 
 
 def _load_seed(args: argparse.Namespace):
@@ -93,58 +108,14 @@ def _load_seed(args: argparse.Namespace):
     return KeyfileSeedSource().load()
 
 
-def _discover_stub_sources(md_paths: list[str]) -> dict[str, str]:
-    """For each `foo.md` next to a `foo_stub.py` exporting an `*_SOURCE` constant,
-    return ``{community_id_hex: fenced_source}`` so a ``StubLLMClient`` can route.
-
-    When ``md_paths`` is empty (or contains only empty / sentinel entries),
-    fall back to scanning every ``*_stub.py`` next to a sibling ``*.md``
-    under ``protocol/examples/``. This is the wire-distribute case: an
-    agent that does not publish anything at boot may still receive a
-    descriptor over the wire and need to stub-compile it locally. Without
-    this fallback, ``--compiler-stub`` would refuse to start.
-    """
-    import importlib.util
-    # Treat empty strings and the literal ``"none"`` sentinel as "no path
-    # given" so the systemd unit's ``--publish-overlay ${PUBLISH_OVERLAY}``
-    # expansion can pass a value even when the env var is unset.
-    md_paths = [p for p in md_paths if p and p.strip().lower() != "none"]
-    if not md_paths:
-        examples_dir = Path(__file__).resolve().parent.parent / "protocol" / "examples"
-        md_paths = [str(p) for p in examples_dir.glob("*.md")]
-    sources: dict[str, str] = {}
-    for md_path in md_paths:
-        md_path_obj = Path(md_path)
-        stub_path = md_path_obj.with_name(md_path_obj.stem + "_stub.py")
-        if not stub_path.exists():
-            continue
-        spec = importlib.util.spec_from_file_location(stub_path.stem, str(stub_path))
-        if spec is None or spec.loader is None:
-            continue
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        # Convention: a single `*_SOURCE` constant exporting the python source.
-        source_const = next(
-            (getattr(module, n) for n in dir(module) if n.endswith("_SOURCE") and isinstance(getattr(module, n), str)),
-            None,
-        )
-        if source_const is None:
-            continue
-        cid_hex = community_id_from_md(md_path_obj.read_text(encoding="utf-8")).hex()
-        sources[cid_hex] = "```python\n" + source_const + "```"
-    return sources
-
-
 def _build_compiler_llm(args: argparse.Namespace):
-    """The OverlayRegistry uses this. In stub mode, route by community_id_hex."""
-    if args.compiler_stub:
-        sources = _discover_stub_sources(args.publish_overlay or [])
-        if not sources:
-            raise SystemExit(
-                "--compiler-stub requires at least one --publish-overlay whose sibling "
-                "*_stub.py file exports a *_SOURCE constant."
-            )
-        return StubLLMClient(sources=sources)
+    """Build the LLM client the OverlayRegistry compiles every overlay with.
+
+    Always a live LLM: every overlay — the ones an agent publishes at boot, the
+    ones it wire-fetches from a peer, and the ones it authors at runtime — is
+    compiled from its markdown descriptor by the model at ``--llm-base-url``.
+    There is no pre-recorded-source shortcut.
+    """
     return OpenAICompatibleClient(
         base_url=args.llm_base_url,
         model_id=args.llm_model,
@@ -224,58 +195,27 @@ def _import_class_spec(spec: str) -> type:
 def _publish_overlays(agent: OpenClawAgent, paths: list[str]) -> list[tuple[str, str]]:
     """Load + serve each .md descriptor at boot. Returns [(name, md_hash_hex), ...].
 
-    If a ``foo.md`` has a sibling ``foo_stub.py`` exporting a ``*_SOURCE``
-    constant we route the stub LLM client to it for *this descriptor*.
-    That keeps boot fast: the LLM endpoint isn't hit unless a peer ships
-    an overlay we've never seen.
-
-    The agent's own LLM client (set at construction time) is preserved
-    for descriptors that *don't* have a stub sibling.
+    Every descriptor is compiled from its markdown by the live LLM
+    (``agent.publish_overlay`` -> ``OverlayRegistry.load(..., provenance=
+    "published")``). The registry's own disk cache means an identical
+    descriptor compiled before reuses the model's earlier output rather than
+    re-hitting the endpoint, but the source always originates from the LLM —
+    there is no hand-written shortcut.
     """
-    from protocol import StubLLMClient, community_id_from_md, OverlayRegistry
-    from protocol.compiler import compile_overlay
-
     out: list[tuple[str, str]] = []
-    stub_sources = _discover_stub_sources(paths)
-    if paths and not stub_sources:
-        # Loud warning: stub discovery returned nothing despite overlays being
-        # listed. Either the sibling _stub.py is missing from this deploy or
-        # its *_SOURCE constant disappeared. The fallback path hits whatever
-        # `agent.llm` is — under --compiler-stub that's a StubLLMClient with
-        # no recorded source for this cid, so the compile raises KeyError.
-        print(
-            f"[boot] WARNING: no *_stub.py sibling found for any of "
-            f"{paths!r}; falling back to live LLM compile",
-            flush=True,
-        )
     for p in paths:
         md_text = Path(p).read_text(encoding="utf-8")
         cid_hex = community_id_from_md(md_text).hex()
-        # Local "publish + load" — same effect as agent.publish_overlay but
-        # we route compile via the stub source if available.
-        agent.seedbox.publish_overlay(md_text)
-        if cid_hex in stub_sources:
-            print(f"[boot] compiling {Path(p).name} from stub (cid={cid_hex[:12]})", flush=True)
-            stub_llm = StubLLMClient(sources={cid_hex: stub_sources[cid_hex]})
-            # Compile via stub and register manually (matches OverlayRegistry.load).
-            compiled = compile_overlay(md_text, stub_llm)
-            instance = compiled.community_class(agent.registry._build_settings())
-            with agent.ipv8.overlay_lock:
-                agent.ipv8.overlays.append(instance)
-            if hasattr(instance, "started"):
-                instance.started()
-            agent.registry._compiled[compiled.community_id] = compiled
-            agent.registry._instances[compiled.community_id] = instance
-            md_hash = compiled.community_id
-        else:
-            # No stub sibling — the agent's normal LLM-backed registry path
-            # runs and may take a while on cold start.
-            print(
-                f"[boot] compiling {Path(p).name} via live LLM (cid={cid_hex[:12]}) "
-                f"— this can stall if the endpoint is unreachable",
-                flush=True,
-            )
-            md_hash = agent.publish_overlay(md_text)
+        print(
+            f"[boot] publishing {Path(p).name} via live LLM (cid={cid_hex[:12]}) "
+            f"— this can stall if the endpoint is unreachable",
+            flush=True,
+        )
+        # ``agent.publish_overlay`` publishes via the SeedboxCommunity AND
+        # routes the compile through ``OverlayRegistry.load(..., provenance=
+        # "published")``, which emits the ``OVERLAY compile`` / ``OVERLAY
+        # install`` lifecycle events and writes the per-demo overlay archive.
+        md_hash = agent.publish_overlay(md_text)
         compiled = agent.registry._compiled[md_hash]
         out.append((compiled.parsed.identity.get("name", Path(p).name), md_hash.hex()))
     return out
@@ -303,32 +243,66 @@ def _apply_seed_content(agent: OpenClawAgent, seed_content_file: str | None) -> 
         print(f"[boot] seed content file {path} is not a list", flush=True)
         return
 
+    from communication.community import content_id_for_bytes
+
     index_rows: list[dict] = []
+    # content_id (sha1[:20], == magnet btih) -> file bytes, for the
+    # file_transfer overlay's ``served`` state (chunked transfer source side).
+    served_map: dict[bytes, bytes] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         content_path = Path(str(row.get("path", "")))
-        magnet = str(row.get("magnet") or "")
-        if content_path.is_file() and not magnet:
-            magnet = agent.bittorrent.seed(content_path)
-        if content_path.is_file() and hasattr(agent.bittorrent, "prime") and magnet:
-            agent.bittorrent.prime(magnet, content_path)  # type: ignore[attr-defined]
+        name = str(row.get("name") or content_path.name)
+        if not content_path.is_file():
+            # Catalog row references a missing file. Carry the metadata so
+            # SEARCH still surfaces it, but do not advertise a magnet we
+            # cannot serve — peers asking for it would silently time out.
+            index_rows.append({
+                "magnet": "",
+                "name": name,
+                "size": int(row.get("size") or 0),
+                "mime": str(row.get("mime") or "application/octet-stream"),
+                "tags": list(row.get("tags") or []),
+            })
+            continue
+
+        # Derive the magnet's btih from the file's bytes so the receiver's
+        # ``on_content_delivery`` self-verifies (no out-of-band trust).
+        # Replaces the legacy stub.prime() path, which was per-process in-memory
+        # and silently fabricated mock downloads for cross-process fetchers.
+        data = content_path.read_bytes()
+        content_id = content_id_for_bytes(data)
+        magnet = f"magnet:?xt=urn:btih:{content_id.hex()}&dn={name}"
+        agent.seedbox.publish_content(content_id, content_path)
+        served_map[content_id] = data
+
         index_rows.append({
             "magnet": magnet,
-            "name": str(row.get("name") or content_path.name),
-            "size": int(row.get("size") or (content_path.stat().st_size if content_path.exists() else 0)),
+            "name": name,
+            "size": len(data),
             "mime": str(row.get("mime") or "application/octet-stream"),
             "tags": list(row.get("tags") or []),
         })
 
     applied = 0
+    served_applied = 0
     for community_id in agent.registry.list_loaded():
         instance = agent.registry.get(community_id)
-        if instance is not None and hasattr(instance, "local_index"):
+        if instance is None:
+            continue
+        # content_community discovery overlay
+        if hasattr(instance, "local_index"):
             instance.local_index = list(index_rows)
             applied += 1
+        # file_transfer chunked-transfer overlay (seeder side)
+        if hasattr(instance, "served"):
+            instance.served = dict(served_map)
+            served_applied += 1
     print(
-        f"[boot] loaded {len(index_rows)} seed content entries into {applied} overlay(s)",
+        f"[boot] loaded {len(index_rows)} seed content entries into {applied} "
+        f"content overlay(s); seeded {len(served_map)} files into "
+        f"{served_applied} transfer overlay(s)",
         flush=True,
     )
 
@@ -365,12 +339,12 @@ async def _serve_loop(
         print(answer, flush=True)
 
 
-async def _start_redteam_server(
+async def _start_signed_log_server(
     agent, *, host: str, port: int,
 ) -> tuple[asyncio.Task, object]:
-    """Spawn a uvicorn-hosted redteam FastAPI server in the agent's event loop.
+    """Spawn a uvicorn-hosted signed_log FastAPI server in the agent's event loop.
 
-    Built via ``redteam.integration.server.build_app`` against the
+    Built via ``signed_log.integration.server.build_app`` against the
     agent's own ``OpenClawIdentity`` (so the served entries' identity
     binding matches) + the agent's ``community_log_path`` /
     ``peer_log_dir``. Returns the asyncio task running uvicorn and the
@@ -387,7 +361,7 @@ async def _start_redteam_server(
     own lock.
     """
     import uvicorn
-    from redteam.integration.server import build_app
+    from signed_log.integration.server import build_app
     from identity.openclaw_identity import OpenClawIdentity
 
     oc_identity = OpenClawIdentity.from_agent_identity(agent.identity)
@@ -402,7 +376,7 @@ async def _start_redteam_server(
     )
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve(), name=f"redteam_server:{port}")
+    task = asyncio.create_task(server.serve(), name=f"signed_log_server:{port}")
     return task, server
 
 
@@ -438,8 +412,6 @@ async def _run(args: argparse.Namespace) -> int:
         address=args.address,
         btc_network=args.btc_network,
         save_dir=Path(args.save_dir),
-        seedbox_min_sats=args.seedbox_min_sats,
-        seedbox_min_confirmations=args.seedbox_min_confirmations,
         initial_balance_sats=args.initial_balance_sats,
         community_log_path=Path(community_log_path) if community_log_path else None,
         peer_log_dir=Path(peer_log_dir) if peer_log_dir else None,
@@ -487,8 +459,8 @@ async def _run(args: argparse.Namespace) -> int:
         # Wire-fetch any default_overlays this agent does not already hold
         # locally. Genesis peers were just pre-introduced by load_manifest,
         # so a fetch over the bootstrap community can succeed immediately.
-        # Per-overlay failures are non-fatal: subsequent network_join will
-        # retry, and operator-driven flows (overlay_fetch_and_load) remain.
+        # Per-overlay failures are non-fatal: operator-driven flows
+        # (overlay_fetch_and_load) can retry.
         try:
             loaded, errors = await agent.ensure_default_overlays_loaded()
             if loaded:
@@ -501,7 +473,6 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"[boot] loading genesis manifest from {args.genesis}", flush=True)
         md_text = Path(args.genesis).read_text(encoding="utf-8")
         manifest = agent.load_manifest(md_text)
-        agent.seedbox.publish_manifest(md_text)
         manifest_loaded = f"published {manifest.identity.get('name', '?')} ({manifest.network_id.hex()[:8]})"
 
     # Pre-introduce peers (skip walker / DispersyBootstrap entirely).
@@ -575,31 +546,31 @@ async def _run(args: argparse.Namespace) -> int:
                 f"point OpenClaw at http://{args.mcp_host}:{args.mcp_port}/mcp",
                 flush=True,
             )
-            # Phase 6: spawn a redteam FastAPI sub-server when requested,
+            # Phase 6: spawn a signed_log FastAPI sub-server when requested,
             # so peers running their own pull loops can fetch our
             # community-log entries. Shares the same on-disk files as
             # the agent's own SignedAppendOnlyLog / PeerLog; the
             # FastAPI uvicorn task is cancelled in ``finally``.
-            redteam_task = None
-            redteam_server = None
-            if getattr(args, "redteam_port", 0):
-                redteam_task, redteam_server = await _start_redteam_server(
-                    agent, host=args.redteam_host, port=args.redteam_port,
+            signed_log_task = None
+            signed_log_server = None
+            if getattr(args, "signed_log_port", 0):
+                signed_log_task, signed_log_server = await _start_signed_log_server(
+                    agent, host=args.signed_log_host, port=args.signed_log_port,
                 )
                 print(
-                    f"[redteam] serving signed-log on "
-                    f"http://{args.redteam_host}:{args.redteam_port}",
+                    f"[signed_log] serving signed-log on "
+                    f"http://{args.signed_log_host}:{args.signed_log_port}",
                     flush=True,
                 )
             try:
                 await serve_mcp_async(agent, host=args.mcp_host, port=args.mcp_port)
             finally:
-                if redteam_server is not None and redteam_task is not None:
-                    redteam_server.should_exit = True
+                if signed_log_server is not None and signed_log_task is not None:
+                    signed_log_server.should_exit = True
                     try:
-                        await asyncio.wait_for(redteam_task, timeout=5.0)
+                        await asyncio.wait_for(signed_log_task, timeout=5.0)
                     except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                        redteam_task.cancel()
+                        signed_log_task.cancel()
             return 0
 
         sys.stderr.write(f"unknown cmd: {args.cmd}\n")
@@ -639,15 +610,13 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--address", default="127.0.0.1")
     parser.add_argument("--save-dir", default="./downloads")
-    parser.add_argument("--seedbox-min-sats", type=int, default=10_000)
-    parser.add_argument("--seedbox-min-confirmations", type=int, default=0)
     parser.add_argument("--initial-balance-sats", type=int, default=0,
                         help="synthetic per-agent wallet balance the LLM sees via "
                              "wallet_balance; 0 disables (legacy always-zero mock)")
     parser.add_argument("--peer-log-url", action="append", metavar="URL",
                         default=[],
                         help="repeatable; full base URL (http(s)://host:port) of a peer's "
-                             "redteam.integration.server. The agent pulls community-log "
+                             "signed_log.integration.server. The agent pulls community-log "
                              "entries from each URL in a background asyncio task. "
                              "Empty list disables the pull loop entirely.")
     parser.add_argument("--pull-interval-s", type=float, default=5.0,
@@ -683,18 +652,16 @@ def main() -> int:
                                 help="path to a network manifest .md to PUBLISH (genesis side: "
                                      "agent advertises this network and serves its default overlays)")
 
-    # LLM endpoint. The defaults point at a local Ollama (matches
-    # ``deploy/watchdog.py``'s fallback). In production, scenario_boot
+    # LLM endpoint. The defaults point at the local LLM proxy (-> Claude),
+    # matching ``deploy/watchdog.py``'s fallback. In production, scenario_boot
     # writes ``LLM_BASE_URL`` + ``LLM_MODEL`` into each agent's env file
     # and the systemd unit passes them on the CLI explicitly — so these
     # defaults are only hit when invoking ``python -m agent`` by hand.
-    parser.add_argument("--llm-base-url", default="http://127.0.0.1:11434/v1")
-    parser.add_argument("--llm-model", default="qwen2.5-coder:7b")
+    parser.add_argument("--llm-base-url", default="http://127.0.0.1:11600/v1")
+    parser.add_argument("--llm-model", default="claude-haiku-4-5-20251001")
     parser.add_argument("--llm-api-key", default="")
     parser.add_argument("--llm-stub-script",
                         help="JSON file of chat-completions message dicts (offline mode for the tool loop)")
-    parser.add_argument("--compiler-stub", action="store_true",
-                        help="offline mode for the compiler: load *_stub.py source siblings of --publish-overlay files")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("info", help="print agent identity / address / pubkey then exit")
@@ -706,11 +673,11 @@ def main() -> int:
                        help="bind host for the MCP server (use 0.0.0.0 on a VPS)")
     mcp_p.add_argument("--mcp-port", type=int, default=8765,
                        help="bind port for the MCP server")
-    mcp_p.add_argument("--redteam-host", default="127.0.0.1",
-                       help="bind host for the redteam FastAPI server hosting our "
+    mcp_p.add_argument("--signed-log-host", default="127.0.0.1",
+                       help="bind host for the signed_log FastAPI server hosting our "
                             "community signed log (peers' pull loops fetch from here)")
-    mcp_p.add_argument("--redteam-port", type=int, default=0,
-                       help="bind port for the redteam FastAPI server; 0 disables "
+    mcp_p.add_argument("--signed-log-port", type=int, default=0,
+                       help="bind port for the signed_log FastAPI server; 0 disables "
                             "(then peers can't pull this agent's log)")
     run_p = sub.add_parser(
         "run",

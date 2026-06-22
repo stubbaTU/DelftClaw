@@ -96,56 +96,30 @@ class AgentSpec:
     stop_predicate: str
     peers: tuple[str, ...] = ()
     seed_content: tuple[SeedContent, ...] = ()
-    # Path (repo-relative or absolute) to a content_catalog.csv that
-    # describes the seedbox library. When set, scenario_boot reads the
-    # CSV at apply-time, copies each row's file into the seedbox content
-    # directory, and writes seed_content.json from it. Takes precedence
-    # over inline seed_content. CSV columns: magnet, name, size, mime,
-    # tags (tags semicolon-delimited).
     library_csv: Path | None = None
-    # MCP tool allowlist parsed from the mission's optional ``# Tools``
-    # section. ``None`` (default) → no env var written, MCP exposes all
-    # tools (backwards-compatible). ``()`` → MCP_TOOL_ALLOWLIST=<empty>,
-    # MCP exposes nothing. Non-empty tuple → MCP exposes only those
-    # tools. Names are bare (no namespace prefix).
     mcp_tool_allowlist: tuple[str, ...] | None = None
-    # Per-agent synthetic wallet balance the LLM sees via wallet_balance.
-    # Default 0 keeps legacy "always-zero" mock behaviour; set >0 for
-    # agents that need to make donations (e.g. seek_cc's bob).
     initial_balance_sats: int = 0
-    # Phase 6: per-agent FastAPI port for the redteam community-log
-    # server. 0 disables (legacy single-agent / no-replication mode).
-    # When set, scenario_boot cross-wires every other agent's pull
-    # loop to fetch from http://127.0.0.1:<redteam_port>.
-    redteam_port: int = 0
+    signed_log_port: int = 0
+    # Role in the two-author overlay-evolution chain: "genesis" authors
+    # v1.0.0, "successor" adopts it + designs v1.1.0, "" = no special role.
+    overlay_author_role: str = ""
 
 
 @dataclass(frozen=True)
 class Scenario:
     name: str
-    description: str
     watchdog: WatchdogPolicy
     agents: dict[str, AgentSpec]
     log_dir: Path
     manifest_path: Path = field(default_factory=Path)
-    # When True, scenario_boot writes FILE_SHARE_MODE=1 into each
-    # per-instance .env file. deploy/state_snapshot.py::_next_objective
-    # checks this env var and skips the admission rule branch so
-    # non-gatekeeper agents see retrieve_content immediately, with no
-    # donate/treasury dance. Used by scenarios that demo only the
-    # SEARCH/fetch path.
     file_share_mode: bool = False
-    # When True, scenario_boot omits the PUBLISH_OVERLAY env var for
-    # any agent that does not declare ``publish_overlays`` in
-    # scenario.yaml — forcing those agents to wire-fetch missing
-    # ``default_overlays`` from a genesis peer at boot via
-    # ``OpenClawAgent.ensure_default_overlays_loaded``. Makes the
-    # markdown-as-overlay distribution flow (OVERLAY_REQUEST ->
-    # OVERLAY_DELIVERY on the bootstrap community) observable end-to-
-    # end in the demo. Default ``False`` preserves the legacy
-    # local-fallback behaviour for existing scenarios (seek_cc,
-    # community_demo, secure_community_demo, security_layers).
     wire_distribute_overlays: bool = False
+    # Name of the overlay agents author + evolve at runtime (e.g.
+    # "download_announce", "payment_receipt"). "" disables the chain.
+    evolution_base_overlay: str = ""
+    # Flips the watchdog's next_objective into the payment ladder
+    # (request -> receive -> author) after admission.
+    payment_mode: bool = False
 
     def instance_id(self, agent_name: str) -> str:
         """Systemd instance id: ``<scenario>-<agent>``."""
@@ -184,7 +158,7 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
     agents: dict[str, AgentSpec] = {}
     seen_ipv8_ports: dict[int, str] = {}
     seen_mcp_ports: dict[int, str] = {}
-    seen_redteam_ports: dict[int, str] = {}
+    seen_signed_log_ports: dict[int, str] = {}
 
     for agent_name, agent_raw in agents_raw.items():
         if not isinstance(agent_raw, dict):
@@ -206,18 +180,18 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
             raise ScenarioError(
                 f"agent {agent.name!r}: ipv8_port and mcp_port must differ"
             )
-        if agent.redteam_port != 0:
-            if agent.redteam_port in seen_redteam_ports:
+        if agent.signed_log_port != 0:
+            if agent.signed_log_port in seen_signed_log_ports:
                 raise ScenarioError(
-                    f"redteam_port {agent.redteam_port} clashes between agents "
-                    f"{seen_redteam_ports[agent.redteam_port]!r} and {agent.name!r}"
+                    f"signed_log_port {agent.signed_log_port} clashes between agents "
+                    f"{seen_signed_log_ports[agent.signed_log_port]!r} and {agent.name!r}"
                 )
-            if agent.redteam_port in (agent.ipv8_port, agent.mcp_port):
+            if agent.signed_log_port in (agent.ipv8_port, agent.mcp_port):
                 raise ScenarioError(
-                    f"agent {agent.name!r}: redteam_port must differ from "
+                    f"agent {agent.name!r}: signed_log_port must differ from "
                     f"ipv8_port and mcp_port"
                 )
-            seen_redteam_ports[agent.redteam_port] = agent.name
+            seen_signed_log_ports[agent.signed_log_port] = agent.name
         seen_ipv8_ports[agent.ipv8_port] = agent.name
         seen_mcp_ports[agent.mcp_port] = agent.name
 
@@ -253,15 +227,36 @@ def parse_scenario(manifest_path: str | Path) -> Scenario:
             f"got {type(wire_distribute_raw).__name__}"
         )
 
+    payment_mode_raw = raw.get("payment_mode", False)
+    if not isinstance(payment_mode_raw, bool):
+        raise ScenarioError(
+            f"payment_mode must be a boolean; got {type(payment_mode_raw).__name__}"
+        )
+
+    evolution_base_overlay = str(raw.get("evolution_base_overlay", "") or "")
+
+    # The two-author chain needs exactly one genesis + at most one successor.
+    roles = [a.overlay_author_role for a in agents.values() if a.overlay_author_role]
+    if evolution_base_overlay and roles.count("genesis") > 1:
+        raise ScenarioError(
+            "at most one agent may have overlay_author_role: genesis"
+        )
+    if roles and not evolution_base_overlay:
+        raise ScenarioError(
+            "overlay_author_role is set on an agent but evolution_base_overlay "
+            "is empty — set the scenario-level evolution_base_overlay"
+        )
+
     return Scenario(
         name=name,
-        description=str(raw.get("description", "")),
         watchdog=watchdog,
         agents=agents,
         log_dir=log_dir,
         manifest_path=path,
         file_share_mode=file_share_mode_raw,
         wire_distribute_overlays=wire_distribute_raw,
+        evolution_base_overlay=evolution_base_overlay,
+        payment_mode=payment_mode_raw,
     )
 
 
@@ -349,11 +344,18 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
             f"agent {name!r}: initial_balance_sats must be >= 0 (got {initial_balance_sats})"
         )
 
-    redteam_port_raw = d.get("redteam_port", 0)
-    if redteam_port_raw == 0:
-        redteam_port = 0
+    signed_log_port_raw = d.get("signed_log_port", 0)
+    if signed_log_port_raw == 0:
+        signed_log_port = 0
     else:
-        redteam_port = _port(redteam_port_raw, f"agent {name}.redteam_port")
+        signed_log_port = _port(signed_log_port_raw, f"agent {name}.signed_log_port")
+
+    overlay_author_role = str(d.get("overlay_author_role", "") or "")
+    if overlay_author_role not in ("", "genesis", "successor"):
+        raise ScenarioError(
+            f"agent {name!r}: overlay_author_role must be one of "
+            f"'', 'genesis', 'successor'; got {overlay_author_role!r}"
+        )
 
     return AgentSpec(
         name=name,
@@ -365,9 +367,10 @@ def _parse_agent(name: str, d: dict[str, Any], scenario_dir: Path) -> AgentSpec:
         peers=peers,
         seed_content=seed_content,
         initial_balance_sats=initial_balance_sats,
-        redteam_port=redteam_port,
+        signed_log_port=signed_log_port,
         library_csv=library_csv,
         mcp_tool_allowlist=mission.tools,
+        overlay_author_role=overlay_author_role,
     )
 
 

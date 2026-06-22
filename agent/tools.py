@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +24,6 @@ from typing import Any, Awaitable, Callable
 from ipv8.peer import Peer
 
 from agent.runtime import OpenClawAgent
-from communication.community import overlay_id
 
 
 # Tool-dispatch logger — one line per LLM tool invocation, paired with
@@ -34,6 +32,39 @@ from communication.community import overlay_id
 #   make watch NAME=… | grep TOOL
 _tool_logger = logging.getLogger("delftclaw.agent.tools")
 _wire_logger = logging.getLogger("delftclaw.communication.wire")
+
+
+def _maybe_record_self_authored_announce(
+    agent: "OpenClawAgent",
+    community_id: bytes,
+    message_name: str,
+) -> None:
+    """If the message is sent on a SELF-AUTHORED overlay, record it cross-process.
+
+    The deploy.state_snapshot.``announce_pending`` next_objective rule reads
+    ``<save_dir>/.self_authored_announces_sent.jsonl`` to know whether the
+    agent has sent at least one message on its own protocol — same shared-disk
+    bridge pattern the BT download ledger and overlay offers use, because the
+    MCP-service process sends while the watchdog snapshot process reads. A
+    failed write is silent: this is observability, not correctness.
+    """
+    compiled = agent.registry._compiled.get(community_id)
+    parsed = getattr(compiled, "parsed", None) if compiled else None
+    if parsed is None:
+        return
+    if parsed.identity.get("author_id") != agent.wallet.address():
+        return
+    try:
+        save_dir = Path(agent.bittorrent.save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        with open(save_dir / ".self_authored_announces_sent.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "community_id_hex": community_id.hex(),
+                "message_name": message_name,
+                "ts": time.time(),
+            }) + "\n")
+    except OSError:
+        pass
 
 
 def _short(value: Any, n: int = 80) -> str:
@@ -157,9 +188,9 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
     # ---- Community treasury + signed-log layer (Phase 4) --------------
 
     def _community_summary() -> dict[str, Any]:
-        """Internal: snapshot of {balance, member_count, threshold_status,
-        my_membership_status, seedbox_count} computed from the local
-        signed log + peer-log union.
+        """Internal: snapshot of {balance, member_count,
+        my_membership_status} computed from the local signed log +
+        peer-log union.
 
         Returns an empty dict when no manifest is loaded; callers should
         guard against that.
@@ -167,14 +198,10 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         state = agent.community_state()
         if state is None:
             return {}
-        manifest = agent.network_manifest
         me = agent.community_reporter_id
         return {
             "balance_sats": state.balance_sats,
             "member_count": state.member_count,
-            "seedbox_count": state.seedbox_count,
-            "pending_purchases": state.pending_purchases,
-            "threshold_active": state.threshold_active(manifest),
             "my_membership_status": "admitted" if me in state.members else "outsider",
         }
 
@@ -210,11 +237,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         # Determine accepted-vs-rejected by re-running replay and matching
         # entry_hash sets. Cheap because replay is pure.
         state = replay_community(manifest, ordered)
-        accepted_hashes = (
-            {d.entry_hash for d in state.donations}
-            | {p.entry_hash for p in state.purchases}
-            | {v.entry_hash for v in state.provisioned}
-        )
+        accepted_hashes = {d.entry_hash for d in state.donations}
         out: list[dict[str, Any]] = []
         for entry in ordered[-max(0, int(limit)):]:
             details = entry.get("details") or {}
@@ -224,15 +247,12 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
                 "timestamp": entry.get("timestamp"),
                 "entry_hash": entry.get("entry_hash"),
                 "amount_sats": details.get("amount_sats"),
-                "cost_sats": details.get("cost_sats"),
-                "purchase_intent_hash": details.get("purchase_intent_hash"),
-                "seedbox_url": details.get("seedbox_url"),
                 "accepted": entry.get("entry_hash") in accepted_hashes,
             })
         return out
 
     async def community_treasury_balance() -> dict[str, Any]:
-        """Current treasury balance + member count + threshold status.
+        """Current treasury balance + member count + membership status.
 
         Returns ``{"error": "no_manifest_loaded"}`` if the agent hasn't
         injected a network manifest yet.
@@ -250,7 +270,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         return {
             "member_count": summary["member_count"],
             "my_membership_status": summary["my_membership_status"],
-            "threshold_active": summary["threshold_active"],
         }
 
     async def community_donate_and_join(amount_sats: int) -> dict[str, Any]:
@@ -258,7 +277,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
         The amount is debited from this agent's synthetic wallet (so
         ``wallet_balance`` reflects the spend) before the entry is
-        signed. The entry will propagate to peers via the redteam pull
+        signed. The entry will propagate to peers via the signed_log pull
         loop (Phase 6); peers' replay will accept it iff the donation
         rules in ``community_state.replay_community`` are met:
 
@@ -307,6 +326,9 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             details={
                 "network_id_hex": manifest.network_id.hex(),
                 "amount_sats": amount_sats,
+                # Our wallet address is the account id for the payment
+                # ledger; recorded here so replay can map member -> wallet.
+                "wallet_address": agent.wallet.address(),
             },
         )
         return {
@@ -322,7 +344,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
         v5.2 no-treasurer admission. The IMPORTANT step is (1): writing
         the signed entry to our own log. Membership is decided by every
-        peer replaying the union of all signed logs (the redteam pull
+        peer replaying the union of all signed logs (the signed_log pull
         loop replicates ours to them within one ``pull_interval_s``).
         The IPv8 ``CommunityJoinRequest`` round-trip in step (3) is a
         *latency optimisation* — a fast-path accept/reject — NOT the
@@ -403,133 +425,113 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             "reason": reason,
         }
 
-    async def seedbox_purchase_propose(cost_sats: int | None = None) -> dict[str, Any]:
-        """Sign + append a ``seedbox_purchase_intent`` entry to our log.
+    # ---- Payments (payment_request overlay + signed-log ledger) -------
 
-        First-comer wins: the intent is only accepted by replay if no
-        prior pending purchase exists. ``cost_sats`` defaults to the
-        manifest's ``seedbox_cost_sats`` (the manifest is the source of
-        truth — passing a different value just causes the entry to be
-        rejected at replay).
+    def _payment_overlay():
+        """Return ``(community_id, compiled, instance)`` for the loaded
+        ``payment_request`` overlay, or ``None`` if it isn't compiled yet."""
+        for community_id in agent.registry.list_loaded():
+            compiled = agent.registry._compiled[community_id]
+            if compiled.parsed is not None and \
+                    compiled.parsed.identity.get("name") == "payment_request":
+                inst = agent.registry.get(community_id)
+                if inst is not None:
+                    return community_id, compiled, inst
+        return None
 
-        Local sanity check refuses the write if the threshold isn't
-        tripped or the treasury can't cover the cost; this is an
-        optimisation — the replay validator is authoritative.
+    async def request_payment(amount_sats: int, memo: str = "") -> dict[str, Any]:
+        """Broadcast a PAYMENT_REQUEST for ``amount_sats`` to every known peer.
+
+        Communication only — the payment itself arrives later via a peer's
+        ``send_payment`` (wallet transfer + signed-log entry + PAYMENT_NOTIFY).
+        Returns ``{"sent_to": <n>}`` or an ``error`` field.
+        """
+        if not isinstance(amount_sats, int) or amount_sats < 1:
+            return {"error": f"amount_sats must be a positive int; got {amount_sats!r}"}
+        found = _payment_overlay()
+        if found is None:
+            return {"error": "payment_request_overlay_not_loaded"}
+        _community_id, compiled, instance = found
+        payload_cls = compiled.payload_classes.get("PAYMENT_REQUEST")
+        if payload_cls is None:
+            return {"error": "payment_request_overlay_missing_PAYMENT_REQUEST"}
+        peers = list(agent.known_peers())
+        if not peers:
+            return {"error": "no_known_peers_for_request_payment"}
+        for peer in peers:
+            _wire_logger.info(
+                "IPv8 send msg=PAYMENT_REQUEST peer=%s overlay=payment_request "
+                "via=request_payment amount=%d",
+                peer.mid.hex()[:12], amount_sats,
+            )
+            instance.ez_send(peer, payload_cls(amount_sats, memo.encode("utf-8")))
+        from agent.wake_signal import signal_peers
+        signal_peers(f"payment_request:{amount_sats}")
+        return {"sent_to": len(peers), "amount_sats": amount_sats}
+
+    async def send_payment(to_peer_mid: str, amount_sats: int) -> dict[str, Any]:
+        """Send fake BTC to a peer: debit wallet, append a signed ``payment``
+        log entry (the authoritative ledger record), and notify the peer.
+
+        The recipient's wallet address is resolved from the PEER_INTRO
+        metadata (``PeerMeta``) the peer shared on admission. Returns
+        ``{"txid", "to_wallet", "amount_sats", "entry_hash"}`` or an
+        ``error`` field. Errors never raise (tool-surface convention).
         """
         manifest = agent.network_manifest
         if manifest is None:
             return {"error": "no_manifest_loaded"}
-        if not manifest.admission.seedbox_growth_enabled:
-            return {"error": "growth_disabled_in_manifest"}
+        if not isinstance(amount_sats, int) or amount_sats < 1:
+            return {"error": f"amount_sats must be a positive int; got {amount_sats!r}"}
 
-        state = agent.community_state()
-        if state is None:
-            return {"error": "no_manifest_loaded"}
+        try:
+            peer = _resolve_peer(agent, to_peer_mid)
+        except KeyError as exc:
+            return {"error": f"peer_not_found:{exc}"}
 
-        me = agent.community_reporter_id
-        if me not in state.members:
-            return {"error": "not_admitted"}
+        meta = agent.seedbox.peer_meta.get(peer.mid) if agent.seedbox else None
+        to_wallet = getattr(meta, "wallet_address", "") if meta else ""
+        if not to_wallet:
+            return {"error": "recipient_wallet_unknown (no PEER_INTRO received yet)"}
 
-        cost = cost_sats if cost_sats is not None else manifest.admission.seedbox_cost_sats
-        if not isinstance(cost, int) or cost < 1:
-            return {"error": f"cost_sats must be a positive int; got {cost!r}"}
-        if cost != manifest.admission.seedbox_cost_sats:
-            return {"error": f"cost {cost} != manifest.seedbox_cost_sats "
-                             f"{manifest.admission.seedbox_cost_sats}"}
-        if state.balance_sats < cost:
-            return {"error": f"insufficient treasury: balance={state.balance_sats}, cost={cost}"}
-        if not state.threshold_active(manifest):
-            return {"error": "threshold_not_active"}
-        if state.pending_purchases != 0:
-            return {"error": "pending_purchase_already_in_flight"}
+        # Debit the synthetic wallet (raises ValueError on insufficient funds).
+        try:
+            txid = agent.wallet.send(to_wallet, amount_sats)
+        except ValueError as exc:
+            return {"error": f"wallet_send_failed: {exc}"}
 
+        # The authoritative record: a signed payment entry every peer replays.
         entry = agent.community_log.append_event(
-            reporter_id=me,
-            subject_id=me,
-            action="seedbox_purchase_intent",
+            reporter_id=agent.community_reporter_id,
+            subject_id=agent.community_reporter_id,
+            action="payment",
             details={
                 "network_id_hex": manifest.network_id.hex(),
-                "cost_sats": cost,
+                "to_wallet": to_wallet,
+                "amount_sats": amount_sats,
             },
         )
+
+        # Courtesy heads-up over the overlay (best-effort; ledger is the truth).
+        found = _payment_overlay()
+        if found is not None:
+            _community_id, compiled, instance = found
+            notify_cls = compiled.payload_classes.get("PAYMENT_NOTIFY")
+            if notify_cls is not None:
+                _wire_logger.info(
+                    "IPv8 send msg=PAYMENT_NOTIFY peer=%s overlay=payment_request "
+                    "via=send_payment amount=%d",
+                    peer.mid.hex()[:12], amount_sats,
+                )
+                instance.ez_send(peer, notify_cls(amount_sats, txid.encode("utf-8")))
+
+        from agent.wake_signal import signal_peers
+        signal_peers(f"payment_sent:{amount_sats}")
         return {
+            "txid": txid,
+            "to_wallet": to_wallet,
+            "amount_sats": amount_sats,
             "entry_hash": entry["entry_hash"],
-            "cost_sats": cost,
-            "network_id_hex": manifest.network_id.hex(),
-        }
-
-    async def seedbox_provisioned(
-        purchase_intent_hash: str,
-        seedbox_url: str,
-        seedbox_pubkey_hex: str,
-    ) -> dict[str, Any]:
-        """Sign + append a ``seedbox_provisioned`` entry closing a purchase intent.
-
-        Phase-8 demo path: the actual VPS spawn is mocked — writing this
-        entry IS the provisioning event from the community's point of
-        view. Whichever member won the first-comer purchase intent
-        announces here that the new seedbox is up; community-state
-        replay validates the close (signer is admitted, intent exists,
-        intent not already closed) and bumps ``seedbox_count``.
-
-        Real cloud-spawn (sporestack / hostinger / etc.) goes in
-        ``replication/`` and is wired to this tool in a later phase.
-
-        Local pre-checks refuse to write if no pending intent matches
-        the supplied ``purchase_intent_hash`` — the replay layer would
-        drop it anyway. ``seedbox_url`` is a free-form locator (e.g.
-        ``mock-seedbox-2.delftclaw.test:18769`` for the demo);
-        ``seedbox_pubkey_hex`` is the new seedbox's IPv8 pubkey hex.
-        """
-        manifest = agent.network_manifest
-        if manifest is None:
-            return {"error": "no_manifest_loaded"}
-
-        state = agent.community_state()
-        if state is None:
-            return {"error": "no_manifest_loaded"}
-
-        me = agent.community_reporter_id
-        if me not in state.members:
-            return {"error": "not_admitted"}
-
-        if not isinstance(purchase_intent_hash, str) or not purchase_intent_hash:
-            return {"error": "purchase_intent_hash required"}
-        if not isinstance(seedbox_url, str) or not seedbox_url:
-            return {"error": "seedbox_url required"}
-        if not isinstance(seedbox_pubkey_hex, str) or not seedbox_pubkey_hex:
-            return {"error": "seedbox_pubkey_hex required"}
-
-        matching = next(
-            (p for p in state.purchases if p.entry_hash == purchase_intent_hash),
-            None,
-        )
-        if matching is None:
-            return {"error": f"no_matching_purchase_intent:{purchase_intent_hash[:16]}"}
-
-        already_closed = any(
-            v.purchase_intent_hash == purchase_intent_hash for v in state.provisioned
-        )
-        if already_closed:
-            return {"error": "purchase_intent_already_closed"}
-
-        entry = agent.community_log.append_event(
-            reporter_id=me,
-            subject_id=me,
-            action="seedbox_provisioned",
-            details={
-                "network_id_hex": manifest.network_id.hex(),
-                "purchase_intent_hash": purchase_intent_hash,
-                "seedbox_url": seedbox_url,
-                "seedbox_pubkey_hex": seedbox_pubkey_hex,
-            },
-        )
-        return {
-            "entry_hash": entry["entry_hash"],
-            "purchase_intent_hash": purchase_intent_hash,
-            "seedbox_url": seedbox_url,
-            "seedbox_pubkey_hex": seedbox_pubkey_hex,
-            "network_id_hex": manifest.network_id.hex(),
         }
 
     # ---- Overlays ------------------------------------------------------
@@ -607,16 +609,25 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         # ``aload`` runs the (potentially multi-second) compile via
         # asyncio.to_thread so the IPv8 event loop keeps servicing
         # packets while the LLM call is in flight.
-        instance = await agent.registry.aload(md_bytes.decode("utf-8"))
+        instance = await agent.registry.aload(
+            md_bytes.decode("utf-8"),
+            provenance=f"received_from:{peer.mid.hex()[:12]}",
+        )
+        cid_hex = instance.community_id.hex()
+        # Wake peers: a successor that just adopted this overlay might be the
+        # base for someone else's evolution; the genesis author may also be
+        # waiting on adoption confirmation before issuing the next ANNOUNCE.
+        from agent.wake_signal import signal_peers
+        signal_peers(f"overlay_adopted:{cid_hex[:12]}")
         return {
-            "community_id_hex": instance.community_id.hex(),
+            "community_id_hex": cid_hex,
             "loaded": True,
         }
 
     async def overlay_publish(md_text: str) -> str:
         md_hash = agent.seedbox.publish_overlay(md_text)
         # Also load it locally so we serve traffic on the new overlay.
-        await agent.registry.aload(md_text)
+        await agent.registry.aload(md_text, provenance="published")
         return md_hash.hex()
 
     # ---- Network manifest -----------------------------------------------
@@ -703,6 +714,11 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
             compiled.parsed.identity.get("name", compiled.origin) if compiled.parsed else compiled.origin,
         )
         instance.ez_send(peer, payload_cls(*coerced))
+        _maybe_record_self_authored_announce(agent, community_id, message_name)
+        # Wake the peer (and any other peer that cares) — e.g. a successor
+        # waiting on observed-usage evidence from the genesis author.
+        from agent.wake_signal import signal_peers
+        signal_peers(f"overlay_message:{message_name}")
         return {"sent": True}
 
     # ---- BitTorrent ---------------------------------------------------
@@ -744,99 +760,122 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
         ``local_index`` — the content_community handler returns the full
         catalogue (up to ``MAX_RESULTS``) when the query is empty. Pass a
         non-empty string to filter by name/tag substring.
+
+        Implementation lives in ``agent.content_fetch`` so the MCP server
+        path (``agent.mcp_server``) shares the exact same hash-verified
+        IPv8 transfer.
         """
-        compiled_item = None
-        overlay = None
-        for community_id in agent.registry.list_loaded():
-            compiled = agent.registry._compiled[community_id]
-            if compiled.parsed is not None and compiled.parsed.identity.get("name") == "content_community":
-                compiled_item = compiled
-                overlay = agent.registry.get(community_id)
-                break
-        if compiled_item is None or overlay is None:
-            return {"error": "content_community_not_loaded"}
-
-        def matching_rows() -> list[dict[str, Any]]:
-            rows = []
-            q = query.lower()
-            for row in getattr(overlay, "response_cache", []) or []:
-                if not isinstance(row, dict):
-                    continue
-                haystack = " ".join([
-                    str(row.get("name", "")),
-                    " ".join(str(t) for t in row.get("tags", []) or []),
-                    str(row.get("magnet", "")),
-                ]).lower()
-                if not q or q in haystack or "creative commons" in haystack:
-                    rows.append(row)
-            return rows
-
-        rows = matching_rows()
-        peers = list(agent.known_peers())
-        sent = False
-        if not rows:
-            payload_cls = compiled_item.payload_classes.get("SEARCH_REQUEST")
-            if payload_cls is None:
-                return {"error": "content_community_missing_SEARCH_REQUEST"}
-            if not peers:
-                return {"error": "no_known_peers_for_content_search"}
-            before = len(getattr(overlay, "response_cache", []) or [])
-            for peer in peers:
-                _wire_logger.info(
-                    "IPv8 send msg=SEARCH_REQUEST peer=%s overlay=content_community via=content_search_and_fetch query=%r",
-                    peer.mid.hex()[:12],
-                    query,
-                )
-                overlay.ez_send(peer, payload_cls(query.encode("utf-8")))
-            sent = True
-
-            deadline = asyncio.get_running_loop().time() + timeout_s
-            while asyncio.get_running_loop().time() < deadline:
-                if len(getattr(overlay, "response_cache", []) or []) > before:
-                    break
-                await asyncio.sleep(0.1)
-            rows = matching_rows()
-
-        if not rows:
-            return {
-                "searched": sent,
-                "peer_count": len(peers),
-                "response_count": len(getattr(overlay, "response_cache", []) or []),
-                "error": "no_matching_content_response",
-            }
-
-        if isinstance(pick, int) and 0 <= pick < len(rows):
-            chosen = rows[pick]
-            pick_mode = f"index_{pick}"
-        elif pick == "first":
-            chosen = rows[0]
-            pick_mode = "first"
-        else:
-            chosen = random.choice(rows)
-            pick_mode = "random"
-        magnet = chosen.get("magnet")
-        if not magnet:
-            return {"error": "matching_content_response_missing_magnet", "result": chosen}
-        _wire_logger.info(
-            "IPv8 recv msg=SEARCH_RESPONSE peer=? overlay=content_community via=response_cache results=%d pick=%s",
-            len(rows),
-            pick_mode,
+        from agent.content_fetch import content_search_and_fetch_impl
+        return await content_search_and_fetch_impl(
+            agent, query=query, timeout_s=timeout_s, pick=pick,
         )
-        path = await torrent_fetch(str(magnet), timeout_s=max(timeout_s, 30.0))
-        return {
-            "searched": sent,
-            "peer_count": len(peers),
-            "result": chosen,
-            "magnet": magnet,
-            "download_path": path,
-            "pick": pick_mode,
-            "result_count": len(rows),
-            "torrent_stats": await torrent_stats(),
-        }
+
+    async def content_fetch_via_transfer(
+        query: str = "",
+        timeout_s: float = 20.0,
+        pick: str | int = "random",
+    ) -> dict[str, Any]:
+        """Search content_community, then fetch the file over the ``file_transfer``
+        overlay (chunked, hash-verified) instead of the single-shot seedbox path.
+
+        Same discovery + ``pick`` semantics as ``content_search_and_fetch``; the
+        bytes move as numbered CHUNKs reassembled + verified by the compiled
+        ``file_transfer`` overlay. Implementation in ``agent.content_fetch`` so
+        the MCP server path shares it.
+        """
+        from agent.content_fetch import content_fetch_via_transfer_impl
+        return await content_fetch_via_transfer_impl(
+            agent, query=query, timeout_s=timeout_s, pick=pick,
+        )
+
+    async def overlay_author_and_publish(
+        name: str,
+        version: str,
+        description: str,
+        messages: list[dict[str, Any]],
+        change_summary: str,
+        runtime_state: list[dict[str, Any]] | None = None,
+        constants: list[dict[str, Any]] | None = None,
+        samples: dict[str, Any] | None = None,
+        supersedes_cid_hex: str | None = None,
+    ) -> dict[str, Any]:
+        """Author a new overlay protocol spec, publish it, and offer it to peers.
+
+        Implementation lives in ``agent.overlay_authoring_tool`` so the MCP
+        server path shares the exact same synthesis + publish + gossip logic.
+        """
+        from agent.overlay_authoring_tool import overlay_author_and_publish_impl
+        return await overlay_author_and_publish_impl(
+            agent, name=name, version=version, description=description,
+            messages=messages, change_summary=change_summary,
+            runtime_state=runtime_state, constants=constants, samples=samples,
+            supersedes_cid_hex=supersedes_cid_hex,
+        )
 
     # ---- Spec definitions ---------------------------------------------
 
     P_NONE = {"type": "object", "properties": {}, "additionalProperties": False}
+
+    # JSON schema for the structured overlay-authoring args. The LLM fills
+    # message/field design; the tool synthesizes the byte-exact .md.
+    P_AUTHOR_OVERLAY = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "snake_case overlay name (e.g. download_announce)"},
+            "version": {"type": "string", "description": "semver, e.g. 1.0.0"},
+            "description": {"type": "string", "description": "one-line summary"},
+            "change_summary": {"type": "string", "description": "1-2 sentences: what this version does / changes"},
+            "messages": {
+                "type": "array",
+                "description": "one entry per wire message",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "SCREAMING_SNAKE_CASE"},
+                        "msg_id": {"type": "integer", "minimum": 0, "maximum": 255},
+                        "fields": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "description": "snake_case field name"},
+                                    "encoding": {"type": "string",
+                                                  "description": "one of: uint8, uint16-be, uint32-be, uint64-be, bool, varlenH, varlenH-utf8, varlenH-msgpack, bytes20, bytes32"},
+                                    "description": {"type": "string"},
+                                },
+                                "required": ["name", "encoding"],
+                            },
+                        },
+                        "handler": {"type": "string", "description": "prose: what the receiver does on receipt"},
+                    },
+                    "required": ["name", "msg_id", "fields", "handler"],
+                },
+            },
+            "runtime_state": {
+                "type": "array",
+                "description": "optional public mutable attributes the handler reads/writes",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "type": {"type": "string", "description": "list[dict] / dict / int / str / bool / bytes / set"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["name", "type"],
+                },
+            },
+            "samples": {
+                "type": "object",
+                "description": "optional {MESSAGE_NAME: {field: example_value}} for a populated test vector",
+            },
+            "supersedes_cid_hex": {
+                "type": "string",
+                "description": "optional 40-char community_id of a loaded same-name overlay this version replaces",
+            },
+        },
+        "required": ["name", "version", "description", "change_summary", "messages"],
+        "additionalProperties": False,
+    }
 
     return ToolRegistry([
         Tool("peers_list",
@@ -877,8 +916,7 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
         Tool("community_log_list_recent",
              "Return the most-recent merged community-log entries "
-             "(donation_intent, seedbox_purchase_intent, "
-             "seedbox_provisioned) across this agent's chain and every "
+             "(donation_intent) across this agent's chain and every "
              "known peer's chain, with an ``accepted`` flag per entry.",
              {"type": "object",
               "properties": {
@@ -889,14 +927,12 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
 
         Tool("community_treasury_balance",
              "Snapshot of the community's no-treasurer treasury: "
-             "balance_sats (sum of accepted donations minus accepted "
-             "purchases), member_count, seedbox_count, threshold_active, "
-             "pending_purchases, and our own membership status.",
+             "balance_sats (sum of accepted donations), member_count, "
+             "and our own membership status.",
              P_NONE, community_treasury_balance),
 
         Tool("community_member_count",
-             "Number of admitted members + our own membership status + "
-             "whether the seedbox-growth threshold is tripped.",
+             "Number of admitted members + our own membership status.",
              P_NONE, community_member_count),
 
         Tool("community_donate_and_join",
@@ -915,49 +951,6 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "additionalProperties": False},
              community_donate_and_join),
 
-        Tool("seedbox_purchase_propose",
-             "Sign + append a seedbox_purchase_intent entry. First-comer "
-             "wins on race; replay rejects intents when threshold is not "
-             "tripped or treasury can't cover the cost. ``cost_sats`` "
-             "defaults to the manifest's declared price.",
-             {"type": "object",
-              "properties": {
-                  "cost_sats": {"type": "integer", "minimum": 1,
-                                "description": "satoshis to spend; must match "
-                                               "manifest.seedbox_cost_sats exactly"},
-              },
-              "additionalProperties": False},
-             seedbox_purchase_propose),
-
-        Tool("seedbox_provisioned",
-             "Close a pending seedbox_purchase_intent by signing + "
-             "appending a seedbox_provisioned entry. Phase-8 mock "
-             "provisioning: writing this entry is the community-visible "
-             "act of spawning a new seedbox. Replay bumps seedbox_count "
-             "by 1 on accept. Use after the cloud-spawn / mock-spawn "
-             "succeeds.",
-             {"type": "object",
-              "properties": {
-                  "purchase_intent_hash": {
-                      "type": "string",
-                      "description": "entry_hash of the seedbox_purchase_intent "
-                                     "this provision event closes",
-                  },
-                  "seedbox_url": {
-                      "type": "string",
-                      "description": "reachable address of the new seedbox "
-                                     "(e.g. 'mock-seedbox-2.delftclaw.test:18769')",
-                  },
-                  "seedbox_pubkey_hex": {
-                      "type": "string",
-                      "description": "the new seedbox's IPv8 pubkey hex "
-                                     "(for future SEARCH-response identity binding)",
-                  },
-              },
-              "required": ["purchase_intent_hash", "seedbox_url", "seedbox_pubkey_hex"],
-              "additionalProperties": False},
-             seedbox_provisioned),
-
         Tool("community_join_via_peer",
              "Phase-5 end-to-end admission: write a signed donation_intent "
              "to our local community log, ship it to the gatekeeper peer "
@@ -974,6 +967,38 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "required": ["gatekeeper_mid", "amount_sats"],
               "additionalProperties": False},
              community_join_via_peer),
+
+        Tool("request_payment",
+             "Broadcast a PAYMENT_REQUEST for amount_sats to every known "
+             "peer over the payment_request overlay. Communication only — a "
+             "peer fulfils it later via send_payment. Requires the "
+             "payment_request overlay to be loaded.",
+             {"type": "object",
+              "properties": {
+                  "amount_sats": {"type": "integer", "minimum": 1,
+                                  "description": "satoshis to request"},
+                  "memo": {"type": "string", "default": "",
+                           "description": "optional free-text reason"},
+              },
+              "required": ["amount_sats"],
+              "additionalProperties": False},
+             request_payment),
+
+        Tool("send_payment",
+             "Send fake BTC to a peer: debit our wallet, append a signed "
+             "payment entry to the community log (the authoritative ledger "
+             "replayed into community.balances), and notify the peer via "
+             "PAYMENT_NOTIFY. The recipient wallet is resolved from the "
+             "peer's PEER_INTRO metadata.",
+             {"type": "object",
+              "properties": {
+                  "to_peer_mid": {"type": "string",
+                                  "description": "hex prefix of the recipient peer's IPv8 mid"},
+                  "amount_sats": {"type": "integer", "minimum": 1},
+              },
+              "required": ["to_peer_mid", "amount_sats"],
+              "additionalProperties": False},
+             send_payment),
 
         Tool("overlays_list",
              "List compiled overlays loaded locally with full per-message field "
@@ -1071,7 +1096,37 @@ def build_tools(agent: OpenClawAgent) -> ToolRegistry:
               "additionalProperties": False},
              content_search_and_fetch),
 
+        Tool("content_fetch_via_transfer",
+             "Like content_search_and_fetch, but the file is transferred over the "
+             "file_transfer overlay (chunked: manifest -> numbered CHUNKs -> "
+             "reassembly -> whole-content sha256 verify) instead of the single-shot "
+             "seedbox path. Same query/pick semantics.",
+             {"type": "object",
+              "properties": {
+                  "query": {"type": "string", "default": ""},
+                  "timeout_s": {"type": "number", "default": 20.0},
+                  "pick": {
+                      "oneOf": [
+                          {"type": "string", "enum": ["random", "first"]},
+                          {"type": "integer", "minimum": 0},
+                      ],
+                      "default": "random",
+                  },
+              },
+              "additionalProperties": False},
+             content_fetch_via_transfer),
+
         Tool("torrent_stats",
              "Snapshot of all currently-known torrents (downloads + seeds).",
              P_NONE, torrent_stats),
+
+        Tool("overlay_author_and_publish",
+             "Author a NEW overlay protocol spec and publish it to the network. "
+             "You describe the protocol's messages + fields + handler semantics "
+             "as structured JSON; the tool synthesizes the markdown descriptor "
+             "(including byte-exact test vectors), compiles + installs it locally, "
+             "and offers it to every peer so they can adopt it. Pass "
+             "supersedes_cid_hex to publish a new VERSION of an overlay you "
+             "already run (same name).",
+             P_AUTHOR_OVERLAY, overlay_author_and_publish),
     ])

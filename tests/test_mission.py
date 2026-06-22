@@ -1,15 +1,13 @@
 """Tests for ``deploy.mission.parse_mission``.
 
-The parser is the teeth that keep mission.md from drifting back into a
-recipe. Covers:
+Covers:
 
   * Happy path: a minimal valid mission for each role.
   * Section presence + ordering.
   * Identity validation (name format, role allowlist).
-  * Intent recipe filter: backtick-quoted tool names, ≥3-step lists.
   * Budget value ranges.
   * Stop predicate resolves via deploy.stop_predicates.
-  * Bundled seek_cc mission files actually parse.
+  * Bundled admission mission files actually parse.
 """
 
 from __future__ import annotations
@@ -62,10 +60,10 @@ def test_parse_good_mission():
     assert m.stop_predicate == "torrent_progress_gte_1"
 
 
-def test_parse_bundled_seek_cc_missions():
+def test_parse_bundled_payment_missions():
     """The mission.md files the repo ships parse cleanly."""
-    for agent in ("alice", "bob", "charlie", "dave"):
-        path = REPO_ROOT / "deploy" / "scenarios" / "seek_cc" / agent / "mission.md"
+    for agent in ("alice", "bob", "charlie"):
+        path = REPO_ROOT / "deploy" / "scenarios" / "payment" / agent / "mission.md"
         m = parse_mission(path.read_text(encoding="utf-8"))
         assert m.name == agent
 
@@ -106,49 +104,6 @@ def test_identity_role_must_be_in_allowlist():
     text = GOOD.replace("- role: seeker", "- role: gatekeeper")
     with pytest.raises(MissionParseError, match="role must be one of"):
         parse_mission(text)
-
-
-# ---------------------------------------------------------------------------
-# Intent recipe filter
-# ---------------------------------------------------------------------------
-
-def test_intent_with_backtick_tool_name_rejected():
-    text = GOOD.replace(
-        "Acquire a Creative Commons audio file from the DelftClaw network.",
-        "Just call `community_donate_and_join` and you're done.",
-    )
-    with pytest.raises(MissionParseError, match="community_donate_and_join"):
-        parse_mission(text)
-
-
-def test_intent_with_three_numbered_steps_rejected():
-    text = GOOD.replace(
-        "Acquire a Creative Commons audio file from the DelftClaw network.",
-        "Do this:\n1. First\n2. Second\n3. Third",
-    )
-    with pytest.raises(MissionParseError, match="step-by-step list"):
-        parse_mission(text)
-
-
-def test_intent_with_three_bulleted_steps_rejected():
-    text = GOOD.replace(
-        "Acquire a Creative Commons audio file from the DelftClaw network.",
-        "Procedure:\n- First\n- Second\n- Third",
-    )
-    with pytest.raises(MissionParseError, match="step-by-step list"):
-        parse_mission(text)
-
-
-def test_intent_with_two_constraint_bullets_accepted():
-    """Two bullets are tolerated for genuine constraint lists."""
-    text = GOOD.replace(
-        "Acquire a Creative Commons audio file from the DelftClaw network.",
-        "Acquire content under these constraints:\n"
-        "- Creative Commons only.\n"
-        "- Do not exceed budget.",
-    )
-    m = parse_mission(text)
-    assert "Creative Commons" in m.intent_text
 
 
 def test_intent_must_not_be_empty():
@@ -291,9 +246,18 @@ def test_tools_section_rejects_unknown_alongside_known():
 def test_bundled_file_share_missions_parse_with_tools():
     """The repo-tracked file_share missions ship with `# Tools` sections."""
     expected = {
-        "seeder": ("torrent_stats",),
-        "fetcher_1": ("content_search_and_fetch", "torrent_stats"),
-        "fetcher_2": ("content_search_and_fetch", "torrent_stats"),
+        # seeder adopts peer-authored overlays (v3 protocol-evolution phase).
+        "seeder": ("torrent_stats", "overlay_fetch_and_load", "overlays_list"),
+        # fetcher_1 (v4): fetch, author v1.0.0, send one ANNOUNCE so peers
+        # can observe the protocol in use — the trigger for fetcher_2's design.
+        "fetcher_1": ("content_search_and_fetch", "overlay_author_and_publish",
+                      "overlay_invoke", "overlays_list", "torrent_stats"),
+        # fetcher_2 (v4): fetch its file, observe an ANNOUNCE on download_announce,
+        # then DESIGN v1.1.0 — goal-prose authoring, the autonomous-evolution
+        # branch of the demo.
+        "fetcher_2": ("content_search_and_fetch", "overlay_author_and_publish",
+                      "overlay_fetch_and_load", "overlay_invoke", "overlays_list",
+                      "torrent_stats"),
     }
     for agent_name, tools in expected.items():
         path = (

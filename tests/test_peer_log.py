@@ -1,6 +1,6 @@
 """TDD red-step tests for ``PeerLog``.
 
-These tests intentionally fail until ``redteam.primitives.peer_log`` is
+These tests intentionally fail until ``signed_log.primitives.peer_log`` is
 implemented and ``SignedAppendOnlyLog.verify_foreign_entry`` exists. They
 cover the per-source jsonl storage layout, accept/reject paths for the
 isolated-entry verification, idempotency, multi-source separation, the
@@ -31,10 +31,10 @@ import pytest
 
 from identity.agent_identity import AgentIdentity
 from identity.seed import KeyfileSeedSource
-from redteam.primitives.signed_log import SignedAppendOnlyLog
+from signed_log.primitives.signed_log import SignedAppendOnlyLog
 
 # This import will fail in the red phase — PeerLog does not exist yet.
-from redteam.primitives.peer_log import PeerLog  # noqa: E402
+from signed_log.primitives.peer_log import PeerLog  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

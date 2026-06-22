@@ -1,23 +1,14 @@
 """Async tool-call loop against an OpenAI-compatible chat-completions endpoint.
 
-The loop talks to a local model served on the supervisor's GPU host (vLLM /
-TGI / llama.cpp — anything that exposes ``/v1/chat/completions``). Each
-turn either:
-
-  - returns plain text (loop ends, return value is the text), or
-  - emits one or more ``tool_calls`` (we dispatch each via the
-    ``ToolRegistry`` and feed results back as ``role=tool`` messages on
-    the next turn).
-
-A ``StubToolLoopLLM`` is provided for tests — it scripts a sequence of
-responses keyed by turn count, mirroring the production protocol.
-"""
+Each turn the model either returns plain text (loop ends) or emits tool_calls,
+which we dispatch via the ``ToolRegistry`` and feed back as ``role=tool``
+messages on the next turn."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from agent.tools import ToolRegistry
 
@@ -40,17 +31,9 @@ single short reply.
 """
 
 
-# ---------------------------------------------------------------------------
-# Tool-aware LLM client protocol
-# ---------------------------------------------------------------------------
-
 class ToolLoopLLM(Protocol):
-    """The LLM-facing surface ``run_tool_loop`` needs.
-
-    ``complete_with_tools`` MUST follow OpenAI's chat-completions shape:
-    given the messages array + tool specs, return a dict with the assistant
-    message in ``"message"`` (with optional ``"tool_calls"`` list).
-    """
+    """LLM surface ``run_tool_loop`` needs: ``complete_with_tools`` returns the
+    OpenAI chat-completions shape, ``{"message": {..., optional "tool_calls"}}``."""
 
     def complete_with_tools(
         self,
@@ -119,11 +102,7 @@ class OpenAICompatibleToolLLM:
 
 @dataclass
 class StubToolLoopLLM:
-    """Scripted responses for tests + offline development.
-
-    ``responses`` is a list of message dicts in chat-completions form.
-    The Nth call to ``complete_with_tools`` returns ``responses[N]``.
-    """
+    """Scripted responses for tests: the Nth call returns ``responses[N]``."""
 
     responses: list[dict[str, Any]]
     _cursor: int = 0
@@ -142,10 +121,6 @@ class StubToolLoopLLM:
         return {"message": msg}
 
 
-# ---------------------------------------------------------------------------
-# Tool-call loop
-# ---------------------------------------------------------------------------
-
 async def run_tool_loop(
     user_query: str,
     llm: ToolLoopLLM,
@@ -163,8 +138,7 @@ async def run_tool_loop(
     for _ in range(max_iterations):
         result = llm.complete_with_tools(messages, tools.specs())
         msg = result["message"]
-        # Always append the assistant message — tool-call replies must follow it.
-        messages.append(msg)
+        messages.append(msg)  # assistant message must precede its tool replies
 
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:

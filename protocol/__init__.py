@@ -8,7 +8,7 @@ from protocol.compiler import (
     compile_overlay,
     parse_md,
 )
-from protocol.llm import LLMClient, OpenAICompatibleClient, StubLLMClient
+from protocol.llm import LLMClient, OpenAICompatibleClient
 from protocol.registry import OverlayRegistry
 from protocol.sandbox import SandboxError, safe_exec, validate_ast
 
@@ -19,7 +19,6 @@ __all__ = [
     "OverlayRegistry",
     "ProtocolCompileError",
     "SandboxError",
-    "StubLLMClient",
     "canonicalize_md",
     "community_id_from_md",
     "compile_overlay",

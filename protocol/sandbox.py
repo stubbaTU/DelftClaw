@@ -28,6 +28,16 @@ _ALLOWED_MODULES: frozenset[str] = frozenset({
     "ipv8.peerdiscovery.network",
     "msgpack",
     "struct",
+    # Pure-compute hashing — no I/O, network, filesystem, or exec surface, so
+    # it is as safe as struct/msgpack. Protocols that verify content hashes
+    # (e.g. the donation-gated admission overlay's sha256/sha1 checks) cannot
+    # be expressed without it.
+    "hashlib",
+    # Timestamps for protocols that stamp messages/state. No filesystem,
+    # network, or exec surface; the only mild concern is time.sleep (handler
+    # availability), which is outside the sandbox's escape-prevention threat
+    # model and irrelevant to compile/interop measurement.
+    "time",
 })
 
 # Builtin callables the generated source must NOT invoke.
@@ -56,7 +66,11 @@ class _Walker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module not in _ALLOWED_MODULES:
+        # ``from __future__ import ...`` is a compiler directive, not a real
+        # module import — it cannot be used to escape the sandbox, and modern
+        # LLM-generated code emits it routinely (``annotations`` especially).
+        # Allow it explicitly so it doesn't count as a spurious compile failure.
+        if node.module != "__future__" and node.module not in _ALLOWED_MODULES:
             raise SandboxError(f"forbidden import: from {node.module}")
         self.generic_visit(node)
 
@@ -101,11 +115,20 @@ def validate_ast(source: str) -> None:
 # every overlay compile.
 _SAFE_BUILTIN_NAMES: tuple[str, ...] = (
     "abs", "all", "any", "bool", "bytes", "bytearray", "callable",
-    "dict", "enumerate", "filter", "float", "frozenset", "hash",
+    "dict", "divmod", "enumerate", "filter", "float", "format",
+    "frozenset", "hash", "hasattr",
     "hex", "int", "isinstance", "issubclass", "iter", "len", "list",
     "map", "max", "min", "next", "ord", "chr", "pow", "print",
     "range", "repr", "reversed", "round", "set", "slice", "sorted",
     "str", "sum", "tuple", "type", "zip",
+    # ``hasattr`` is safe to expose even though ``getattr`` is forbidden:
+    # ``getattr(x, '__class__')`` *returns* the dunder (an escape vector), but
+    # ``hasattr`` only ever returns a bool — it cannot hand the generated code a
+    # dangerous object, and the literal-dunder AST guard still blocks ``.__x__``.
+    # ``divmod`` / ``format`` are pure value->value computation (no attribute or
+    # object access); generated handlers reach for all three routinely, and a
+    # missing builtin otherwise surfaces as a runtime NameError mid-exchange
+    # rather than a clean compile result.
     "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
     "AttributeError", "RuntimeError", "NotImplementedError",
     "StopIteration", "True", "False", "None",
@@ -125,7 +148,10 @@ _SAFE_BUILTINS_TEMPLATE: dict = {
 def _restricted_import(name: str, globals_=None, locals_=None, fromlist=(), level=0):
     """Module-scoped __import__ replacement used by ``safe_exec``."""
     import importlib
-    if name not in _ALLOWED_MODULES:
+    # ``from __future__ import ...`` is a compiler directive (the AST walker
+    # already permits it); ``__future__`` exposes only feature flags, no escape
+    # vector, so allow the runtime import too.
+    if name != "__future__" and name not in _ALLOWED_MODULES:
         raise SandboxError(f"runtime import blocked: {name}")
     return importlib.import_module(name)
 

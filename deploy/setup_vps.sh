@@ -160,8 +160,8 @@ step_firewall() {
     fi
     c_blue "ufw: adding rules (does NOT enable the firewall — do that manually)"
     ufw allow 22/tcp >/dev/null
-    # Scenario-allocated IPv8 + MCP ranges for seek_cc, community_demo,
-    # security_layers, and secure_community_demo.
+    # Scenario-allocated IPv8 + MCP ranges for admission, file_share,
+    # and file_transfer.
     ufw allow 8190:8399/udp >/dev/null
     ufw allow 18765:18999/tcp >/dev/null
 }
@@ -184,22 +184,22 @@ DelftClaw infrastructure is installed.
 Two templated scenario systemd units are now available, both reading their per-instance
 env file from /etc/delftclaw/instances/<instance>.env:
 
-  delftclaw-mcp@.service           — agent + watchdog scenario MCP (seek_cc, etc.)
+  delftclaw-mcp@.service           — agent + watchdog scenario MCP (admission, etc.)
   delftclaw-watchdog@.service      — autonomous tick driver for delftclaw-mcp
 
 Scenario flow (per-agent):
 
-  # On the VPS (or via 'make scenario NAME=seek_cc' from your laptop):
-  /opt/delftclaw/venv/bin/python -m deploy.scenario_boot seek_cc
+  # On the VPS (or via 'make scenario NAME=payment' from your laptop):
+  /opt/delftclaw/venv/bin/python -m deploy.scenario_boot payment
 
 Common operator commands:
 
   systemctl list-units 'delftclaw-*@*.service'                # all instances
-  journalctl -u 'delftclaw-mcp@seek_cc-alice' -f              # tail scenario agent
+  journalctl -u 'delftclaw-mcp@payment-alice' -f             # tail scenario agent
 
   ufw enable                            # leave open: 22/tcp, 8190-8399/udp, 18765-18999/tcp
 
-  python -m deploy.scenario_boot seek_cc --teardown           # stop scenario
+  python -m deploy.scenario_boot payment --teardown          # stop scenario
 
 Reasoning LLM goes through scripts/llm_proxy.py (Anthropic upstream by
 default). Start it with:  make llm-up

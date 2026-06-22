@@ -18,17 +18,13 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from agent.community_state import (
-    CommunityState,
-    SeedboxProvisioned,
-    SeedboxPurchaseIntent,
-)
+from agent.community_state import CommunityState
 from agent.runtime import AgentConfig, OpenClawAgent
 from communication.community import PeerMeta
 from deploy.state_snapshot import _next_objective, collect_state
 from identity.agent_identity import AgentIdentity
 from identity.seed import Seed
-from protocol.llm import StubLLMClient
+from _live_llm import noop_llm
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +39,7 @@ async def started_agent(tmp_path):
     identity = AgentIdentity.from_seed(seed, network="testnet")
     agent = OpenClawAgent(
         identity=identity,
-        llm=StubLLMClient(sources={}),
+        llm=noop_llm(),
         config=AgentConfig(
             port=0,
             address="127.0.0.1",
@@ -68,9 +64,11 @@ async def test_snapshot_has_expected_top_level_keys(started_agent):
         "wallet",
         "peers",
         "overlays",
+        "pending_overlay_offers",
+        "authored_overlay_ids",
+        "self_authored_announces_sent",
         "torrents",
         "community",
-        "security",
         "next_objective",
     }
     assert snap["network"] is None  # no manifest loaded yet
@@ -99,7 +97,7 @@ async def test_snapshot_network_populated_after_load_manifest(started_agent):
 
     net = snap["network"]
     assert net is not None
-    assert net["name"] == "delftclaw_seek_cc"
+    assert net["name"] == "delftclaw_payment"
     assert net["version"] == "1.0.0"
     assert len(net["network_id_hex"]) == 40   # sha1[:20] -> 40 hex chars
     assert net["admission"]["min_sats"] == 10000
@@ -172,18 +170,8 @@ class _FakeBitTorrent:
 
 
 class _FakeAdmission:
-    def __init__(
-        self,
-        *,
-        gatekeeper_address: str,
-        seedbox_cost_sats: int = 50_000,
-        max_agents_per_seedbox: int = 3,
-        seedbox_growth_enabled: bool = True,
-    ) -> None:
+    def __init__(self, *, gatekeeper_address: str) -> None:
         self.gatekeeper_address = gatekeeper_address
-        self.seedbox_cost_sats = seedbox_cost_sats
-        self.max_agents_per_seedbox = max_agents_per_seedbox
-        self.seedbox_growth_enabled = seedbox_growth_enabled
 
 
 class _FakeManifest:
@@ -211,21 +199,11 @@ class _FakeAgent:
         return self._state
 
 
-def _state(
-    *,
-    members: set[str],
-    balance_sats: int,
-    purchases: tuple[SeedboxPurchaseIntent, ...] = (),
-    provisioned: tuple[SeedboxProvisioned, ...] = (),
-    seedbox_count: int = 1,
-) -> CommunityState:
+def _state(*, members: set[str], balance_sats: int) -> CommunityState:
     return CommunityState(
         members=frozenset(members),
         donations=(),
-        purchases=purchases,
-        provisioned=provisioned,
         balance_sats=balance_sats,
-        seedbox_count=seedbox_count,
     )
 
 
@@ -283,121 +261,14 @@ def test_next_objective_join_community_when_outsider_with_funded_treasury():
     assert "community_donate_and_join" in obj["label"]
 
 
-def test_next_objective_retrieve_content_when_admitted_joiner_has_no_torrent():
+def test_next_objective_none_when_admitted_joiner_done():
+    """An admitted non-gatekeeper has no further objective (admission-only)."""
     manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
-    state = _state(members={"me-reporter"}, balance_sats=100_000)
-    agent = _FakeAgent(
-        manifest=manifest,
-        state=state,
-        wallet_address="tb1qjoiner",  # not the gatekeeper
-        torrents=[],
-    )
-    obj = _next_objective(agent)
-    assert obj is not None
-    assert obj["label"].startswith("retrieve_content")
-    assert "content_search_and_fetch" in obj["label"]
-
-
-def test_next_objective_skips_retrieve_for_founder():
-    """Founder seeds content — never needs to 'retrieve'."""
-    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
-    state = _state(members={"me-reporter"}, balance_sats=100_000)
-    agent = _FakeAgent(
-        manifest=manifest,
-        state=state,
-        wallet_address="tb1qfounder",
-        torrents=[],
-    )
-    # Founder admitted, no retrieval needed, no threshold tripped → None.
-    assert _next_objective(agent) is None
-
-
-def test_next_objective_propose_seedbox_when_threshold_active_and_treasury_sufficient():
-    manifest = _FakeManifest(
-        _FakeAdmission(
-            gatekeeper_address="tb1qfounder",
-            seedbox_cost_sats=50_000,
-            max_agents_per_seedbox=3,
-        )
-    )
-    # 4 members, capacity 3 × 1 seedbox = 3 → threshold tripped.
-    state = _state(
-        members={"a", "b", "c", "d"},
-        balance_sats=60_000,
-        seedbox_count=1,
-    )
-    agent = _FakeAgent(
-        manifest=manifest,
-        state=state,
-        reporter_id="a",
-        wallet_address="tb1qjoiner",
-        # Has a completed torrent already so we skip 'retrieve_content'.
-        torrents=[_FakeTorrent(progress=1.0)],
-    )
-    obj = _next_objective(agent)
-    assert obj is not None
-    assert obj["label"].startswith("propose_seedbox_purchase")
-    assert "seedbox_purchase_propose" in obj["label"]
-
-
-def test_next_objective_record_provisioned_when_own_intent_open():
-    manifest = _FakeManifest(_FakeAdmission(gatekeeper_address="tb1qfounder"))
-    open_intent = SeedboxPurchaseIntent(
-        reporter_id="me-reporter",
-        cost_sats=50_000,
-        timestamp="2026-05-25T12:00:00Z",
-        entry_hash="hash-open",
-    )
-    closed_intent = SeedboxPurchaseIntent(
-        reporter_id="me-reporter",
-        cost_sats=50_000,
-        timestamp="2026-05-24T12:00:00Z",
-        entry_hash="hash-closed",
-    )
-    state = _state(
-        members={"me-reporter"},
-        balance_sats=10_000,
-        purchases=(open_intent, closed_intent),
-        provisioned=(
-            SeedboxProvisioned(
-                reporter_id="me-reporter",
-                purchase_intent_hash="hash-closed",
-                seedbox_url="mock://seed",
-                seedbox_pubkey_hex="00" * 32,
-                timestamp="2026-05-24T12:30:00Z",
-                entry_hash="prov-hash",
-            ),
-        ),
-        seedbox_count=2,
-    )
+    state = _state(members={"a", "b", "me-reporter"}, balance_sats=100_000)
     agent = _FakeAgent(
         manifest=manifest,
         state=state,
         wallet_address="tb1qjoiner",
-        torrents=[_FakeTorrent(progress=1.0)],
-    )
-    obj = _next_objective(agent)
-    assert obj is not None
-    assert obj["label"].startswith("record_seedbox_provisioned")
-    assert "seedbox_provisioned" in obj["label"]
-
-
-def test_next_objective_none_when_everything_satisfied():
-    manifest = _FakeManifest(
-        _FakeAdmission(
-            gatekeeper_address="tb1qfounder",
-            max_agents_per_seedbox=3,
-        )
-    )
-    # 3 members, capacity 3 → threshold NOT active.
-    state = _state(
-        members={"a", "b", "me-reporter"}, balance_sats=100_000, seedbox_count=1
-    )
-    agent = _FakeAgent(
-        manifest=manifest,
-        state=state,
-        wallet_address="tb1qjoiner",
-        torrents=[_FakeTorrent(progress=1.0)],
     )
     assert _next_objective(agent) is None
 
@@ -419,3 +290,488 @@ async def test_snapshot_peer_without_intro_has_null_wallet(started_agent):
     assert len(entries) == 1
     assert entries[0]["wallet_address"] is None
     assert entries[0]["known_overlays"] == []
+
+
+# ---------------------------------------------------------------------------
+# author_overlay objective (file_share v3 protocol-evolution nudge)
+# ---------------------------------------------------------------------------
+
+def _record_completed_download(agent) -> None:
+    """Register a progress=1.0 torrent so has_completed_torrent is True."""
+    path = agent.bittorrent.save_dir / "open_textbook_calculus_excerpt.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"calc" * 8)
+    agent.bittorrent.record_download(
+        "magnet:?xt=urn:btih:ec9d91a30668b3ece1579e15d545a4b1eb43caf8&dn=calc",
+        path, path.stat().st_size,
+    )
+
+
+@pytest.mark.asyncio
+async def test_author_overlay_objective_fires_for_tool_capable_agent(
+    started_agent, monkeypatch
+):
+    """FILE_SHARE_MODE + allowlist has overlay_author_and_publish + a completed
+    download + nothing self-authored -> next_objective nudges authoring."""
+    monkeypatch.setenv("FILE_SHARE_MODE", "1")
+    monkeypatch.setenv(
+        "MCP_TOOL_ALLOWLIST",
+        "content_search_and_fetch,overlay_author_and_publish,overlays_list,torrent_stats",
+    )
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    obj = _next_objective(started_agent)
+    assert obj is not None
+    assert obj["label"].startswith("author_overlay")
+    assert "overlay_author_and_publish" in obj["label"]
+
+
+@pytest.mark.asyncio
+async def test_author_overlay_objective_sees_cross_process_download(
+    started_agent, monkeypatch
+):
+    """The deployed blocker, end-to-end: the MCP process records the download,
+    the watchdog process (THIS agent, a SEPARATE BitTorrentService over the same
+    save_dir) builds the snapshot. Recording via a separate instance must still
+    flip has_completed_torrent so author_overlay fires — proving the on-disk
+    ledger bridges the process boundary all the way into _next_objective."""
+    from communication.bittorrent import StubBitTorrentService
+
+    monkeypatch.setenv("FILE_SHARE_MODE", "1")
+    monkeypatch.setenv(
+        "MCP_TOOL_ALLOWLIST",
+        "content_search_and_fetch,overlay_author_and_publish,overlays_list,torrent_stats",
+    )
+    started_agent.load_manifest(MANIFEST_MD)
+
+    # Record the download from a DIFFERENT instance sharing save_dir — exactly
+    # what the MCP-service process does, invisible in-memory to this agent.
+    shared = started_agent.bittorrent.save_dir
+    mcp_side = StubBitTorrentService(save_dir=shared)
+    f = shared / "open_textbook_calculus_excerpt.txt"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"calc" * 96)
+    mcp_side.record_download(
+        "magnet:?xt=urn:btih:ec9d91a30668b3ece1579e15d545a4b1eb43caf8&dn=calc",
+        f, f.stat().st_size,
+    )
+
+    obj = _next_objective(started_agent)
+    assert obj is not None and obj["label"].startswith("author_overlay")
+
+
+@pytest.mark.asyncio
+async def test_author_overlay_objective_absent_without_tool_in_allowlist(
+    started_agent, monkeypatch
+):
+    """A fetcher_2-shaped allowlist (no authoring tool) gets None after its
+    download, not the authoring nudge."""
+    monkeypatch.setenv("FILE_SHARE_MODE", "1")
+    monkeypatch.setenv("MCP_TOOL_ALLOWLIST", "content_search_and_fetch,torrent_stats")
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    assert _next_objective(started_agent) is None
+
+
+@pytest.mark.asyncio
+async def test_author_overlay_objective_clears_after_self_authored(
+    started_agent, monkeypatch
+):
+    """Once the agent has authored an overlay (its wallet is the author_id),
+    the nudge clears so the stop predicate can fire."""
+    from agent.overlay_authoring import synthesize_overlay_markdown
+    from protocol import community_id_from_md
+
+    monkeypatch.setenv("FILE_SHARE_MODE", "1")
+    monkeypatch.setenv(
+        "MCP_TOOL_ALLOWLIST", "overlay_author_and_publish,torrent_stats"
+    )
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    # Synthesize + load a download_announce overlay authored by THIS agent.
+    messages = [{
+        "name": "ANNOUNCE", "msg_id": 1,
+        "fields": [{"name": "who", "encoding": "varlenH-utf8", "description": "a"}],
+        "handler": "On receipt, append who to self.received_announcements.",
+    }]
+    md = synthesize_overlay_markdown(
+        name="download_announce", version="1.0.0", description="x",
+        messages=messages,
+        runtime_state=[{"name": "received_announcements", "type": "list[dict]", "description": "r"}],
+        author_id=started_agent.wallet.address(),
+        change_summary="x", samples={"ANNOUNCE": {"who": "fetcher_1"}},
+    )
+    cid_hex = community_id_from_md(md).hex()
+    impl = (
+        "```python\n"
+        "from ipv8.community import Community, CommunitySettings\n"
+        "from ipv8.lazy_community import lazy_wrapper\n"
+        "from ipv8.messaging.lazy_payload import VariablePayload, vp_compile\n"
+        "from ipv8.peer import Peer\n"
+        "from ipv8.peerdiscovery.network import PeerObserver\n"
+        "@vp_compile\n"
+        "class AnnouncePayload(VariablePayload):\n"
+        "    msg_id = 1\n"
+        '    format_list = ["varlenH"]\n'
+        '    names = ["who"]\n'
+        "class GeneratedCommunity(Community, PeerObserver):\n"
+        f'    community_id = bytes.fromhex("{cid_hex}")\n'
+        "    def __init__(self, settings: CommunitySettings) -> None:\n"
+        "        super().__init__(settings)\n"
+        "        self.received_announcements = []\n"
+        "        self.add_message_handler(AnnouncePayload, self.on_announce)\n"
+        "    def started(self) -> None:\n"
+        "        self.network.add_peer_observer(self)\n"
+        "    def on_peer_added(self, peer: Peer) -> None:\n"
+        "        pass\n"
+        "    def on_peer_removed(self, peer: Peer) -> None:\n"
+        "        pass\n"
+        "    @lazy_wrapper(AnnouncePayload)\n"
+        "    def on_announce(self, peer: Peer, payload: AnnouncePayload) -> None:\n"
+        '        self.received_announcements.append(payload.who.decode("utf-8"))\n'
+        "```"
+    )
+    # Feed the inline impl straight through the compile pipeline (no live LLM):
+    # llm_source short-circuits the model, exactly as the disk cache does.
+    started_agent.publish_overlay(md, llm_source=impl)
+
+    # v4 semantics: now that an overlay is self-authored, the author_overlay
+    # nudge clears but the announce_pending nudge takes over until the agent
+    # actually sends a message on its own protocol — the demo's "communication
+    # continues" trigger. announce_pending unicasts to the ONE non-genesis peer
+    # (the successor that must observe the protocol), so give the agent such a
+    # peer; the deployed mesh guarantees exactly one.
+    from ipv8.keyvault.crypto import default_eccrypto
+    from ipv8.peer import Peer
+    observer = Peer(default_eccrypto.generate_key("curve25519").pub(), address=("127.0.0.1", 9001))
+    started_agent.seedbox.network.add_verified_peer(observer)
+
+    obj = _next_objective(started_agent)
+    assert obj is not None and obj["label"].startswith("announce_pending")
+    assert obj["authored_overlay_cid_hex"] == cid_hex
+    assert obj["announce_target_mid"] == observer.mid.hex()
+
+    # Once the agent records an announce (cross-process counter file flipped
+    # by ``overlay_invoke``), the nudge clears entirely.
+    import json as _json
+    counter = Path(started_agent.bittorrent.save_dir) / ".self_authored_announces_sent.jsonl"
+    counter.parent.mkdir(parents=True, exist_ok=True)
+    counter.write_text(_json.dumps({"community_id_hex": cid_hex, "message_name": "ANNOUNCE"}) + "\n", encoding="utf-8")
+    assert _next_objective(started_agent) is None
+
+
+# ---------------------------------------------------------------------------
+# v4 autonomous-evolution: successor adopt -> observe -> author_v_next, plus
+# genesis announce targeting (file_share "Mesh + observe ANNOUNCE").
+# ---------------------------------------------------------------------------
+
+_SUCCESSOR_ENV = {
+    "FILE_SHARE_MODE": "1",
+    "MCP_TOOL_ALLOWLIST": (
+        "content_search_and_fetch,overlay_author_and_publish,"
+        "overlay_fetch_and_load,overlay_invoke,overlays_list,torrent_stats"
+    ),
+    "OVERLAY_AUTHOR_MODE": "successor",
+    "EVOLUTION_BASE_OVERLAY_NAME": "download_announce",
+}
+
+
+def _set_env(monkeypatch, env: dict) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+
+def _load_download_announce(agent, *, author_id: str):
+    """Synthesize + load a download_announce v1.0.0 attributed to ``author_id``.
+
+    Uses ``registry.load`` with received provenance so author_id may differ
+    from this agent (simulating an ADOPTED peer overlay). Returns
+    ``(cid_hex, live_instance)``; the instance exposes ``received_announcements``.
+    """
+    from agent.overlay_authoring import synthesize_overlay_markdown
+    from protocol import community_id_from_md
+
+    messages = [{
+        "name": "ANNOUNCE", "msg_id": 1,
+        "fields": [{"name": "who", "encoding": "varlenH-utf8", "description": "a"}],
+        "handler": "On receipt, append who to self.received_announcements.",
+    }]
+    md = synthesize_overlay_markdown(
+        name="download_announce", version="1.0.0", description="x",
+        messages=messages,
+        runtime_state=[{"name": "received_announcements", "type": "list[dict]", "description": "r"}],
+        author_id=author_id, change_summary="x", samples={"ANNOUNCE": {"who": "fetcher_1"}},
+    )
+    cid_hex = community_id_from_md(md).hex()
+    impl = (
+        "```python\n"
+        "from ipv8.community import Community, CommunitySettings\n"
+        "from ipv8.lazy_community import lazy_wrapper\n"
+        "from ipv8.messaging.lazy_payload import VariablePayload, vp_compile\n"
+        "from ipv8.peer import Peer\n"
+        "from ipv8.peerdiscovery.network import PeerObserver\n"
+        "@vp_compile\n"
+        "class AnnouncePayload(VariablePayload):\n"
+        "    msg_id = 1\n"
+        '    format_list = ["varlenH"]\n'
+        '    names = ["who"]\n'
+        "class GeneratedCommunity(Community, PeerObserver):\n"
+        f'    community_id = bytes.fromhex("{cid_hex}")\n'
+        "    def __init__(self, settings: CommunitySettings) -> None:\n"
+        "        super().__init__(settings)\n"
+        "        self.received_announcements = []\n"
+        "        self.add_message_handler(AnnouncePayload, self.on_announce)\n"
+        "    def started(self) -> None:\n"
+        "        self.network.add_peer_observer(self)\n"
+        "    def on_peer_added(self, peer: Peer) -> None:\n"
+        "        pass\n"
+        "    def on_peer_removed(self, peer: Peer) -> None:\n"
+        "        pass\n"
+        "    @lazy_wrapper(AnnouncePayload)\n"
+        "    def on_announce(self, peer: Peer, payload: AnnouncePayload) -> None:\n"
+        '        self.received_announcements.append(payload.who.decode("utf-8"))\n'
+        "```"
+    )
+    instance = agent.registry.load(md, provenance="received_from:peer", llm_source=impl)
+    return cid_hex, instance
+
+
+@pytest.mark.asyncio
+async def test_successor_adopt_overlay_when_offer_pending(started_agent, monkeypatch):
+    """successor + completed download + a pending overlay offer + nothing
+    adopted yet -> adopt_overlay (NOT author_overlay), carrying the offer's
+    peer_mid + md_hash_hex so the LLM fetches it without guessing."""
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    import json as _json
+    offers = Path(started_agent.bittorrent.save_dir) / ".overlay_offers.jsonl"
+    offers.parent.mkdir(parents=True, exist_ok=True)
+    offers.write_text(
+        _json.dumps({"md_hash_hex": "cd" * 20, "from_peer_mid": "ab" * 20}) + "\n",
+        encoding="utf-8",
+    )
+
+    obj = _next_objective(started_agent)
+    assert obj is not None
+    assert obj["label"].startswith("adopt_overlay")
+    assert obj["offer_md_hash_hex"] == "cd" * 20
+    assert obj["offer_peer_mid"] == "ab" * 20
+
+
+@pytest.mark.asyncio
+async def test_successor_waits_when_no_offer_and_nothing_adopted(started_agent, monkeypatch):
+    """A successor with no pending offer and no adopted base must NOT fall back
+    to authoring its own v1.0.0 — it waits (None)."""
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+    assert _next_objective(started_agent) is None
+
+
+@pytest.mark.asyncio
+async def test_successor_author_v_next_when_base_adopted(started_agent, monkeypatch):
+    """successor that has ADOPTED a peer's download_announce -> author_v_next,
+    naming the peer's cid as the supersedes base. v4 deployed compromise:
+    adoption alone triggers design. The watchdog snapshot lives in a separate
+    process from the MCP-side overlay handler and cannot see
+    ``received_announcements`` without a cross-process message bridge that
+    this v4 does not ship — adoption (visible via the on-disk overlay
+    archive) is the cross-process signal we DO have."""
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    cid_hex, _ = _load_download_announce(started_agent, author_id="dclaw1somepeerauthor")
+
+    obj = _next_objective(started_agent)
+    assert obj is not None
+    assert obj["label"].startswith("author_overlay_v_next")
+    assert obj["base_overlay_cid_hex"] == cid_hex
+
+
+@pytest.mark.asyncio
+async def test_base_overlay_for_evolution_reads_archive_cross_process(
+    started_agent, monkeypatch, tmp_path
+):
+    """The deployed shape: the MCP-side process performs ``overlay_fetch_and_load``
+    and the overlay archive captures it (a ``<cid>.meta.json`` with name +
+    author_id). The watchdog snapshot agent runs in a SEPARATE process with
+    an empty registry. The snapshot must still surface the peer-authored
+    overlay — via the on-disk archive bridge, with no registry load."""
+    archive = tmp_path / "overlay_archive"
+    archive.mkdir()
+    cid_hex = "aa" * 20
+    (archive / f"{cid_hex}.meta.json").write_text(
+        json.dumps({
+            "community_id_hex": cid_hex,
+            "name": "download_announce",
+            "identity_version": "1.0.0",
+            "author_id": "dclaw1somepeerauthor",   # NOT started_agent.wallet
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(archive))
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    # The agent's REGISTRY holds nothing for download_announce; the only
+    # signal is the archive meta — exactly the cross-process shape on the VPS.
+    obj = _next_objective(started_agent)
+    assert obj is not None
+    assert obj["label"].startswith("author_overlay_v_next")
+    assert obj["base_overlay_cid_hex"] == cid_hex
+
+
+@pytest.mark.asyncio
+async def test_base_overlay_skips_archive_entries_authored_by_self(
+    started_agent, monkeypatch, tmp_path
+):
+    """An archive entry this agent AUTHORED is not a successor target — that
+    would be re-authoring v1.0.0. Skip it; with no peer-authored base and no
+    pending offer, the successor simply waits."""
+    archive = tmp_path / "overlay_archive"
+    archive.mkdir()
+    cid_hex = "bb" * 20
+    (archive / f"{cid_hex}.meta.json").write_text(
+        json.dumps({
+            "community_id_hex": cid_hex,
+            "name": "download_announce",
+            "identity_version": "1.0.0",
+            "author_id": started_agent.wallet.address(),  # SELF
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(archive))
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+
+    assert _next_objective(started_agent) is None
+
+
+@pytest.mark.asyncio
+async def test_genesis_announce_pending_requires_a_distinct_observer_peer(started_agent, monkeypatch):
+    """genesis/legacy author that has published but knows no non-genesis peer
+    cannot resolve an announce target -> None; once a distinct peer exists,
+    announce_pending fires and carries that peer's mid."""
+    monkeypatch.setenv("FILE_SHARE_MODE", "1")
+    monkeypatch.setenv(
+        "MCP_TOOL_ALLOWLIST", "overlay_author_and_publish,overlay_invoke,torrent_stats"
+    )
+    # No OVERLAY_AUTHOR_MODE / EVOLUTION_BASE_OVERLAY_NAME -> legacy genesis path.
+    monkeypatch.delenv("OVERLAY_AUTHOR_MODE", raising=False)
+    monkeypatch.delenv("EVOLUTION_BASE_OVERLAY_NAME", raising=False)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+    cid_hex, _ = _load_download_announce(started_agent, author_id=started_agent.wallet.address())
+
+    # No non-genesis peer yet -> no resolvable target -> wait.
+    assert _next_objective(started_agent) is None
+
+    from ipv8.keyvault.crypto import default_eccrypto
+    from ipv8.peer import Peer
+    observer = Peer(default_eccrypto.generate_key("curve25519").pub(), address=("127.0.0.1", 9002))
+    started_agent.seedbox.network.add_verified_peer(observer)
+
+    obj = _next_objective(started_agent)
+    assert obj is not None and obj["label"].startswith("announce_pending")
+    assert obj["announce_target_mid"] == observer.mid.hex()
+    assert obj["authored_overlay_cid_hex"] == cid_hex
+
+
+@pytest.mark.asyncio
+async def test_successor_author_v_next_caps_after_three_compile_fails(
+    started_agent, monkeypatch, tmp_path,
+):
+    """The defensive cap: if the agent has 3 consecutive ``compile_fail`` events
+    on the base overlay's name in its ledger, ``author_overlay_v_next`` stops
+    firing and surfaces a ``stuck_in_zero_shot_failure`` diagnostic instead.
+    Prevents the LLM-churn spiral observed in the 2026-05-30 VPS run where
+    bytes-encoding mistakes kept tripping the validator on every retry."""
+    archive = tmp_path / "overlay_archive"
+    archive.mkdir()
+    cid_hex = "aa" * 20
+    (archive / f"{cid_hex}.meta.json").write_text(
+        json.dumps({
+            "community_id_hex": cid_hex,
+            "name": "download_announce",
+            "identity_version": "1.0.0",
+            "author_id": "dclaw1somepeerauthor",
+        }),
+        encoding="utf-8",
+    )
+    # Three consecutive compile_fail events on the ledger and no authored
+    # event for the base name yet -> cap fires.
+    (archive / "overlay_ledger.jsonl").write_text(
+        "\n".join([
+            json.dumps({"ts": 1.0, "event": "compile_fail", "community_id_hex": "11" * 20, "stage": "test_vectors"}),
+            json.dumps({"ts": 2.0, "event": "compile_fail", "community_id_hex": "22" * 20, "stage": "test_vectors"}),
+            json.dumps({"ts": 3.0, "event": "compile_fail", "community_id_hex": "33" * 20, "stage": "post_compile"}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(archive))
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+    # Reload the registry's archive view of the new dir.
+    from protocol.overlay_archive import OverlayArchive
+    started_agent.registry._archive = OverlayArchive(archive)
+
+    obj = _next_objective(started_agent)
+    assert obj is not None
+    assert obj["label"] == "stuck_in_zero_shot_failure"
+    assert obj["consecutive_compile_fails"] == 3
+
+
+@pytest.mark.asyncio
+async def test_successor_resumes_authoring_after_successful_authored_event(
+    started_agent, monkeypatch, tmp_path,
+):
+    """An ``authored`` event for the same overlay name resets the consecutive
+    streak — the cap only counts fails SINCE the last success, so a different
+    name's failures (or a prior run's) don't stick to the current agent."""
+    archive = tmp_path / "overlay_archive"
+    archive.mkdir()
+    cid_hex = "bb" * 20
+    (archive / f"{cid_hex}.meta.json").write_text(
+        json.dumps({
+            "community_id_hex": cid_hex,
+            "name": "download_announce",
+            "identity_version": "1.0.0",
+            "author_id": "dclaw1somepeerauthor",
+        }),
+        encoding="utf-8",
+    )
+    # Three fails, then a successful authored event for the same name, then
+    # one more fail. Cap should see only 1 (the post-authored one).
+    (archive / "overlay_ledger.jsonl").write_text(
+        "\n".join([
+            json.dumps({"ts": 1.0, "event": "compile_fail", "community_id_hex": "11" * 20, "stage": "test_vectors"}),
+            json.dumps({"ts": 2.0, "event": "compile_fail", "community_id_hex": "22" * 20, "stage": "test_vectors"}),
+            json.dumps({"ts": 3.0, "event": "compile_fail", "community_id_hex": "33" * 20, "stage": "test_vectors"}),
+            json.dumps({"ts": 4.0, "event": "authored", "community_id_hex": "44" * 20, "name": "download_announce", "identity_version": "1.1.0"}),
+            json.dumps({"ts": 5.0, "event": "compile_fail", "community_id_hex": "55" * 20, "stage": "test_vectors"}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OVERLAY_ARCHIVE_DIR", str(archive))
+    _set_env(monkeypatch, _SUCCESSOR_ENV)
+    started_agent.load_manifest(MANIFEST_MD)
+    _record_completed_download(started_agent)
+    from protocol.overlay_archive import OverlayArchive
+    started_agent.registry._archive = OverlayArchive(archive)
+
+    obj = _next_objective(started_agent)
+    # The author_v_next path nominally would fire (base overlay present,
+    # streak below cap); only blocked if the agent has already self-authored
+    # download_announce (which it has, per the authored ledger event from a
+    # cross-process mirror — see _self_authored_overlay_ids). Either way the
+    # outcome must NOT be ``stuck_in_zero_shot_failure``.
+    assert obj is None or obj["label"] != "stuck_in_zero_shot_failure"

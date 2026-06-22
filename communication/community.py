@@ -1,39 +1,19 @@
-"""SeedboxCommunity: admit-by-donation + overlay + network-manifest distribution.
+"""SeedboxCommunity: the bootstrap overlay — signed-log admission, overlay
+descriptor exchange, and content (file-bytes) transfer.
 
 Wire protocol:
 
-    JoinRequestPayload(donation_txid: bytes)         joiner -> gatekeeper
-    JoinResponsePayload(accepted: bool)              gatekeeper -> joiner
-    OverlayOfferPayload(md_hash: 20 bytes)           peer -> peer
-    OverlayRequestPayload(md_hash: 20 bytes)         peer -> peer
-    OverlayDeliveryPayload(md_hash, md_text)         peer -> peer
-    ManifestOfferPayload(md_hash: 20 bytes)          peer -> peer
-    ManifestRequestPayload(md_hash: 20 bytes)        peer -> peer
-    ManifestDeliveryPayload(md_hash, md_text)        peer -> peer
-    PeerIntroPayload(wallet_address, known_overlays) peer -> peer (post-admission)
+    CommunityJoinRequest/ResponsePayload                     admit-by-signed-log-entry
+    OverlayOffer / OverlayRequest / OverlayDeliveryPayload   descriptor exchange
+    PeerIntroPayload(wallet_address, known_overlays)         post-admission
+    ContentRequest / ContentDeliveryPayload                  file bytes by content_id
 
-Joiner-side helpers:
-
-    ``request_join(gatekeeper, donation_txid) -> asyncio.Future[bool]``
-        send JOIN_REQUEST + return a future for the decision.
-
-    ``fetch_overlay(peer, md_hash) -> asyncio.Future[bytes]``
-        send OVERLAY_REQUEST + return a future for the md_text bytes.
-
-    ``fetch_manifest(peer, md_hash) -> asyncio.Future[bytes]``
-        send MANIFEST_REQUEST + return a future for the manifest bytes.
-
-Publisher-side:
-
-    ``publish_overlay(md_text)`` / ``publish_manifest(md_text)``
-        register a descriptor / manifest the node is willing to serve
-        via {OVERLAY,MANIFEST}_DELIVERY when peers ask for it (looked
-        up by sha1 of the canonicalized bytes).
-
-Manifests and overlays share the same canonicalization + sha1[:20]
-derivation but live on different message ids so the receiver knows
-which document type it just got, and so a malicious peer cannot trick
-a joiner into compiling a manifest as a runnable community.
+Admission has no gatekeeper key: a joiner self-appends a signed donation_intent,
+and membership is decided by every peer replaying the union of signed logs
+(``agent.community_state.replay_community``). Descriptors and content are
+addressed by sha1 — an overlay by sha1[:20] of its canonicalized markdown, a
+file by sha1 of its bytes — and deliveries are re-hashed on receipt, so a peer
+cannot smuggle in different bytes under the same id.
 """
 
 from __future__ import annotations
@@ -42,6 +22,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 import msgpack
@@ -51,10 +32,8 @@ from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
 
-from admission.donation_verifier import DonationVerifier
 
-
-# Mirror the redteam pull-loop's HTTP access-log shape: one line per
+# Mirror the signed_log pull-loop's HTTP access-log shape: one line per
 # wire event, written via the standard logger so systemd journals
 # capture it alongside uvicorn's ``/head`` / ``/entries`` lines. Grep
 # with ``journalctl -u delftclaw-mcp@... | grep IPv8``.
@@ -93,6 +72,12 @@ class PeerMeta:
 # trying to flood us with arbitrarily large markdown blobs.
 MAX_OVERLAY_BYTES = 64 * 1024
 
+# Cap on a single CONTENT_DELIVERY payload. Same 64 KiB envelope as
+# overlay delivery — keeps wire-frame budgeting uniform. Content files
+# bigger than this need chunking (out of scope for the current
+# demo; the Creative Commons library serves <2 KiB text files).
+MAX_CONTENT_BYTES = 64 * 1024
+
 
 def _canonicalize(text: str) -> bytes:
     """Mirror of ``protocol.compiler.canonicalize_md`` (kept local to avoid the import cycle)."""
@@ -108,26 +93,14 @@ def overlay_id(md_text: str) -> bytes:
     return hashlib.sha1(_canonicalize(md_text)).digest()[:20]
 
 
-def manifest_id(md_text: str) -> bytes:
-    """20-byte sha1-prefix id of a network-manifest's canonicalized bytes.
+def content_id_for_bytes(data: bytes) -> bytes:
+    """Full 20-byte sha1 of a file's bytes — the canonical content_id.
 
-    Same derivation as ``overlay_id``; aliased for call-site clarity.
+    The advertised magnet's btih hex MUST equal ``content_id_for_bytes(file).hex()``;
+    that is what lets ``on_content_delivery`` self-verify the reply against
+    the request without any out-of-band trust.
     """
-    return hashlib.sha1(_canonicalize(md_text)).digest()[:20]
-
-
-@vp_compile
-class JoinRequestPayload(VariablePayload):
-    msg_id = 1
-    format_list = ["varlenH"]
-    names = ["donation_txid"]
-
-
-@vp_compile
-class JoinResponsePayload(VariablePayload):
-    msg_id = 2
-    format_list = ["?"]
-    names = ["accepted"]
+    return hashlib.sha1(data).digest()
 
 
 @vp_compile
@@ -152,27 +125,6 @@ class OverlayDeliveryPayload(VariablePayload):
 
 
 @vp_compile
-class ManifestOfferPayload(VariablePayload):
-    msg_id = 6
-    format_list = ["20s"]
-    names = ["md_hash"]
-
-
-@vp_compile
-class ManifestRequestPayload(VariablePayload):
-    msg_id = 7
-    format_list = ["20s"]
-    names = ["md_hash"]
-
-
-@vp_compile
-class ManifestDeliveryPayload(VariablePayload):
-    msg_id = 8
-    format_list = ["20s", "varlenH"]
-    names = ["md_hash", "md_text"]
-
-
-@vp_compile
 class PeerIntroPayload(VariablePayload):
     """Live introduction sent after admission so peers learn each other's
     wallet address (for future BTC ops) and overlay catalogue (so they
@@ -186,19 +138,40 @@ class PeerIntroPayload(VariablePayload):
 
 
 @vp_compile
+class ContentRequestPayload(VariablePayload):
+    """Joiner-side request for a file by its content_id (sha1(bytes)).
+
+    Mirrors ``OverlayRequestPayload`` shape, on a different msg_id so the
+    receiver dispatches to the file-bytes handler — not the markdown one.
+    """
+
+    msg_id = 12
+    format_list = ["20s"]
+    names = ["content_id"]
+
+
+@vp_compile
+class ContentDeliveryPayload(VariablePayload):
+    """Reply with the file bytes. The receiver verifies
+    ``sha1(data) == content_id`` before resolving — exactly the same
+    self-verifying property the overlay path uses for markdown."""
+
+    msg_id = 13
+    format_list = ["20s", "varlenH"]
+    names = ["content_id", "data"]
+
+
+@vp_compile
 class CommunityJoinRequestPayload(VariablePayload):
-    """Phase-5 community admission: joiner ships a JSON-serialised
-    signed donation_intent entry the gatekeeper validates against the
-    community-log replay state. Coexists with the legacy
-    ``JoinRequestPayload`` (msg_id=1) so older agents still admit by
-    raw-txid. New agents prefer this path because it requires no
-    trusted gatekeeper key custody."""
+    """Community admission: the joiner ships a JSON-serialised signed
+    donation_intent entry. There is no gatekeeper key — the receiver replays
+    the community-log state to decide accept/reject, and every other member
+    reaches the same verdict by replaying the same signed logs."""
 
     msg_id = 10
     # signed_entry: utf-8 JSON of the signed-log self-entry the donor
-    # appended to their own SignedAppendOnlyLog. The gatekeeper
-    # re-verifies its signature + identity binding and replays the
-    # community state to decide accept/reject.
+    # appended to their own SignedAppendOnlyLog. The receiver re-verifies its
+    # signature + identity binding and replays community state to decide.
     format_list = ["varlenH"]
     names = ["signed_entry"]
 
@@ -213,17 +186,12 @@ class CommunityJoinResponsePayload(VariablePayload):
     names = ["accepted", "reason"]
 
 
-# Optional callback signatures: invoked when this node receives an OFFER
-# for a hash it doesn't already know about.
+# Optional callbacks. ``OverlayOfferCallback`` fires when this node receives an
+# OFFER for an overlay hash it doesn't already know. ``CommunityJoinCallback``
+# decides accept/reject for the signed-log admission path (the community-state
+# replay layer is the source of truth; the callback just plumbs it to the wire).
 OverlayOfferCallback = Callable[[Peer, bytes], None]
-ManifestOfferCallback = Callable[[Peer, bytes], None]
 PeerIntroCallback = Callable[[Peer, PeerMeta], None]
-
-# Phase 5: callback signature for the community-log admission path.
-# Receives the JSON-decoded signed entry the joiner shipped; returns
-# ``(accepted, reason)``. The community.community_state-replay layer
-# is the source of truth — this callback just plumbs the agent runtime
-# to the wire handler.
 CommunityJoinCallback = Callable[[Peer, dict], tuple[bool, str]]
 
 
@@ -234,43 +202,35 @@ class SeedboxCommunity(Community, PeerObserver):
 
     def __init__(self, settings: CommunitySettings) -> None:
         super().__init__(settings)
-        self._verifier: Optional[DonationVerifier] = None
-
-        # JOIN bookkeeping.
-        self._pending_joins: dict[bytes, asyncio.Future[bool]] = {}
 
         # OVERLAY bookkeeping.
         self._published: dict[bytes, str] = {}              # md_hash -> md_text we serve
-        self._known_offers: dict[bytes, set[bytes]] = {}    # md_hash -> set of peer mids that offered
         self._pending_fetches: dict[bytes, asyncio.Future[bytes]] = {}
         self._offer_callback: Optional[OverlayOfferCallback] = None
-
-        # MANIFEST bookkeeping (parallel to OVERLAY).
-        self._published_manifests: dict[bytes, str] = {}
-        self._known_manifest_offers: dict[bytes, set[bytes]] = {}
-        self._pending_manifest_fetches: dict[bytes, asyncio.Future[bytes]] = {}
-        self._manifest_offer_callback: Optional[ManifestOfferCallback] = None
 
         # PEER_INTRO bookkeeping — populated on admission round-trip.
         self._wallet_address: Optional[str] = None        # set by configure()
         self._peer_meta: dict[bytes, PeerMeta] = {}        # peer.mid -> PeerMeta
         self._peer_intro_callback: Optional[PeerIntroCallback] = None
 
-        # COMMUNITY_JOIN_REQUEST bookkeeping — Phase 5 admission path.
+        # COMMUNITY_JOIN bookkeeping — the signed-log admission path.
         self._pending_community_joins: dict[bytes, asyncio.Future[tuple[bool, str]]] = {}
         self._community_join_callback: Optional[CommunityJoinCallback] = None
 
-        self.add_message_handler(JoinRequestPayload, self.on_join_request)
-        self.add_message_handler(JoinResponsePayload, self.on_join_response)
+        # CONTENT exchange bookkeeping (file bytes by sha1 content_id).
+        # The path-based store reads bytes on demand so a re-staged file
+        # is picked up without re-publishing.
+        self._content_store: dict[bytes, Path] = {}
+        self._pending_content_fetches: dict[bytes, asyncio.Future[bytes]] = {}
+
         self.add_message_handler(OverlayOfferPayload, self.on_overlay_offer)
         self.add_message_handler(OverlayRequestPayload, self.on_overlay_request)
         self.add_message_handler(OverlayDeliveryPayload, self.on_overlay_delivery)
-        self.add_message_handler(ManifestOfferPayload, self.on_manifest_offer)
-        self.add_message_handler(ManifestRequestPayload, self.on_manifest_request)
-        self.add_message_handler(ManifestDeliveryPayload, self.on_manifest_delivery)
         self.add_message_handler(PeerIntroPayload, self.on_peer_intro)
         self.add_message_handler(CommunityJoinRequestPayload, self.on_community_join_request)
         self.add_message_handler(CommunityJoinResponsePayload, self.on_community_join_response)
+        self.add_message_handler(ContentRequestPayload, self.on_content_request)
+        self.add_message_handler(ContentDeliveryPayload, self.on_content_delivery)
 
     # ------------------------------------------------------------------
     # Configuration / wiring
@@ -279,20 +239,14 @@ class SeedboxCommunity(Community, PeerObserver):
     def configure(
         self,
         *,
-        verifier: Optional[DonationVerifier] = None,
         offer_callback: Optional[OverlayOfferCallback] = None,
-        manifest_offer_callback: Optional[ManifestOfferCallback] = None,
         wallet_address: Optional[str] = None,
         peer_intro_callback: Optional[PeerIntroCallback] = None,
         community_join_callback: Optional[CommunityJoinCallback] = None,
     ) -> None:
         """Wire optional collaborators after construction."""
-        if verifier is not None:
-            self._verifier = verifier
         if offer_callback is not None:
             self._offer_callback = offer_callback
-        if manifest_offer_callback is not None:
-            self._manifest_offer_callback = manifest_offer_callback
         if wallet_address is not None:
             self._wallet_address = wallet_address
         if peer_intro_callback is not None:
@@ -310,44 +264,7 @@ class SeedboxCommunity(Community, PeerObserver):
         pass
 
     # ------------------------------------------------------------------
-    # JOIN flow
-    # ------------------------------------------------------------------
-
-    def request_join(self, gatekeeper: Peer, donation_txid: bytes) -> asyncio.Future[bool]:
-        """Joiner-side: send JOIN_REQUEST; the returned future resolves with the decision."""
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[bool] = loop.create_future()
-        self._pending_joins[gatekeeper.mid] = future
-        _log_wire("send", "JoinRequest", gatekeeper, txid=donation_txid.hex()[:16])
-        self.ez_send(gatekeeper, JoinRequestPayload(donation_txid))
-        return future
-
-    @lazy_wrapper(JoinRequestPayload)
-    def on_join_request(self, peer: Peer, payload: JoinRequestPayload) -> None:
-        _log_wire("recv", "JoinRequest", peer, txid=payload.donation_txid.hex()[:16])
-        if self._verifier is None:
-            _log_wire("send", "JoinResponse", peer, accepted=False, reason="no_verifier")
-            self.ez_send(peer, JoinResponsePayload(False))
-            return
-        result = self._verifier.verify(payload.donation_txid.hex())
-        if result.accepted:
-            self.network.add_verified_peer(peer)
-        _log_wire("send", "JoinResponse", peer, accepted=result.accepted)
-        self.ez_send(peer, JoinResponsePayload(result.accepted))
-        if result.accepted:
-            self._send_peer_intro(peer)
-
-    @lazy_wrapper(JoinResponsePayload)
-    def on_join_response(self, peer: Peer, payload: JoinResponsePayload) -> None:
-        _log_wire("recv", "JoinResponse", peer, accepted=payload.accepted)
-        future = self._pending_joins.pop(peer.mid, None)
-        if future is not None and not future.done():
-            future.set_result(payload.accepted)
-        if payload.accepted:
-            self._send_peer_intro(peer)
-
-    # ------------------------------------------------------------------
-    # COMMUNITY_JOIN flow (Phase 5 — admit-by-signed-log-entry)
+    # COMMUNITY_JOIN flow — admit-by-signed-log-entry (no gatekeeper key)
     # ------------------------------------------------------------------
 
     def request_community_join(
@@ -355,11 +272,10 @@ class SeedboxCommunity(Community, PeerObserver):
     ) -> asyncio.Future[tuple[bool, str]]:
         """Joiner-side: ship a JSON-serialised signed donation_intent entry.
 
-        Returns a future resolving to ``(accepted, reason)``.
-        Compared to the legacy ``request_join``, the joiner does NOT
-        rely on the gatekeeper having a real Bitcoin verifier — the
-        gatekeeper instead caches the entry in its own peer-log and
-        replays community state to decide.
+        Returns a future resolving to ``(accepted, reason)``. The receiver does
+        NOT hold a gatekeeper key — it caches the entry in its peer-log and
+        replays community state to decide, and every member converges on the
+        same verdict by replaying the same signed logs.
         """
         import json as _json
         loop = asyncio.get_event_loop()
@@ -456,6 +372,24 @@ class SeedboxCommunity(Community, PeerObserver):
         _log_wire("send", "OverlayOffer", peer, md_hash=md_hash.hex()[:16])
         self.ez_send(peer, OverlayOfferPayload(md_hash))
 
+    def offer_overlay_to_all_peers(self) -> int:
+        """Send OVERLAY_OFFER for every published overlay to every verified peer.
+
+        Used right after an agent authors + publishes a new overlay so the
+        whole fleet learns the new md_hash and can fetch it. Returns the count
+        of (peer, overlay) offers sent. A node that has published nothing, or
+        has no verified peers, sends nothing and returns 0.
+        """
+        hashes = list(self._published.keys())
+        if not hashes:
+            return 0
+        sent = 0
+        for peer in list(self.network.verified_peers):
+            for md_hash in hashes:
+                self.offer_overlay(peer, md_hash)
+                sent += 1
+        return sent
+
     def fetch_overlay(self, peer: Peer, md_hash: bytes) -> asyncio.Future[bytes]:
         """Joiner-side: send OVERLAY_REQUEST; resolve with the delivered md_text bytes."""
         if len(md_hash) != 20:
@@ -472,7 +406,10 @@ class SeedboxCommunity(Community, PeerObserver):
     @lazy_wrapper(OverlayOfferPayload)
     def on_overlay_offer(self, peer: Peer, payload: OverlayOfferPayload) -> None:
         _log_wire("recv", "OverlayOffer", peer, md_hash=payload.md_hash.hex()[:16])
-        self._known_offers.setdefault(payload.md_hash, set()).add(peer.mid)
+        # Verify the offering peer so a later fetch_overlay(peer, ...) — e.g. the
+        # LLM adopting an offered overlay — can resolve it. An OFFER is an
+        # explicit "you can ask me for this", so trusting the offerer is correct.
+        self.network.add_verified_peer(peer)
         cb = self._offer_callback
         if cb is not None:
             cb(peer, payload.md_hash)
@@ -506,75 +443,6 @@ class SeedboxCommunity(Community, PeerObserver):
         if overlay_id(delivered_text) != payload.md_hash:
             return
         future = self._pending_fetches.pop(payload.md_hash, None)
-        if future is not None and not future.done():
-            future.set_result(payload.md_text)
-
-    # ------------------------------------------------------------------
-    # NETWORK MANIFEST exchange (parallel to OVERLAY descriptor exchange)
-    # ------------------------------------------------------------------
-
-    def publish_manifest(self, md_text: str) -> bytes:
-        """Make ``md_text`` available to peers who ask for its sha1-prefix id.
-
-        Returns the 20-byte id so the caller can advertise it.
-        """
-        md_hash = manifest_id(md_text)
-        self._published_manifests[md_hash] = md_text
-        return md_hash
-
-    def offer_manifest(self, peer: Peer, md_hash: bytes) -> None:
-        """Tell ``peer`` we serve a manifest with this id (no payload sent)."""
-        if len(md_hash) != 20:
-            raise ValueError("md_hash must be exactly 20 bytes")
-        _log_wire("send", "ManifestOffer", peer, md_hash=md_hash.hex()[:16])
-        self.ez_send(peer, ManifestOfferPayload(md_hash))
-
-    def fetch_manifest(self, peer: Peer, md_hash: bytes) -> asyncio.Future[bytes]:
-        """Joiner-side: send MANIFEST_REQUEST; resolve with the delivered manifest_md bytes."""
-        if len(md_hash) != 20:
-            raise ValueError("md_hash must be exactly 20 bytes")
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[bytes] = loop.create_future()
-        self._pending_manifest_fetches[md_hash] = future
-        _log_wire("send", "ManifestRequest", peer, md_hash=md_hash.hex()[:16])
-        self.ez_send(peer, ManifestRequestPayload(md_hash))
-        return future
-
-    @lazy_wrapper(ManifestOfferPayload)
-    def on_manifest_offer(self, peer: Peer, payload: ManifestOfferPayload) -> None:
-        _log_wire("recv", "ManifestOffer", peer, md_hash=payload.md_hash.hex()[:16])
-        self._known_manifest_offers.setdefault(payload.md_hash, set()).add(peer.mid)
-        cb = self._manifest_offer_callback
-        if cb is not None:
-            cb(peer, payload.md_hash)
-
-    @lazy_wrapper(ManifestRequestPayload)
-    def on_manifest_request(self, peer: Peer, payload: ManifestRequestPayload) -> None:
-        _log_wire("recv", "ManifestRequest", peer, md_hash=payload.md_hash.hex()[:16])
-        md_text = self._published_manifests.get(payload.md_hash)
-        if md_text is None:
-            return  # silently ignore; requester times out at its end
-        body = md_text.encode("utf-8")
-        if len(body) > MAX_OVERLAY_BYTES:
-            return  # we never publish anything that big; defensive drop
-        _log_wire(
-            "send", "ManifestDelivery", peer,
-            md_hash=payload.md_hash.hex()[:16], bytes=len(body),
-        )
-        self.ez_send(peer, ManifestDeliveryPayload(payload.md_hash, body))
-
-    @lazy_wrapper(ManifestDeliveryPayload)
-    def on_manifest_delivery(self, peer: Peer, payload: ManifestDeliveryPayload) -> None:
-        _log_wire(
-            "recv", "ManifestDelivery", peer,
-            md_hash=payload.md_hash.hex()[:16], bytes=len(payload.md_text),
-        )
-        if len(payload.md_text) > MAX_OVERLAY_BYTES:
-            return
-        delivered_text = payload.md_text.decode("utf-8", errors="replace")
-        if manifest_id(delivered_text) != payload.md_hash:
-            return
-        future = self._pending_manifest_fetches.pop(payload.md_hash, None)
         if future is not None and not future.done():
             future.set_result(payload.md_text)
 
@@ -633,24 +501,86 @@ class SeedboxCommunity(Community, PeerObserver):
             cb(peer, meta)
 
     # ------------------------------------------------------------------
-    # Read-only state accessors (handy for tests / debugging)
+    # CONTENT exchange (file bytes by sha1 content_id)
     # ------------------------------------------------------------------
 
-    @property
-    def published_overlays(self) -> dict[bytes, str]:
-        return dict(self._published)
+    def publish_content(self, content_id: bytes, path: Path) -> bytes:
+        """Make ``path``'s bytes available to peers that ask for ``content_id``.
 
-    @property
-    def known_offers(self) -> dict[bytes, set[bytes]]:
-        return {h: set(mids) for h, mids in self._known_offers.items()}
+        ``content_id`` MUST be ``sha1(path.read_bytes())`` — callers compute
+        this once at boot so the file's advertised magnet btih equals the
+        content_id (the self-verifying property the receiver relies on).
+        Returns ``content_id`` for chained-call convenience.
+        """
+        if len(content_id) != 20:
+            raise ValueError("content_id must be exactly 20 bytes")
+        self._content_store[content_id] = Path(path)
+        return content_id
 
-    @property
-    def published_manifests(self) -> dict[bytes, str]:
-        return dict(self._published_manifests)
+    def fetch_content(self, peer: Peer, content_id: bytes) -> asyncio.Future[bytes]:
+        """Fetcher-side: send CONTENT_REQUEST; resolve with the delivered bytes."""
+        if len(content_id) != 20:
+            raise ValueError("content_id must be exactly 20 bytes")
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[bytes] = loop.create_future()
+        # Key by content_id, not peer.mid — first peer with the bytes wins
+        # (same pattern as fetch_overlay).
+        self._pending_content_fetches[content_id] = future
+        _log_wire("send", "ContentRequest", peer, content_id=content_id.hex()[:16])
+        self.ez_send(peer, ContentRequestPayload(content_id))
+        return future
 
-    @property
-    def known_manifest_offers(self) -> dict[bytes, set[bytes]]:
-        return {h: set(mids) for h, mids in self._known_manifest_offers.items()}
+    @lazy_wrapper(ContentRequestPayload)
+    def on_content_request(self, peer: Peer, payload: ContentRequestPayload) -> None:
+        _log_wire("recv", "ContentRequest", peer, content_id=payload.content_id.hex()[:16])
+        path = self._content_store.get(payload.content_id)
+        if path is None or not path.is_file():
+            return  # silently ignore; requester times out
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            _wire_logger.warning("content read failed for %s: %s", path, exc)
+            return
+        if len(data) > MAX_CONTENT_BYTES:
+            _wire_logger.warning(
+                "content %s exceeds %d-byte cap (%d); refusing to send",
+                path.name, MAX_CONTENT_BYTES, len(data),
+            )
+            return
+        # Defence in depth: only ship bytes whose hash matches what was
+        # requested. Catches a stale store entry pointing at a swapped file.
+        if hashlib.sha1(data).digest() != payload.content_id:
+            _wire_logger.warning(
+                "content_store path %s no longer hashes to %s; refusing to send",
+                path, payload.content_id.hex()[:16],
+            )
+            return
+        _log_wire(
+            "send", "ContentDelivery", peer,
+            content_id=payload.content_id.hex()[:16], bytes=len(data),
+        )
+        self.ez_send(peer, ContentDeliveryPayload(payload.content_id, data))
+
+    @lazy_wrapper(ContentDeliveryPayload)
+    def on_content_delivery(self, peer: Peer, payload: ContentDeliveryPayload) -> None:
+        _log_wire(
+            "recv", "ContentDelivery", peer,
+            content_id=payload.content_id.hex()[:16], bytes=len(payload.data),
+        )
+        if len(payload.data) > MAX_CONTENT_BYTES:
+            return
+        # Self-verifying: refuse to resolve unless the bytes hash to the
+        # exact content_id we asked for. A malicious peer cannot smuggle in
+        # different bytes under the same id.
+        if hashlib.sha1(payload.data).digest() != payload.content_id:
+            return
+        future = self._pending_content_fetches.pop(payload.content_id, None)
+        if future is not None and not future.done():
+            future.set_result(payload.data)
+
+    # ------------------------------------------------------------------
+    # Read-only state accessors (handy for tests / debugging)
+    # ------------------------------------------------------------------
 
     @property
     def peer_meta(self) -> dict[bytes, PeerMeta]:
@@ -661,3 +591,8 @@ class SeedboxCommunity(Community, PeerObserver):
     def wallet_address(self) -> Optional[str]:
         """The wallet address this node advertises in its PEER_INTROs (None if unconfigured)."""
         return self._wallet_address
+
+    @property
+    def published_content(self) -> dict[bytes, Path]:
+        """``content_id`` (20-byte sha1) -> on-disk path we serve."""
+        return dict(self._content_store)

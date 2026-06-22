@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional, Type
 
@@ -51,10 +53,41 @@ from protocol.compiler import (
     compile_overlay,
 )
 from protocol.llm import LLMClient
+from protocol.overlay_archive import OverlayArchive
 
-from shared.logging import get_logger
+from identity.logging import get_logger
 
 _logger = get_logger(__name__)
+
+# Dedicated stdlib logger for the overlay lifecycle event stream. Emits
+# one-line, greppable ``OVERLAY …`` records (mirrors
+# ``communication.community._log_wire``) so systemd journals capture them
+# and ``deploy.trace`` can parse them into the monitor view.
+_lifecycle_logger = logging.getLogger("delftclaw.overlay.lifecycle")
+
+
+def _one_line(text: str, limit: int = 200) -> str:
+    """Collapse a (possibly multi-line) error into a single bounded log token."""
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
+
+
+def _stage_of_error(msg: str) -> str:
+    """Best-effort compile-failure stage from a ProtocolCompileError message."""
+    m = msg.lower()
+    if "sandbox" in m:
+        return "sandbox"
+    if "test vector" in m:
+        return "test_vectors"
+    if "community_id mismatch" in m or "community_id drift" in m:
+        return "community_id"
+    if "missing generatedcommunity" in m or "missing class" in m or "ast-parse" in m:
+        return "codegen"
+    if any(k in m for k in ("# constants", "# runtime state", "lifecycle", "# tasks", "register_task")):
+        return "structural"
+    if any(k in m for k in ("section", "table", "encoding", "msg_id", "schema", "header")):
+        return "schema"
+    return "unknown"
 
 
 class OverlayRegistry:
@@ -70,11 +103,29 @@ class OverlayRegistry:
         ipv8: Any,
         llm: LLMClient,
         cache_dir: Path | None = None,
+        archive_dir: Path | None = None,
+        history_dir: Path | None = None,
     ) -> None:
         self._ipv8 = ipv8
         self._llm = llm
         self._compiled: dict[bytes, CompiledOverlay] = {}
         self._instances: dict[bytes, Any] = {}
+        # Per-demo content-addressed spec archive + ledger. ``None`` =
+        # disabled (tests / ad-hoc runs). When set (via OVERLAY_ARCHIVE_DIR,
+        # wired by deploy.scenario_boot), every overlay this agent publishes
+        # or receives is archived by community_id and every lifecycle event
+        # appended to the ledger. Observability must never break the overlay
+        # flow, so all archive calls are best-effort (failures are logged,
+        # not raised).
+        # ``history_dir``, when set, makes the archive mirror every ``authored``
+        # event into a fleet-wide ``version_history.jsonl`` + a rendered
+        # ``version_history.md`` — the per-scenario thesis artifact ``make
+        # trace`` inlines and ``make demo`` bundles. See
+        # protocol.version_history.
+        self._archive: OverlayArchive | None = (
+            OverlayArchive(archive_dir, history_dir=history_dir)
+            if archive_dir is not None else None
+        )
         # On-disk cache for LLM-generated overlay source. ``None`` =
         # disabled (matches every existing test that constructs an
         # OverlayRegistry without this kwarg). When set, a (canonical_md,
@@ -85,18 +136,41 @@ class OverlayRegistry:
         self._cache_dir: Path | None = Path(cache_dir) if cache_dir is not None else None
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
+        # Per-agent serialization for aload — see aload() docstring. Lazy bind
+        # to the running event loop on first acquire (Python 3.10+ contract);
+        # constructing here is safe even if __init__ runs outside an event
+        # loop. One lock per registry, so different agents (= different
+        # processes) don't share state through this object.
+        import asyncio as _asyncio
+        self._aload_lock = _asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Markdown-overlay path (v5.1 default)
     # ------------------------------------------------------------------
 
-    def load(self, md_text: str) -> Any:
+    def load(
+        self,
+        md_text: str,
+        *,
+        provenance: str | None = None,
+        llm_source: str | None = None,
+    ) -> Any:
         """Compile + register a markdown overlay descriptor; return the live instance.
 
         On a second call with the same descriptor, returns the existing
         instance without recompiling or re-registering. The cache check
         runs BEFORE ``compile_overlay`` so a re-load skips the LLM
         round-trip entirely.
+
+        ``provenance`` (e.g. ``"published"`` / ``"received_from:<peer>"``) is
+        recorded in the per-demo archive + ledger when one is configured.
+
+        ``llm_source`` lets the caller short-circuit the LLM round-trip with a
+        pre-canned compiled Python source (e.g. a ``*_stub.py`` body for the
+        seeder boot). The sandbox AST walk, structural-contract check and test
+        vectors all still run; the disk cache is bypassed. This is the route
+        that makes the seeder appear in the per-demo overlay archive (the
+        manual-registration path used to skip both archive and lifecycle).
         """
         # Cheap content-hash derivation; identical canonicalisation as
         # the one ``compile_overlay`` would do internally, so the
@@ -105,7 +179,12 @@ class OverlayRegistry:
         if cid in self._instances:
             return self._instances[cid]
 
-        compiled = self._compile_with_disk_cache(md_text)
+        self._archive_seen(md_text, provenance)
+        try:
+            compiled = self._compile_with_disk_cache(md_text, llm_source=llm_source)
+        except Exception as exc:
+            self._archive_compile_fail(cid, exc, provenance)
+            raise
         if compiled.community_id != cid:
             raise RuntimeError(
                 f"compile_overlay community_id drift: pre-derived {cid.hex()}, "
@@ -113,20 +192,31 @@ class OverlayRegistry:
             )
 
         settings = self._build_settings()
-        instance = compiled.community_class(settings)
+        try:
+            instance = compiled.community_class(settings)
+            with self._ipv8.overlay_lock:
+                self._ipv8.overlays.append(instance)
+            # Outside the static IPv8 boot path no one will call started() for us.
+            if hasattr(instance, "started"):
+                instance.started()
+            self._compiled[cid] = compiled
+            self._instances[cid] = instance
+            self._emit_install(compiled)
+            self._archive_install(md_text, compiled, provenance)
+            return instance
+        except Exception as exc:
+            self._archive_post_compile_fail(cid, exc, provenance)
+            _logger.exception("post-compile publish failed for cid=%s", cid.hex())
+            raise
 
-        with self._ipv8.overlay_lock:
-            self._ipv8.overlays.append(instance)
-
-        # Outside the static IPv8 boot path no one will call started() for us.
-        if hasattr(instance, "started"):
-            instance.started()
-
-        self._compiled[cid] = compiled
-        self._instances[cid] = instance
-        return instance
-
-    async def aload(self, md_text: str) -> Any:
+    async def aload(
+        self,
+        md_text: str,
+        *,
+        provenance: str | None = None,
+        llm_source: str | None = None,
+        authored_event: dict | None = None,
+    ) -> Any:
         """Async sibling of ``load`` for use from coroutine call sites.
 
         The compile step (LLM round-trip + AST whitelist + test vectors)
@@ -137,37 +227,146 @@ class OverlayRegistry:
 
         Cache hits are O(1) on the calling task and never schedule a
         worker thread.
+
+        ``authored_event`` lets a publisher (overlay_author_and_publish) thread
+        its archive ledger event INTO the shielded compile-and-install
+        pipeline, so the ``authored`` record (and the fleet-wide
+        ``version_history.md`` row it generates) survives an outer
+        cancellation.
+
+        **Cancellation resilience:** the inner pipeline runs as a shielded
+        task. When the outer caller is cancelled (e.g. watchdog's 240s
+        wait_for fires mid-compile), the caller's await raises
+        ``CancelledError`` but the inner task continues on the event loop
+        to completion — the install lands in the archive, so the next
+        snapshot sees a fully-installed overlay instead of a stranded ``.md``.
         """
+        import asyncio
+
         cid = community_id_from_md(md_text)
         if cid in self._instances:
             return self._instances[cid]
 
+        try:
+            return await asyncio.shield(self._do_aload(
+                cid, md_text, provenance, llm_source, authored_event,
+            ))
+        except asyncio.CancelledError:
+            _logger.warning("aload cancelled mid-pipeline for cid=%s", cid.hex())
+            raise
+
+    async def _do_aload(
+        self,
+        cid: bytes,
+        md_text: str,
+        provenance: str | None,
+        llm_source: str | None,
+        authored_event: dict | None,
+    ) -> Any:
+        """The actual compile-and-install pipeline, designed to be shielded.
+
+        The per-agent lock lives INSIDE this method (not in the outer
+        ``aload``) so that when the caller is cancelled the lock is still
+        held by the shielded task — preventing a concurrent caller from
+        starting a duplicate compile during the brief window before this
+        task's post-compile section completes.
+
+        Lock-ordering invariant: ``self._aload_lock`` is always acquired
+        strictly BEFORE ``self._ipv8.overlay_lock`` (which is acquired
+        inside ``_post_compile_install``). No inverse ordering anywhere.
+        """
         import asyncio
-        compiled = await asyncio.to_thread(self._compile_with_disk_cache, md_text)
-        if compiled.community_id != cid:
-            raise RuntimeError(
-                f"compile_overlay community_id drift: pre-derived {cid.hex()}, "
-                f"post-compile {compiled.community_id.hex()}"
+        async with self._aload_lock:
+            # Re-check after acquiring the lock — another concurrent caller
+            # may have just finished installing while we waited.
+            if cid in self._instances:
+                return self._instances[cid]
+            self._archive_seen(md_text, provenance)
+            try:
+                compiled = await asyncio.to_thread(
+                    self._compile_with_disk_cache, md_text, llm_source=llm_source,
+                )
+            except Exception as exc:
+                self._archive_compile_fail(cid, exc, provenance)
+                raise
+            if compiled.community_id != cid:
+                raise RuntimeError(
+                    f"compile_overlay community_id drift: pre-derived {cid.hex()}, "
+                    f"post-compile {compiled.community_id.hex()}"
+                )
+            return await self._post_compile_install(
+                cid, compiled, md_text, provenance, authored_event,
             )
 
+    async def _post_compile_install(
+        self,
+        cid: bytes,
+        compiled: CompiledOverlay,
+        md_text: str,
+        provenance: str | None,
+        authored_event: dict | None,
+    ) -> Any:
+        """The synchronous post-compile critical section, in an async wrapper.
+
+        Wrapped in an ``async def`` purely so ``asyncio.shield`` (which needs
+        an awaitable) can protect it from outer cancellation. The body itself
+        contains no ``await`` — it runs as one atomic event-loop slice, so
+        there's no interruption point for a CancelledError to re-enter.
+        """
         settings = self._build_settings()
-        instance = compiled.community_class(settings)
-
-        with self._ipv8.overlay_lock:
-            self._ipv8.overlays.append(instance)
-
-        if hasattr(instance, "started"):
-            instance.started()
-
-        self._compiled[cid] = compiled
-        self._instances[cid] = instance
-        return instance
+        # Bisect-instrumentation: each line below logs BEFORE the step it
+        # describes runs. The LAST line that appears in the journal before
+        # the watchdog kills the subprocess identifies which step hung. Cheap
+        # (5 log lines per install) and only meaningful in the deployed
+        # journal; remove or downgrade to DEBUG once the hang is diagnosed.
+        cid_short = cid.hex()[:12]
+        try:
+            _logger.info("post-compile[%s] step=init", cid_short)
+            instance = compiled.community_class(settings)
+            _logger.info("post-compile[%s] step=ipv8_lock_acquire", cid_short)
+            with self._ipv8.overlay_lock:
+                self._ipv8.overlays.append(instance)
+            _logger.info("post-compile[%s] step=started", cid_short)
+            # Sync on the event-loop thread, matching the pre-fix shape. An
+            # earlier attempt wrapped this in ``asyncio.to_thread`` + a 30s
+            # timeout to bound a hypothetical hang in LLM-emitted code, but
+            # IPv8's ``network.add_peer_observer`` is not safe to call off the
+            # event loop — it deadlocked the publish path silently on the
+            # deployed VPS (2026-05-30 ~10:55). The try/except below still
+            # catches exceptions raised IN ``started()``; the watchdog's
+            # per-turn budget (~240s) is the only protection against a stuck
+            # synchronous loop inside it.
+            if hasattr(instance, "started"):
+                instance.started()
+            _logger.info("post-compile[%s] step=archive_install", cid_short)
+            self._compiled[cid] = compiled
+            self._instances[cid] = instance
+            self._emit_install(compiled)
+            self._archive_install(md_text, compiled, provenance)
+            # The authored-ledger write happens HERE (inside the shield) so
+            # the version_history.{jsonl,md} row survives an outer
+            # cancellation — see aload's authored_event kwarg docstring.
+            if authored_event is not None and self._archive is not None:
+                try:
+                    self._archive.append_authored_event(
+                        cid.hex(), **authored_event,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _logger.warning(
+                        "authored_event_failed cid=%s err=%s", cid.hex(), exc
+                    )
+            _logger.info("post-compile[%s] step=done", cid_short)
+            return instance
+        except Exception as exc:
+            self._archive_post_compile_fail(cid, exc, provenance)
+            _logger.exception("post-compile publish failed for cid=%s", cid.hex())
+            raise
 
     # ------------------------------------------------------------------
     # Traditional Python-Community path
     # ------------------------------------------------------------------
 
-    def register_community(self, cls: Type) -> Any:
+    def register_community(self, cls: Type, *, provenance: str | None = None) -> Any:
         """Register a hand-written ``Community`` subclass directly.
 
         Requirements on ``cls``:
@@ -216,6 +415,22 @@ class OverlayRegistry:
         )
         self._compiled[cid] = compiled
         self._instances[cid] = instance
+        self._emit_install(compiled)
+        # python_class overlays have no canonical .md bytes to archive; record
+        # the install in the ledger so the lifecycle/version view still sees it.
+        if self._archive is not None:
+            try:
+                rec: dict[str, Any] = {
+                    "event": "install",
+                    "community_id_hex": cid.hex(),
+                    "name": cls.__name__,
+                    "origin": "python_class",
+                }
+                if provenance:
+                    rec["provenance"] = provenance
+                self._archive.append_ledger(rec)
+            except Exception as exc:  # noqa: BLE001 — observability must not break overlays
+                _logger.warning("overlay_archive.install_ledger_failed", error=str(exc))
         return instance
 
     # ------------------------------------------------------------------
@@ -245,35 +460,73 @@ class OverlayRegistry:
         slug = self._MODEL_SLUG_RE.sub("_", str(model_id))
         return self._cache_dir / f"{canon_sha1}-{slug}.py"
 
-    def _compile_with_disk_cache(self, md_text: str) -> CompiledOverlay:
+    def _compile_with_disk_cache(
+        self,
+        md_text: str,
+        *,
+        llm_source: str | None = None,
+    ) -> CompiledOverlay:
         """Compile ``md_text`` reusing cached LLM output when available.
 
-        Cache hit: ``compile_overlay`` is invoked with the cached
-        Python source, skipping the LLM round-trip. The sandbox AST
-        walk, structural-contract check, and test vectors still run —
-        they are the wire-safety boundary, not the cache.
+        Three lanes:
 
-        Cache miss: ``compile_overlay`` runs as normal, then we
-        atomic-write the produced source for the next process.
+        * **Caller-supplied source** (``llm_source`` set, e.g. from
+          ``agent.cli._publish_overlays`` routing a ``*_stub.py`` body
+          through the standard load path so seeder boots also emit
+          lifecycle events + archive). The disk cache is bypassed entirely
+          — read AND write — because the cache key is
+          ``(canonical_md, self._llm.model_id)`` and the caller's source
+          isn't necessarily what THIS LLM would emit.
+        * **Cache hit** — disk-cached LLM source is reused; the sandbox
+          AST walk, structural check, and test vectors still run.
+        * **Cache miss** — fresh ``compile_overlay`` call; the produced
+          source is atomically written to the cache for the next process.
         """
         cache_path = self._cache_path_for(md_text)
-        if cache_path is not None and cache_path.is_file():
-            try:
-                cached_source = cache_path.read_text(encoding="utf-8")
-            except OSError as exc:
-                _logger.warning(
-                    "overlay_cache.read_failed",
-                    path=str(cache_path),
-                    error=str(exc),
-                )
-                cached_source = None
-            if cached_source:
+        cache_hit = bool(cache_path is not None and cache_path.is_file())
+        if llm_source is not None:
+            src = "caller"
+        elif cache_hit:
+            src = "cache_hit"
+        else:
+            src = "llm"
+        model_id = str(getattr(self._llm, "model_id", "unknown"))
+        t0 = time.perf_counter()
+        try:
+            cached_source: str | None = None
+            if llm_source is None and cache_hit:
+                try:
+                    cached_source = cache_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    _logger.warning(
+                        "overlay_cache.read_failed",
+                        path=str(cache_path),
+                        error=str(exc),
+                    )
+                    cached_source = None
+            if llm_source is not None:
+                compiled = compile_overlay(md_text, self._llm, llm_source=llm_source)
+            elif cached_source:
                 _logger.debug("overlay_cache.hit", path=str(cache_path))
-                return compile_overlay(md_text, self._llm, llm_source=cached_source)
+                compiled = compile_overlay(md_text, self._llm, llm_source=cached_source)
+            else:
+                # True cache miss OR a hit whose source couldn't be read: a
+                # fresh LLM compile either way, so the cache should be (re)written.
+                src = "llm"
+                compiled = compile_overlay(md_text, self._llm)
+        except Exception as exc:  # noqa: BLE001 — re-raised after emitting
+            ms = int((time.perf_counter() - t0) * 1000)
+            _lifecycle_logger.info(
+                "OVERLAY compile cid=%s result=fail stage=%s src=%s model=%s ms=%d err=%s",
+                community_id_from_md(md_text).hex(),
+                _stage_of_error(str(exc)),
+                src, model_id, ms, _one_line(str(exc)),
+            )
+            raise
 
-        compiled = compile_overlay(md_text, self._llm)
+        ms = int((time.perf_counter() - t0) * 1000)
 
-        if cache_path is not None:
+        if src == "llm" and cache_path is not None:
             try:
                 # Atomic write: tempfile in the same dir, then rename.
                 fd, tmp_name = tempfile.mkstemp(
@@ -292,6 +545,18 @@ class OverlayRegistry:
                     error=str(exc),
                 )
 
+        parsed = compiled.parsed
+        _lifecycle_logger.info(
+            "OVERLAY compile cid=%s result=ok name=%s version=%s origin=%s "
+            "msgs=%d vectors=%d src=%s model=%s ms=%d",
+            compiled.community_id.hex(),
+            parsed.identity.get("name", "") if parsed else compiled.community_class.__name__,
+            parsed.identity.get("version", "") if parsed else "",
+            compiled.origin,
+            len(parsed.messages) if parsed else len(compiled.payload_classes),
+            len(parsed.test_vectors) if parsed else 0,
+            src, model_id, ms,
+        )
         return compiled
 
     def _build_settings(self) -> CommunitySettings:
@@ -312,6 +577,95 @@ class OverlayRegistry:
             endpoint=template.endpoint,
             network=template.network,
         )
+
+    # ------------------------------------------------------------------
+    # Overlay lifecycle event stream + per-demo archive (observability)
+    # ------------------------------------------------------------------
+
+    def _emit_install(self, compiled: CompiledOverlay) -> None:
+        """Emit the ``OVERLAY install`` lifecycle line for a freshly-live overlay."""
+        parsed = compiled.parsed
+        _lifecycle_logger.info(
+            "OVERLAY install cid=%s name=%s version=%s origin=%s",
+            compiled.community_id.hex(),
+            parsed.identity.get("name", "") if parsed else compiled.community_class.__name__,
+            parsed.identity.get("version", "") if parsed else "",
+            compiled.origin,
+        )
+
+    def _archive_seen(self, md_text: str, provenance: str | None) -> None:
+        """Archive a descriptor's bytes the moment it's seen — before compile.
+
+        Guarantees a received spec is captured even when its compile later
+        fails. Best-effort: archive errors are logged, never raised.
+        """
+        if self._archive is None:
+            return
+        try:
+            self._archive.record(md_text, event="seen", provenance=provenance)
+        except Exception as exc:  # noqa: BLE001 — observability must not break overlays
+            _logger.warning("overlay_archive.seen_failed", error=str(exc))
+
+    def _archive_compile_fail(
+        self, cid: bytes, exc: Exception, provenance: str | None,
+    ) -> None:
+        if self._archive is None:
+            return
+        try:
+            rec: dict[str, Any] = {
+                "event": "compile_fail",
+                "community_id_hex": cid.hex(),
+                "stage": _stage_of_error(str(exc)),
+                "error": _one_line(str(exc)),
+            }
+            if provenance:
+                rec["provenance"] = provenance
+            self._archive.append_ledger(rec)
+        except Exception as exc2:  # noqa: BLE001
+            _logger.warning("overlay_archive.compile_fail_failed", error=str(exc2))
+
+    def _archive_post_compile_fail(
+        self, cid: bytes, exc: Exception, provenance: str | None,
+    ) -> None:
+        """Ledger event for a failure AFTER the compile succeeded.
+
+        Distinct from ``_archive_compile_fail`` so the forensic record
+        distinguishes "the LLM emitted invalid code" (caught at compile time)
+        from "the LLM-emitted code raised on instantiation / started() /
+        IPv8 registration / etc." (caught here). Stamps a fixed
+        ``stage=post_compile`` rather than running ``_stage_of_error``
+        because the message space is wholly different (Python tracebacks
+        rather than ProtocolCompileError text)."""
+        if self._archive is None:
+            return
+        try:
+            rec: dict[str, Any] = {
+                "event": "compile_fail",
+                "community_id_hex": cid.hex(),
+                "stage": "post_compile",
+                "error": _one_line(f"{type(exc).__name__}: {exc}"),
+            }
+            if provenance:
+                rec["provenance"] = provenance
+            self._archive.append_ledger(rec)
+        except Exception as exc2:  # noqa: BLE001
+            _logger.warning("overlay_archive.post_compile_fail_failed", error=str(exc2))
+
+    def _archive_install(
+        self, md_text: str, compiled: CompiledOverlay, provenance: str | None,
+    ) -> None:
+        if self._archive is None:
+            return
+        try:
+            self._archive.record(
+                md_text,
+                compiled=compiled,
+                event="install",
+                provenance=provenance,
+                model_id=str(getattr(self._llm, "model_id", "")),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("overlay_archive.install_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
